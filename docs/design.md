@@ -989,13 +989,25 @@ not support them. hagent calls the embeddings endpoints of both providers
 through their OpenAI-compatible interface. Each adapter reports token use,
 cached tokens and cost for each call.
 
+Cost source (task-3). OpenRouter returns the cost of each call in
+`usage.cost`, for chat, decision and embedding calls. OpenAI returns token
+counts only. The OpenAI adapter therefore calculates the cost from a price
+table. A price table is a list of prices per million tokens for each model,
+including cache read and cache write rates. The runtime also needs the price
+table for OpenRouter, because it reserves the expected cost before each call.
+The price table starts from `genai-prices`, the price library that Pydantic
+AI uses. A daily refresh from the OpenRouter models endpoint updates it. A
+person can override a price in the management UI. The runtime compares
+calculated costs with `usage.cost` and records a difference.
+
 The user enters API keys in the management UI settings. The app never sends
 keys to HA and never writes them to logs.
 
 ## 17. Cost controls
 
 - Rules answer repeated invocations without an agent turn.
-- Decision actions bill input tokens only.
+- Decision actions bill input tokens only. Exception: OpenAI can bill
+  cache writes for decision calls. Task-3 did not verify these rates.
 - Rule result caches skip repeated rule actions.
 - The prompt order lets providers cache the stable part of each prompt.
 - Knowledge stores, running summaries and compaction replace large context

@@ -1,11 +1,11 @@
 ---
 id: TASK-3
 title: 'Spike: sources for model pricing and cost metering'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:23'
+updated_date: '2026-11-14 23:24'
 labels:
   - spike
   - providers
@@ -135,6 +135,8 @@ Open question: the OpenAI Decisions API cache rates.
 
 - Task-5: the request shapes used here came from error messages of the live endpoints. OpenAI `/v1/decisions` needs `input` and `questions[].{type, instructions, choices[].value}`. OpenRouter `/api/alpha/decisions` needs `state` and `questions` as a record with `{type, question, criteria}`. Task-5 owns the full format.
 - Design section 16 says that each adapter reports cost. For OpenAI this cost is computed, not reported. Section 17 "Decision actions bill input tokens only" is true for Jev. For OpenAI decisions, cache-write billing is not verified. This task does not change docs/design.md.
+
+Lead: applied the section 16/17 design notes on impl. AC #2 stays open: OpenAI Decisions API cache rates are unverified. Closed with the AC open, as the user's spike scope allowed.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
