@@ -69,3 +69,17 @@ def test_module_section(tmp_path: Path) -> None:
         config.section("bad", _Example)
     with pytest.raises(ConfigError, match="object"):
         config.section("list", _Example)
+
+
+def test_repr_hides_token_and_options(tmp_path: Path) -> None:
+    token = "ha-token-SENTINEL"
+    key = "sk-key-SENTINEL"
+    (tmp_path / "options.json").write_text(
+        json.dumps({"providers": {"openai_api_key": key}})
+    )
+    config = load_config({"HAGENT_DATA_DIR": str(tmp_path), "SUPERVISOR_TOKEN": token})
+    assert config.ha_token == token
+    for text in (repr(config), str(config)):
+        assert token not in text
+        assert key not in text
+        assert "data_dir" in text

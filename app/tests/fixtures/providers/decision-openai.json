@@ -1,0 +1,141 @@
+{
+  "source": "spikes/task-5/samples/decision-openai.json (recorded 2026-11-14)",
+  "path": "/v1/decisions",
+  "request": {
+    "model": "gpt-6-luna",
+    "input": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Decide about home heating from this sensor reading."
+          },
+          {
+            "type": "input_json",
+            "data": {
+              "sensor": "living room temperature",
+              "value_c": 17.2,
+              "target_c": 21.0,
+              "occupied": true,
+              "window_open": false,
+              "time": "07:10"
+            }
+          }
+        ]
+      }
+    ],
+    "questions": [
+      {
+        "type": "predicate",
+        "name": "should_heat",
+        "instructions": "Should the heating turn on now? Yes means: The room is occupied, below target and no window is open."
+      },
+      {
+        "type": "choice",
+        "name": "mode",
+        "instructions": "Which heating mode fits best?",
+        "choices": [
+          {
+            "value": "comfort",
+            "description": "Occupied room, well below target."
+          },
+          {
+            "value": "eco",
+            "description": "Small gap to target, or nobody is home."
+          },
+          {
+            "value": "off",
+            "description": "No heating needed."
+          }
+        ]
+      },
+      {
+        "type": "score",
+        "name": "urgency",
+        "instructions": "How urgent is heating?",
+        "levels": [
+          {
+            "label": "low",
+            "description": "At or near target."
+          },
+          {
+            "label": "medium",
+            "description": "A few degrees below target."
+          },
+          {
+            "label": "high",
+            "description": "Far below target and occupied."
+          }
+        ]
+      }
+    ]
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "response": {
+    "model": "gpt-6-luna",
+    "answers": [
+      {
+        "type": "predicate",
+        "name": "should_heat",
+        "probability": 1.0
+      },
+      {
+        "type": "choice",
+        "name": "mode",
+        "choice": "comfort",
+        "probabilities": [
+          {
+            "value": "comfort",
+            "probability": 1.0
+          },
+          {
+            "value": "eco",
+            "probability": 0.0
+          },
+          {
+            "value": "off",
+            "probability": 0.0
+          }
+        ],
+        "confidence": 1.0
+      },
+      {
+        "type": "score",
+        "name": "urgency",
+        "score": 1.09,
+        "probabilities": [
+          {
+            "value": 0,
+            "label": "low",
+            "probability": 0.01
+          },
+          {
+            "value": 1,
+            "label": "medium",
+            "probability": 0.89
+          },
+          {
+            "value": 2,
+            "label": "high",
+            "probability": 0.1
+          }
+        ],
+        "confidence": 0.84
+      }
+    ],
+    "usage": {
+      "input_tokens": 469,
+      "input_tokens_details": {
+        "cached_tokens": 0,
+        "cache_write_tokens": 0
+      },
+      "output_tokens": 0,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 469
+    }
+  }
+}

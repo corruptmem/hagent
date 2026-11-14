@@ -138,7 +138,9 @@ async def test_default_components_serve_the_api(
     fake_ha: FakeHA, tmp_path: Path
 ) -> None:
     components = default_components()
-    assert [c.name for c in components] == ["agents", "http"]
+    names = [c.name for c in components]
+    assert "agents" in names
+    assert names[-1] == "http"
     app = App(_config(fake_ha, tmp_path), components)
     await app.start()
     try:

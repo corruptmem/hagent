@@ -58,10 +58,12 @@ def default_components() -> list[Component]:
     starts it after the components that serve its routes, and stops it
     before them.
     """
+    from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
+
     http = HttpServer()
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
-    return [agents, http]
+    return [ProvidersComponent(), agents, http]
 
 
 class App:

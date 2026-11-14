@@ -17,10 +17,13 @@ SIGINT.
 | `src/hagent_app/ha/` | The connection to HA Core. `client.py` is the WebSocket client. `state_cache.py` is the HA state cache. |
 | `src/hagent_app/http/` | The HTTP server component (`HttpServer`), the JSON error format and the change events (task-7). |
 | `src/hagent_app/agents/` | Agent definitions, definition versions, private store records and the agents management API (task-7). |
+| `src/hagent_app/providers/` | Provider adapters, the price table, cost records and budgets (task-9). See "Providers and cost" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
 | `tests/helpers/wait.py` | `wait_until`, a poll helper for async tests. |
+| `tests/helpers/fake_providers.py` | `FakeProviders`, a fake provider API that replays recorded responses from `tests/fixtures/providers/`. |
+| `tests/helpers/providers_env.py` | `ProvidersEnv`, a started providers component on a temporary database. The `providers_env` fixture creates it. |
 
 Each later area adds its own package under `src/hagent_app/`, for example
 `agents/`, `tools/`, `providers/` or `scheduler/`. An area does not edit the
@@ -236,6 +239,61 @@ Missing keys take the defaults of the dataclass. Unknown keys cause
 `ConfigError`. Task-21 adds the keys to the app option schema when it
 packages the app.
 
+## Providers and cost
+
+The `providers` package makes all model calls. It has one interface for
+each call type:
+
+| Call type | Interface | Implementation |
+|---|---|---|
+| Chat | A Pydantic AI `Model` | `ProvidersComponent.chat_model(provider, model, agent_id=...)` returns a `MeteredModel` around `OpenAIResponsesModel` or `OpenRouterModel`. |
+| Decision | `DecisionClient.decide(request, agent_id=...)` | `DecisionAdapter`. It calls `POST /v1/decisions` (OpenAI) or `POST /api/alpha/decisions` (OpenRouter) directly. |
+| Embedding | `EmbeddingClient.embed(provider, model, texts, agent_id=...)` | `EmbeddingAdapter`. It calls `POST <base>/embeddings` on either provider. |
+
+`agent_id=None` charges a call to the installation only, for example a
+document embedding.
+
+Terms:
+
+- **Price table**: `PriceTable`. It computes a cost from token counts. The
+  first layer that knows the model wins: the `price_overrides` option, then
+  the daily copy of the OpenRouter price lists, then genai-prices (the
+  price library of Pydantic AI).
+- **Reservation**: the expected cost of a call, held against the budgets
+  before the call starts. Parallel calls see each other's reservations.
+- **Meter**: `Meter`. It reserves, records each call in `provider_calls`,
+  and deletes the reservation.
+
+Rules:
+
+- Each call records input, cache-read, cache-write and output tokens, and
+  the cost. For OpenRouter the cost is `usage.cost` from the response. For
+  OpenAI it comes from the price table. For OpenRouter calls the meter also
+  stores the computed cost and the drift between the two.
+- Money columns hold integer pico-USD (1e-12 USD).
+- The budget day is the local date of the app. The Supervisor sets the time
+  zone of the app to the time zone of HA, so budgets reset at local
+  midnight in the home. `Meter` takes a `clock` argument for tests.
+- A call with no known price fails with `PriceUnknownError` before any
+  HTTP request. Set `unknown_price_reserve_usd` to reserve a fixed amount
+  instead.
+- The adapters do not retry. They raise `ProviderHTTPError` with a
+  `retryable` flag. The runtime decides on retries.
+- The keys are in the `providers` section of `options.json`, or in
+  `HAGENT_OPENAI_API_KEY` and `HAGENT_OPENROUTER_API_KEY`. Code reads them
+  through a `KeySource`. Task-20 replaces the source with the settings
+  store. A key goes only into the `Authorization` header of a provider
+  request. Error texts pass through `redact`.
+- The daily OpenRouter price refresh starts 60 seconds after app start.
+  Tests set `refresh_openrouter_prices` to `false`.
+
+The `providers` option keys are in `ProvidersConfig`
+(`src/hagent_app/providers/config.py`).
+
+The test fixtures are real responses with redacted IDs. Chat and embedding
+fixtures come from `spikes/task-9/record_fixtures.py`. Decision fixtures
+come from `spikes/task-5/samples/`.
+
 ## Development settings
 
 Outside an app container, set these environment variables:
@@ -247,5 +305,7 @@ Outside an app container, set these environment variables:
 | `HAGENT_HA_TOKEN` | The access token. | the value of `SUPERVISOR_TOKEN` |
 | `HAGENT_PORT` | The HTTP port. | `8099` |
 | `HAGENT_LOG_LEVEL` | The log level. | `INFO` |
+| `HAGENT_OPENAI_API_KEY` | The OpenAI API key. | the `providers` option |
+| `HAGENT_OPENROUTER_API_KEY` | The OpenRouter API key. | the `providers` option |
 
 Never commit a token or an `.env` file.
