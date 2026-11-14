@@ -57,6 +57,10 @@ VALID: list[tuple[str, dict[str, Any]]] = [
     ("none result", definition(result={"type": "none"})),
     ("ha read all", definition(tools__ha={"level": "read", "scope": {"all": True}})),
     (
+        "ha read floor",
+        definition(tools__ha={"level": "read", "scope": {"floors": ["ground"]}}),
+    ),
+    (
         "named indirect service",
         definition(
             tools__ha={
@@ -190,6 +194,18 @@ INVALID: list[tuple[str, dict[str, Any], str]] = [
         "all plus list",
         definition(tools__ha={"level": "read", "scope": {"all": True, "areas": ["x"]}}),
         "tools.ha.scope",
+    ),
+    (
+        "all plus floor",
+        definition(
+            tools__ha={"level": "read", "scope": {"all": True, "floors": ["x"]}}
+        ),
+        "tools.ha.scope",
+    ),
+    (
+        "bad floor ID",
+        definition(tools__ha={"level": "read", "scope": {"floors": ["a b"]}}),
+        "tools.ha.scope.floors.0",
     ),
     (
         "bad domain",

@@ -142,7 +142,7 @@ The design gives no default for `budget.max_tokens` and
 ### HA scope
 
 `tools.ha.scope` has these fields: `all` (true or false), `entities`,
-`devices`, `areas`, `labels` and `domains` (lists).
+`devices`, `areas`, `floors`, `labels` and `domains` (lists).
 
 - For `read` and `control`, the scope must set `all` to true, or list at
   least one target.
