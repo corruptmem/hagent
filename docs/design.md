@@ -463,9 +463,9 @@ request has one or more questions. Each question has:
 - The values to include, taken from the inputs and caller data.
 
 The decision model returns a probability for each choice of each question.
-The result template turns the probabilities into the result. For example, it can take
-the most likely choice, compute a weighted mean, or decline when no choice
-is likely enough. The agent writes this logic. hagent does not build it in.
+The result template turns the probabilities into the result. For example,
+it can take the most likely choice, compute a weighted mean, or decline when
+no choice is likely enough. The agent writes this logic. hagent does not build it in.
 
 The OpenAI Decisions API and the OpenRouter decisions endpoint both return
 typed answers with probabilities. hagent puts both behind one adapter. The
