@@ -573,7 +573,7 @@ are three question types:
 
 | Type | Options | Answer |
 |---|---|---|
-| Yes/no | Optional text for yes and for no. | The probability of yes, from 0 to 1. |
+| Yes/no | Optional text for yes and for no. On OpenAI, the adapter puts this text in the instructions. | The probability of yes, from 0 to 1. |
 | Choice | 2 to 255 named options. | The most likely option, a probability for each option, and a confidence value. |
 | Score | 2 to 10 ordered levels. | A score: the probability-weighted mean of the level numbers (0, 1, 2 ...). Also a probability for each level, and a confidence value. |
 
@@ -747,8 +747,8 @@ compaction in three places:
 
 - **Inside an agent turn.** A tool loop can collect large tool results. The
   runtime cuts each tool result to a size limit, and keeps the full result in
-  history. When the turn reaches a token limit, Pydantic AI compacts the older
-  part of the turn.
+  history. When the turn reaches a token limit, a compaction strategy
+  compacts the older part of the turn.
 - **Across turns of one conversation or source.** An Assist conversation, or
   a series of invocations from one source, keeps a running summary plus the
   latest records, instead of a full transcript. The summary model in the
