@@ -62,8 +62,9 @@ pre-commit runs ruff and mypy on each commit.
 ## Rules
 
 - Safety: the app has administrator access to HA. Every tool call must pass
-  the runtime scope check. Each new tool needs a test that proves an
-  out-of-scope call never reaches HA.
+  the runtime scope check, for HA and for knowledge stores. Each new tool
+  needs a test that proves an out-of-scope call never reaches HA or the
+  store.
 - Never commit secrets or `.env` files.
 - Tests must not need a live HA instance or a provider API.
 - The repository is public. Do not commit personal names, entity IDs or

@@ -85,6 +85,8 @@ rules that the agent writes itself.
 - R14. Cost is a primary design goal.
 - R15. The design is generic. No feature exists for one use case only.
 - R16. Every default can be overridden, per agent, per rule or per call.
+  Installation-wide settings, for example the embedding model, are the
+  exception: the user changes them once for the installation.
 
 ## 5. Prior art
 
@@ -187,7 +189,8 @@ enforcement possible: no agent tool can change data that the user owns.
 | Agent definitions | The user | The user, in the management UI. |
 | Knowledge store configuration: name, description, size limit and attachments | The user | The user, in the management UI. |
 | Knowledge store content: files and documents | Shared | Files: agents with `read_write` access, and the user. Documents: the user only. |
-| Agent state: rules, schedules and history | The agent | The agent, through its tools. The user can also turn off or delete rules and schedules. |
+| Agent state: rules and schedules | The agent | The agent, through its tools. The user can also turn off or delete rules and schedules. |
+| History | The runtime | The runtime records it. Agents and the user only read it. Retention deletes old records (section 13). |
 
 An agent can read its own definition, but no tool writes to it. An agent
 therefore cannot widen its own scope, outputs, store access or budget.
@@ -432,25 +435,35 @@ an agent answer repeated invocations at low or zero cost.
 | Result | An HA template that builds the final result from the action output. It can also return "decline", which passes the invocation to an agent turn. |
 | Writes | Optional output entities to set from the result. They must be in scope, and must not need approval. |
 | Cache | Optional. A time window and a list of inputs. If an invocation arrives with the same values for those inputs within the window, the runtime returns the previous result without running the action. Off by default. |
-| Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and records whether the answers agree. The default sample rate is 1 in 5. Each rule can set its own rate. |
+| Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and records whether the answers agree. The default sample rate is 1 in 5. Each rule can set its own rate. Trial agent turns count towards the budget, and stop when the budget is spent. |
 
 ### 10.2 Template action
 
 The action is an HA template. The app sends it to HA Core to render. HA
 renders templates in a sandbox, so a rule cannot run arbitrary code.
 
+All rule templates (match, action and result) render in HA Core through the
+WebSocket `render_template` command, with variables. The runtime passes the
+invocation source, the input values and the caller data as variables. The
+result template also receives the action output, for example the decision
+probabilities. Templates read live HA state, not the app's state cache.
+
+Each template costs one round trip to HA Core. While HA Core is not
+reachable, rules decline, and the router starts an agent turn.
+
 Example: "Is anyone home?" computed from presence entities.
 
 ### 10.3 Decision action
 
-The action asks the decision model in the definition one question:
+The action sends one request to the decision model in the definition. The
+request has one or more questions. Each question has:
 
 - The question text, written by the agent.
 - A list of choices: yes/no, categories or numbered options.
 - The values to include, taken from the inputs and caller data.
 
-The decision model returns a probability for each choice. The result
-template turns the probabilities into the result. For example, it can take
+The decision model returns a probability for each choice of each question.
+The result template turns the probabilities into the result. For example, it can take
 the most likely choice, compute a weighted mean, or decline when no choice
 is likely enough. The agent writes this logic. hagent does not build it in.
 
@@ -478,7 +491,8 @@ review.
   agent turn, or through the writes of a rule. The runtime checks the scope.
   hagent adds no limits beyond the scope and approval. An agent that needs
   limits, for example a maximum change per step, writes them into its rules
-  and its instructions to itself. The user can also enforce limits in HA.
+  and into its notes in a knowledge store. The user can also enforce limits
+  in HA.
 - **Text and structured results.** The agent returns the result to the
   caller. The runtime validates a structured result against the JSON schema.
   If it fails, the runtime asks the model once to correct it, then reports an
@@ -554,8 +568,9 @@ hagent uses four caches:
 - **Rule result cache.** A rule can return its previous result for the same
   inputs within a time window (section 10.1).
 - **HA state cache.** The app subscribes to HA state changes, so it keeps a
-  current copy of entity states. State reads by tools and templates use this
-  copy, not a request to HA.
+  current copy of entity states. State reads by tools use this copy, not a
+  request to HA. Rule templates render in HA Core, so they read live state
+  (section 10.2).
 - **Query cache.** Within one agent turn, the runtime keeps the results of
   history and statistics queries, so that a repeated query does not go to HA
   again.
