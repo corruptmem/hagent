@@ -18,6 +18,8 @@ async def test_process_connects_reconnects_and_stops_on_sigterm(
         "HAGENT_DATA_DIR": str(tmp_path),
         "HAGENT_HA_URL": fake_ha.url,
         "SUPERVISOR_TOKEN": fake_ha.token,
+        # Port 0 lets the OS pick a free port for the HTTP server.
+        "HAGENT_PORT": "0",
     }
     env.pop("HAGENT_HA_TOKEN", None)
     proc = await asyncio.create_subprocess_exec(

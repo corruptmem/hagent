@@ -426,12 +426,14 @@ version = "0.0.0"
 source = { editable = "app" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "pydantic" },
     { name = "pydantic-ai-slim", extra = ["openai", "openrouter"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13" },
+    { name = "pydantic", specifier = ">=2.14.3" },
     { name = "pydantic-ai-slim", extras = ["openai", "openrouter"], specifier = ">=2.68" },
 ]
 

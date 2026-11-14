@@ -18,8 +18,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from hagent_app.agents import AgentsComponent
 from hagent_app.config import Config
 from hagent_app.ha import HAClient, StateCache
+from hagent_app.http import HttpServer
 from hagent_app.storage import Database, transaction
 
 _LOG = logging.getLogger(__name__)
@@ -49,8 +51,17 @@ class Component(Protocol):
 
 
 def default_components() -> list[Component]:
-    """The components that a normal app start runs, in start order."""
-    return []
+    """The components that a normal app start runs, in start order.
+
+    Build ``HttpServer`` first, so that each component can add its routes
+    before the server starts. Keep ``http`` last in the list: ``App`` then
+    starts it after the components that serve its routes, and stops it
+    before them.
+    """
+    http = HttpServer()
+    agents = AgentsComponent(http.events)
+    http.add_routes(agents.routes())
+    return [agents, http]
 
 
 class App:
