@@ -1,0 +1,13 @@
+[project]
+name = "hagent-app"
+version = "0.0.0"
+description = "hagent app: runtime for persistent Home Assistant agents."
+requires-python = ">=3.15"
+dependencies = []
+
+[build-system]
+requires = ["uv_build>=0.9"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "hagent_app"

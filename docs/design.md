@@ -381,7 +381,7 @@ an agent answer repeated invocations at low or zero cost.
 | Action | `template` or `decision` (below). |
 | Result | An HA template that builds the final result from the action output. It can also return "decline", which passes the invocation to an agent turn. |
 | Writes | Optional output entities to set from the result. They must be in scope. |
-| Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and records whether the answers agree. |
+| Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and records whether the answers agree. The default sample rate is 1 in 5. Each rule can set its own rate. |
 
 ### 10.2 Template action
 
@@ -576,17 +576,17 @@ primitives. None of this logic is part of hagent.
 | Default daily budget | USD 0.50 per agent. |
 | Where agents are defined | In the app, through its own management UI. The integration creates one HA device per agent automatically. |
 | AI Task entity | Each agent exposes one, with the `GENERATE_DATA`, `SUPPORT_ATTACHMENTS` and `EVALUATE` features. |
+| Invocation defaults | `hagent.invoke` waits for the result by default, with a 30-second timeout. Each call can override both. |
+| Rule trial sample rate | 1 in 5 matches by default. Each rule can override it. |
+| HA user for the app | The app uses the Supervisor proxy, which acts as an administrator. The runtime scope check enforces agent scopes. A separate non-admin HA user is a possible later option. |
+| App language | Python 3.15. The official OpenAI SDK serves both providers. |
+| Integration language | Python 3.14, the version that HA Core requires, because HA Core loads the integration with its own interpreter. |
+| Tooling | mise installs the tools. uv manages Python and dependencies. Backlog.md tracks work. pre-commit runs ruff (lint, static analysis and formatting) and mypy (strict type checking) before each commit. |
 | Management UI stack | A React single-page application with TanStack Router, TanStack Query and TanStack Table, built with Vite. The app serves the built files through Ingress. A JSON API supplies data, and a WebSocket sends change events. The router uses the Ingress base path from `X-Ingress-Path`. |
 
 ## 23. Open questions
 
-| # | Question | Proposed default |
-|---|---|---|
-| 1 | Default `hagent.invoke` timeout. | 30 seconds. |
-| 2 | Default for `wait`. | `true`. |
-| 3 | Default trial sample rate. | 1 in 5 matches. |
-| 4 | Should the app use a separate non-admin HA user for agents below `admin`? The Supervisor proxy always acts as an administrator. | No. Rely on the runtime scope check. |
-| 5 | Language and SDK for the app. | Python 3.12, with the official OpenAI SDK for both providers. |
+None at present.
 
 ## 24. References
 

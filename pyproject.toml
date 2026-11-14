@@ -1,0 +1,44 @@
+# uv workspace root. Shared tool settings live here.
+#
+# - app/: the hagent app (agent runtime). Python 3.15.
+# - integration/custom_components/hagent/: the HA integration. It runs inside
+#   HA Core's interpreter, so it must stay compatible with HA's Python (3.14).
+#   See integration/ruff.toml.
+
+[tool.uv.workspace]
+members = ["app"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "ruff>=0.14",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py315"
+extend-exclude = ["frontend"]
+
+[tool.ruff.lint]
+# Static analysis: pyflakes, pycodestyle, isort, naming, pyupgrade, bugbear,
+# bandit (security), simplify, comprehensions, pathlib, return checks,
+# pylint subsets, async checks, and ruff's own rules.
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "S", "SIM", "C4", "PTH", "RET",
+    "PL", "ASYNC", "RUF", "TRY", "PERF",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S101", "PLR2004"]
+
+[tool.mypy]
+python_version = "3.15"
+strict = true
+warn_unreachable = true
+files = ["app/src", "app/tests"]
+mypy_path = "app/src"
+
+[tool.pytest.ini_options]
+testpaths = ["app/tests"]
+addopts = "-ra"
