@@ -138,8 +138,23 @@ async def test_default_components_serve_the_api(
     fake_ha: FakeHA, tmp_path: Path
 ) -> None:
     components = default_components()
-    assert [c.name for c in components] == ["agents", "http"]
-    app = App(_config(fake_ha, tmp_path), components)
+    assert [c.name for c in components] == [
+        "ingress_guard",
+        "agents",
+        "ha_catalog",
+        "ui",
+        "http",
+    ]
+    # The default allows only the Supervisor address. The test client
+    # connects from 127.0.0.1, so the test allows that address.
+    config = Config(
+        ha_url=fake_ha.url,
+        ha_token=fake_ha.token,
+        data_dir=tmp_path,
+        port=0,
+        options={"ingress": {"allowed_addresses": ["127.0.0.1"]}},
+    )
+    app = App(config, components)
     await app.start()
     try:
         http = components[-1]

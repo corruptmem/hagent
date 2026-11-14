@@ -26,6 +26,11 @@ sets the UI stack. Design section 7 sets the data that the API manages.
   options. Ingress forwards requests from
   `/api/hassio_ingress/<token>/` to the app. The UI must use relative URLs,
   for example `api/agents`, not `/api/agents`.
+- The app accepts connections only from the Supervisor address,
+  `172.30.32.2` (design section 6.1). It refuses other addresses with 403
+  `forbidden`. It uses the address of the TCP peer, not a header. Before the
+  app is ready, it refuses all requests with 503 `not_ready`. See "Ingress
+  options".
 - The API does not ask for a login. HA authenticates the user before
   Ingress forwards a request (design section 6.1).
 - Request and response bodies are JSON objects, with the content type
@@ -55,6 +60,7 @@ Each error response has this body:
 | 400 | `invalid_body` | The body is JSON, but a field is missing or has the wrong type. |
 | 400 | `invalid_query` | A query parameter is missing or is not valid. |
 | 400 | `private_store_choice_required` | A delete request did not say what to do with the private store. `details.choices` lists the values. |
+| 403 | `forbidden` | The connection does not come from an allowed address. |
 | 404 | `not_found` | The path does not exist. |
 | 404 | `agent_not_found` | The agent does not exist, or the user deleted it. |
 | 404 | `version_not_found` | The agent has no version with this number. |
@@ -335,6 +341,135 @@ current definition, the app adds no version. `base_version` works as in
 - `GET api/agents/schema` returns the JSON schema of a definition.
 - `GET api/agents/defaults` returns `{"definition": <definition>}` with
   every default value, for a new-agent form.
+
+### Test invocation (planned)
+
+`POST api/agents/{id}/test`
+
+The agent runtime (task-10 and task-12) does not exist yet. Until it
+exists, the app does not serve this path and returns 404 `not_found`. The UI
+shows the test panel and reports that the runtime is not available. This
+section is the contract for the runtime task.
+
+A **test invocation** runs one agent turn with sample data. It makes no
+change to HA, to knowledge stores or to agent state.
+
+Body:
+
+```json
+{
+  "definition": {"name": "Heating", "...": "..."},
+  "input": {"text": "Is the room warm enough?", "data": {"reason": "test"}},
+  "states": {"sensor.<room>_temperature": {"state": "19.5", "attributes": {}}}
+}
+```
+
+| Field | Content |
+|---|---|
+| `definition` | Optional. A definition to test before the user saves it. Without it, the app uses the current version. The app validates it as in "Edit an agent". |
+| `input.text` | Optional text for the agent, as in `hagent.invoke`. |
+| `input.data` | Optional JSON object for the agent, as in `hagent.invoke`. |
+| `states` | Optional sample states. Each key is an entity ID. The value has `state` and `attributes`. The agent reads these values in place of the state cache. |
+
+Rules for the runtime:
+
+- The tool executor checks the scope of each call as usual.
+- The executor does not send a service call to HA. It records the call and
+  returns a success result to the agent.
+- Writes to stores, memory, rules and schedules go to a copy that the app
+  discards after the turn.
+- The turn counts against the budget of the agent. The response shows the
+  cost.
+
+Response (status 200):
+
+```json
+{
+  "result": "The room is warm enough.",
+  "planned_calls": [
+    {"domain": "climate", "service": "set_temperature",
+     "target": {"entity_id": ["climate.<room>"]}, "data": {"temperature": 20}}
+  ],
+  "denied_calls": [],
+  "tool_calls": 3,
+  "tokens": 1200,
+  "cost_usd": 0.0012
+}
+```
+
+- `result` matches `result.type` of the definition.
+- `planned_calls` lists the service calls that a real turn would send.
+- `denied_calls` lists the calls that the scope check refused, each with
+  the fields of a planned call and a `reason`.
+
+Errors: `agent_not_found`, `definition_invalid`, and 503 `not_ready` when
+the runtime is not running.
+
+## HA catalogue
+
+`GET api/ha/catalog`
+
+Returns the HA entities, devices, areas, floors, labels, domains and
+services, for the pickers of the UI. The endpoint is read-only. The app
+sends only these fixed commands to HA: `config/entity_registry/list`,
+`config/device_registry/list`, `config/area_registry/list`,
+`config/floor_registry/list`, `config/label_registry/list` and
+`get_services`. The app keeps their results for 30 seconds. The entity
+states come from the state cache.
+
+This endpoint is not an agent tool. Only the UI uses it.
+
+```json
+{
+  "stale": false,
+  "entities": [
+    {"entity_id": "light.<room>", "name": "<name>", "domain": "light",
+     "state": "on", "device_id": "<device ID>", "area_id": "<area ID>",
+     "labels": ["<label ID>"], "disabled": false}
+  ],
+  "devices": [
+    {"id": "<device ID>", "name": "<name>", "area_id": "<area ID>",
+     "labels": []}
+  ],
+  "areas": [{"id": "<area ID>", "name": "<name>", "floor_id": "<floor ID>"}],
+  "floors": [{"id": "<floor ID>", "name": "<name>"}],
+  "labels": [{"id": "<label ID>", "name": "<name>"}],
+  "domains": ["light"],
+  "services": ["light.turn_off", "light.turn_on"]
+}
+```
+
+- `entities` holds each entity in the state cache, and each entity in the
+  entity registry that has no state, for example a disabled entity. Such
+  an entity has `state` set to `null`.
+- `name` is the registry name, then the `friendly_name` attribute, then the
+  original name, then the entity ID.
+- `area_id` is the area of the entity, or else the area of its device.
+- `stale` is true when the state cache may not match HA, or when a registry
+  command failed. When HA is offline, the app returns the last data that it
+  has. A list is empty if the app never received it.
+
+## UI files
+
+`GET {tail}`: each path that does not start with `api/` is a UI path.
+
+- A file of the UI build: the app sends the file.
+- A path with a file extension and no file: 404 `not_found`.
+- Any other path: `index.html`, so that a deep link opens its screen.
+
+The app adds `<base href="<X-Ingress-Path>/">` to `index.html`. The UI
+router reads its base path from this element, and the UI resolves its
+relative API URLs against it. The app accepts only a plain path of letters,
+digits and `._~-` in `X-Ingress-Path`. It uses `/` for any other value.
+
+### Ingress options
+
+The `ingress` section of the app options has these keys:
+
+| Key | Default | Content |
+|---|---|---|
+| `allowed_addresses` | `["172.30.32.2"]` | The addresses and CIDR networks that can connect. Change it only for local development, for example to `["127.0.0.1"]`. |
+| `ui_dir` | `""` | The directory of the UI build. An empty value selects `frontend/dist` in the source checkout. |
 
 ## Change events
 
