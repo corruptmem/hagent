@@ -74,6 +74,7 @@ class StateCache:
         self._held: list[Event] | None = None
         self._ready = asyncio.Event()
         self._sub: Subscription | None = None
+        self._synced = False
 
     @property
     def ready(self) -> bool:
@@ -82,8 +83,12 @@ class StateCache:
 
     @property
     def stale(self) -> bool:
-        """True when the cache may not match HA: no connection, or loading."""
-        return not self._client.connected or self._held is not None
+        """True when the cache may not match HA.
+
+        The cache is stale when the client has no connection, or when the
+        last load after a connect did not finish.
+        """
+        return not self._client.connected or not self._synced
 
     async def wait_ready(self) -> None:
         """Wait until the first full load is complete.
@@ -108,6 +113,7 @@ class StateCache:
     async def start(self) -> None:
         """Subscribe to state changes and load the states on each connect."""
         self._client.add_connect_listener(self._reload)
+        self._client.add_disconnect_listener(self._on_disconnect)
         self._sub = await self._client.subscribe_events(self._on_event, "state_changed")
         if self._client.connected:
             await self._reload()
@@ -118,7 +124,11 @@ class StateCache:
             await self._sub.unsubscribe()
             self._sub = None
 
+    async def _on_disconnect(self) -> None:
+        self._synced = False
+
     async def _reload(self) -> None:
+        self._synced = False
         self._held = []
         try:
             raw = await self._client.get_states()
@@ -132,6 +142,7 @@ class StateCache:
                 self._apply(event)
         finally:
             self._held = None
+        self._synced = True
         self._ready.set()
         _LOG.info("state cache loaded %d entities", len(self._states))
 

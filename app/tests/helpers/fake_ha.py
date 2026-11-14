@@ -116,9 +116,17 @@ class FakeHA:
     ) -> asyncio.Task[None]:
         """Set a state and send ``state_changed`` to subscribers.
 
-        Return the send task. Await it to be sure that the events are sent.
+        Like real HA, the fake sends no event when the state and the
+        attributes do not change. Return the send task. Await it to be sure
+        that the events are sent.
         """
         old = self.states.get(entity_id)
+        if (
+            old is not None
+            and old["state"] == state
+            and old["attributes"] == dict(attributes or {})
+        ):
+            return asyncio.create_task(asyncio.sleep(0))
         stamp = now_iso()
         changed = old is None or old["state"] != state
         new: Message = {

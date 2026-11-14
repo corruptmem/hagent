@@ -164,3 +164,19 @@ async def test_handler_error_does_not_stop_reader(
     await fake_ha.fire_event("x", {})
     await wait_until(lambda: good == ["x"])
     assert client.connected
+
+
+async def test_no_op_service_call_sends_no_event(
+    fake_ha: FakeHA, client: HAClient
+) -> None:
+    # Task-2 saw this on real HA: a turn_on of an entity that is on already
+    # returns a context but causes no state_changed event.
+    await fake_ha.set_state("light.test", "on")
+    events: list[dict[str, Any]] = []
+    await client.subscribe_events(events.append, "state_changed")
+    result = await client.call_service(
+        "light", "turn_on", target={"entity_id": "light.test"}
+    )
+    await asyncio.sleep(0.05)
+    assert result.context_id is not None
+    assert events == []

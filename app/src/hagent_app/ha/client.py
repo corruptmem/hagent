@@ -352,7 +352,9 @@ class HAClient:
     async def _on_connect(self, ws: aiohttp.ClientWebSocketResponse) -> None:
         try:
             for sub in list(self._subs):
-                await self._send_subscribe(sub)
+                # A subscribe_events call during setup subscribes on its own.
+                if sub.ha_id is None:
+                    await self._send_subscribe(sub)
             self.connect_count += 1
             self._connected.set()
             _LOG.info("connected to HA %s", self.ha_version)

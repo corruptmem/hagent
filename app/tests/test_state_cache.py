@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 from hagent_app.ha import HAClient, StateCache
-from helpers.fake_ha import FakeHA, make_context
+from helpers.fake_ha import FakeCommandError, FakeHA, make_context
 from helpers.wait import wait_until
 
 FAST = {"backoff_initial": 0.01, "backoff_max": 0.05, "timeout": 2.0}
@@ -133,6 +133,34 @@ async def test_events_held_during_load_merge_by_time(fake_ha: FakeHA) -> None:
         assert "c.x" not in cache
         assert d is not None
         assert d.state == "created"
+    finally:
+        await cache.stop()
+        await client.stop()
+
+
+async def test_failed_reload_leaves_cache_stale(fake_ha: FakeHA) -> None:
+    fake_ha.set_state("light.one", "off")
+    client = HAClient(fake_ha.url, fake_ha.token, **FAST)
+    cache = StateCache(client)
+    await cache.start()
+
+    def fail(_ha: FakeHA, _msg: dict[str, Any]) -> None:
+        raise FakeCommandError("unknown_error", "HA is still starting")
+
+    fake_ha.handlers["get_states"] = fail
+    await client.start()
+    try:
+        await asyncio.wait_for(client.wait_connected(), 2)
+        await wait_until(lambda: bool(fake_ha.commands_of("get_states")))
+        await asyncio.sleep(0.05)
+        assert client.connected
+        assert cache.stale
+        assert not cache.ready
+        del fake_ha.handlers["get_states"]
+        await fake_ha.restart()
+        fake_ha.up()
+        await asyncio.wait_for(cache.wait_ready(), 2)
+        assert not cache.stale
     finally:
         await cache.stop()
         await client.stop()
