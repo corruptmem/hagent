@@ -3,11 +3,11 @@ id: TASK-6
 title: >-
   App skeleton: configuration, SQLite storage, HA WebSocket client and state
   cache
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:31'
+updated_date: '2026-11-14 23:32'
 labels:
   - app
 dependencies:
@@ -93,6 +93,8 @@ mise run check passes: ruff, mypy strict (23 files), pytest 47 passed. The suite
 - task-21: set homeassistant_api: true in the app config, or the Supervisor proxy refuses the connection. Verify AC #1 of this task on a real Supervisor.
 - task-21: the database uses WAL mode, and HA backups include /data. A hot backup can copy hagent.db and hagent.db-wal out of step. Choose a cold backup mode, or add a WAL checkpoint before backup.
 - task-1 follow-up still open: pin sqlite-vec when task-11 starts.
+
+Lead: live check against a real HA 2026.11.1 over its direct WebSocket URL (not the Supervisor proxy): connected, ran migration 0001, loaded the full state cache. AC #1 stays open for the Supervisor proxy path and a real HA restart; task-21 verifies them when the app is installed.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
