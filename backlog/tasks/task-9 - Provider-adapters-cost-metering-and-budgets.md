@@ -29,11 +29,11 @@ Design: docs/design.md sections 10.3, 13.3, 16 and 17.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Chat, decision and embedding calls work on both providers behind one interface per call type
-- [ ] #2 Each call records tokens, cached tokens and cost
-- [ ] #3 Per-agent and installation daily budgets are enforced, with cost reserved before each call so parallel calls cannot overspend
-- [ ] #4 API keys are never sent to HA or written to logs (tested)
-- [ ] #5 Adapters are tested with recorded fixtures, without live API calls
+- [x] #1 Chat, decision and embedding calls work on both providers behind one interface per call type
+- [x] #2 Each call records tokens, cached tokens and cost
+- [x] #3 Per-agent and installation daily budgets are enforced, with cost reserved before each call so parallel calls cannot overspend
+- [x] #4 API keys are never sent to HA or written to logs (tested)
+- [x] #5 Adapters are tested with recorded fixtures, without live API calls
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -100,4 +100,19 @@ Decisions for the lead:
 - Proposal sent to t3: Config.options has the default dataclass repr, so repr(ctx.config) shows the keys. One-line fix in the core area: repr=False on Config.options.
 
 Validation: mise run check passed (ruff, mypy strict, pytest: 100 passed).
+
+Core fix (approved by t3): app/src/hagent_app/config.py now sets repr=False on Config.ha_token and Config.options. The other Config fields (ha_url, data_dir, port, log_level) hold no secrets. Tests: test_config.py::test_repr_hides_token_and_options and test_app.py::test_app_context_repr_hides_secrets. This is a fifth edit outside the providers area.
+
+AC evidence:
+- AC1: test_providers_chat.py::test_chat_on_both_providers (4 cases: OpenAI and OpenRouter, plain and streamed), test_providers_decisions.py::test_openai_decision_answers_and_cost and ::test_openrouter_decision_answers_cost_and_drift, test_providers_embeddings.py::test_embeddings_on_both_providers (2 cases).
+- AC2: the same tests assert tokens and cost on each provider_calls row. Cache tokens: test_openai_cache_tokens_reach_the_record (cost equals the task-3 observed USD 0.00020385), test_openrouter_cache_tokens_reach_the_record (cache read and cache write), test_openai_decision_cache_tokens_reach_the_record.
+- AC3: test_providers_budget.py::test_parallel_calls_cannot_overspend_agent_budget (10 parallel calls, 3 fit, 3 reservations held at the same time), ::test_installation_budget_covers_all_agents_and_none, ::test_budget_resets_on_the_next_local_day, ::test_failed_call_releases_its_reservation, ::test_cancelled_call_releases_its_reservation; test_providers_chat.py::test_reservation_uses_max_tokens (refused before any HTTP request).
+- AC4: test_providers_keys.py (DEBUG logs incl. openai/httpx2 loggers, error texts, call records, request bodies, FakeHA commands), plus the Config repr tests.
+- AC5: every provider test uses FakeProviders (httpx2 MockTransport) with recorded fixtures. No test makes a network call.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Built the providers package. Chat calls use Pydantic AI models (OpenAIResponsesModel, OpenRouterModel) in a MeteredModel wrapper. Decision calls go directly over HTTP to the OpenAI Decisions API and the OpenRouter decisions endpoint, with one request and answer type for both. Embedding calls use the OpenAI-compatible endpoint on both providers. Each call writes one provider_calls row with input, cache-read, cache-write and output tokens and the cost. The cost is OpenRouter usage.cost, or the price table (overrides, daily OpenRouter lists, genai-prices); OpenRouter drift is stored. The meter reserves the expected cost in one transaction before each call and checks the per-agent (default USD 0.50) and installation daily budgets; the budget day is local time. Keys come from a KeySource, are hidden in repr (also Config) and are redacted from errors. Verified with 102 passing tests (mise run check) that replay recorded, redacted provider responses; no test makes a network call. Edits outside the area: app.py, config.py, conftest.py, test_migrations.py, app/pyproject.toml.
+<!-- SECTION:FINAL_SUMMARY:END -->
