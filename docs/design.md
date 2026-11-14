@@ -1059,10 +1059,13 @@ needs:
 - A refusal of one question fails the whole request.
 - One request has at most 200 questions. The OpenAI API accepts 400.
 
-The decision adapter can therefore use these classes or call the two
-endpoints directly. This choice is open. The OpenRouter model list
-(`/api/v1/models`) does not include the Jev decision models. The
-management UI cannot use that list to offer them.
+Decided: hagent's decision adapter calls the two decision endpoints
+directly, not through these classes. Direct calls give the probability of
+each answer, accept questions that agents write at run time, and keep a
+refusal local to its question. The OpenRouter model list (`/api/v1/models`)
+does not include the Jev decision models. The app therefore keeps its own
+list of decision models. A person can add a model to it in the management
+UI settings.
 
 Cost source (task-3). OpenRouter returns the cost of each call in
 `usage.cost`, for chat, decision and embedding calls. OpenAI returns token

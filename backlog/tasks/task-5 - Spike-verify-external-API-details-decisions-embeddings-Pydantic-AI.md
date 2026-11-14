@@ -1,11 +1,11 @@
 ---
 id: TASK-5
 title: 'Spike: verify external API details (decisions, embeddings, Pydantic AI)'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:25'
+updated_date: '2026-11-14 23:26'
 labels:
   - spike
   - providers
@@ -102,6 +102,8 @@ Spend: about USD 0.02 in total. OpenRouter daily usage was USD 0.0087 after the 
 Checks: mise run check passed (ruff, mypy, pytest).
 
 Sweep of docs/design.md for stale copies of the corrected claims: no contradictions outside the edited sections. Section 7.2 (line 261) says cost views include cached tokens; this stays true, but it can name cache-read and cache-write tokens when the UI task starts.
+
+Lead: decided proposal 1 (direct HTTP decision adapter) and proposal 3 (app-owned decision model list, extendable in settings); design section 16 updated on impl. Proposal 2 (move pydantic-ai-harness into the app, pinned) is passed to the agent-turn task (task-10).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
