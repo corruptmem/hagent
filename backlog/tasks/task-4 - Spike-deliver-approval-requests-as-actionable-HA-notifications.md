@@ -1,11 +1,11 @@
 ---
 id: TASK-4
 title: 'Spike: deliver approval requests as actionable HA notifications'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:26'
+updated_date: '2026-11-14 23:27'
 labels:
   - spike
   - app
@@ -111,6 +111,8 @@ Proposed mapping:
 - The iOS app fired a second event at the same time: ios.notification_action_fired, with no 'action' key value. The runtime must listen only to mobile_app_notification_action and ignore the legacy event type, or it can count one tap twice.
 - The match of context.user_id to the approver confirms the source fact: the app fires the event in the context of the HA user of the registration. The runtime can authorise the answer with this user ID.
 - Run 1 (stale registration) left a notification on the removed phone. The probe stopped before its clear step. This has no effect, because the registration no longer exists.
+
+Lead: open item (send via base notify service with target=[webhook_id] inside HA Core) is passed to task-16/task-17.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
