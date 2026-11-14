@@ -1,0 +1,88 @@
+{
+  "target": "openrouter-openai",
+  "turn1": {
+    "output": "I can\u2019t determine the coldest sensor because the hall and kitchen readings weren\u2019t available; attic is 18.4\u00b0C.",
+    "requests": [
+      {
+        "model": "openai/gpt-6-luna",
+        "input": 4074,
+        "cache_read": 4071,
+        "cache_write": 0,
+        "output": 18,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "openai/gpt-6-luna",
+        "input": 4774,
+        "cache_read": 4771,
+        "cache_write": 0,
+        "output": 19,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "openai/gpt-6-luna",
+        "input": 4809,
+        "cache_read": 4806,
+        "cache_write": 0,
+        "output": 19,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "openai/gpt-6-luna",
+        "input": 4844,
+        "cache_read": 4071,
+        "cache_write": 770,
+        "output": 140,
+        "tool_calls": []
+      }
+    ],
+    "cleared_tool_results": 2,
+    "run_usage": {
+      "input": 18501,
+      "cache_read": 17719,
+      "cache_write": 770,
+      "output": 196,
+      "requests": 4,
+      "cost_usd": "0.00037264"
+    }
+  },
+  "turn2": {
+    "output": "Garage is 18.4\u00b0C, but I can\u2019t tell whether it\u2019s colder than the hall without the hall reading.",
+    "requests": [
+      {
+        "model": "openai/gpt-6-luna",
+        "input": 5005,
+        "cache_read": 4841,
+        "cache_write": 161,
+        "output": 18,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "openai/gpt-6-luna",
+        "input": 5039,
+        "cache_read": 4071,
+        "cache_write": 965,
+        "output": 124,
+        "tool_calls": []
+      }
+    ],
+    "cleared_tool_results": 3,
+    "run_usage": {
+      "input": 10044,
+      "cache_read": 8912,
+      "cache_write": 1126,
+      "output": 142,
+      "requests": 2,
+      "cost_usd": "0.000301470"
+    }
+  },
+  "warnings": []
+}

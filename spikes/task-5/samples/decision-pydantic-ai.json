@@ -1,0 +1,56 @@
+{
+  "openai": {
+    "output": {
+      "should_heat": true,
+      "mode": "comfort"
+    },
+    "model_name": "gpt-6-luna",
+    "provider_details": {
+      "confidence": {
+        "should_heat": 0.94,
+        "mode": 1.0
+      },
+      "probabilities": {
+        "mode": {
+          "comfort": 1.0,
+          "eco": 0.0,
+          "off": 0.0
+        }
+      },
+      "scores": {}
+    },
+    "usage": {
+      "input": 316,
+      "cache_read": 0,
+      "output": 0,
+      "cost_usd": "0.0000316"
+    }
+  },
+  "openrouter": {
+    "output": {
+      "should_heat": true,
+      "mode": "comfort"
+    },
+    "model_name": "typesafe/jev-1.14-20261014",
+    "provider_details": {
+      "confidence": {
+        "should_heat": 0.9,
+        "mode": 0.94
+      },
+      "probabilities": {
+        "mode": {
+          "comfort": 0.96,
+          "eco": 0.04,
+          "off": 0.0
+        }
+      },
+      "scores": {}
+    },
+    "usage": {
+      "input": 370,
+      "cache_read": 0,
+      "output": 55,
+      "cost_usd": "0.00001554"
+    }
+  }
+}

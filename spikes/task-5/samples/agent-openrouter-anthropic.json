@@ -1,0 +1,98 @@
+{
+  "target": "openrouter-anthropic",
+  "turn1": {
+    "output": "I can't name the coldest room: the hall and kitchen readings came back empty, so the attic (18.4 \u00b0C) is the only value I have.",
+    "requests": [
+      {
+        "model": "anthropic/claude-haiku-5.5",
+        "input": 5399,
+        "cache_read": 5395,
+        "cache_write": 0,
+        "output": 94,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "anthropic/claude-haiku-5.5",
+        "input": 6233,
+        "cache_read": 5395,
+        "cache_write": 836,
+        "output": 52,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "anthropic/claude-haiku-5.5",
+        "input": 6300,
+        "cache_read": 5395,
+        "cache_write": 903,
+        "output": 137,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "anthropic/claude-haiku-5.5",
+        "input": 6448,
+        "cache_read": 5395,
+        "cache_write": 1051,
+        "output": 153,
+        "tool_calls": []
+      }
+    ],
+    "cleared_tool_results": 2,
+    "run_usage": {
+      "input": 24380,
+      "cache_read": 21580,
+      "cache_write": 2790,
+      "output": 436,
+      "requests": 4,
+      "cost_usd": "0.000783550"
+    }
+  },
+  "turn2": {
+    "output": "No, the garage (18.4 \u00b0C) is not colder than the hall, since both read 18.4 \u00b0C.",
+    "requests": [
+      {
+        "model": "anthropic/claude-haiku-5.5",
+        "input": 6626,
+        "cache_read": 6446,
+        "cache_write": 176,
+        "output": 118,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "anthropic/claude-haiku-5.5",
+        "input": 6757,
+        "cache_read": 5395,
+        "cache_write": 1360,
+        "output": 129,
+        "tool_calls": [
+          "read_sensor"
+        ]
+      },
+      {
+        "model": "anthropic/claude-haiku-5.5",
+        "input": 6899,
+        "cache_read": 5395,
+        "cache_write": 1502,
+        "output": 120,
+        "tool_calls": []
+      }
+    ],
+    "cleared_tool_results": 4,
+    "run_usage": {
+      "input": 20282,
+      "cache_read": 17236,
+      "cache_write": 3038,
+      "output": 367,
+      "requests": 3,
+      "cost_usd": "0.00073641"
+    }
+  },
+  "warnings": []
+}
