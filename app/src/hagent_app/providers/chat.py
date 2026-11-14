@@ -164,7 +164,17 @@ class MeteredModel(WrapperModel):
                 # Record what the stream used, also when the caller stops
                 # early: the provider bills the tokens that it sent.
                 response = stream.get()
-                call.complete(token_usage(response.usage), reported_cost(response))
+                if response.usage.input_tokens == 0:
+                    # The stream stopped before its usage event.
+                    call.usage_unknown()
+                else:
+                    call.complete(token_usage(response.usage), reported_cost(response))
+
+    async def compact_messages(self, *args: Any, **kwargs: Any) -> ModelResponse:
+        """Provider-side compaction is a model call outside the meter, so
+        ``MeteredModel`` refuses it. Use local compaction strategies."""
+        msg = "provider-side compaction is not metered"
+        raise NotImplementedError(msg)
 
     async def batch_create(self, requests: Sequence[Any]) -> Any:
         """Batch requests bypass the meter, so ``MeteredModel`` refuses them."""

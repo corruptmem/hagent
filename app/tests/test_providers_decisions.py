@@ -200,3 +200,20 @@ def test_decision_model_list_extends_from_options() -> None:
     assert models[-1] == DecisionModel("openrouter", "typesafe/jev-2")
     with pytest.raises(ValueError, match="provider"):
         decision_models(ProvidersConfig(decision_models=[{"model": "x"}]))
+
+
+async def test_openai_decision_cache_tokens_reach_the_record(
+    providers_env: StartEnv,
+) -> None:
+    env = await providers_env()
+    body = fixture("decision-openai")["response"]
+    body["usage"]["input_tokens"] = 2666
+    body["usage"]["input_tokens_details"] = {
+        "cached_tokens": 2563,
+        "cache_write_tokens": 0,
+    }
+    env.fake.reply(route("openai", "/decisions"), Reply(json_body=body))
+    await env.component.decisions.decide(_request(OPENAI), agent_id="a1")
+    [row] = await env.calls()
+    assert row["input_tokens"] == 2666
+    assert row["cache_read_tokens"] == 2563

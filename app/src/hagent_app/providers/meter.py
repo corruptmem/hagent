@@ -35,7 +35,7 @@ import logging
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
@@ -110,7 +110,7 @@ class MeteredCall:
     started_at: datetime
     usage: TokenUsage | None = None
     provider_cost_usd: Decimal | None = None
-    extra: dict[str, object] = field(default_factory=dict)
+    charge_reservation: bool = False
 
     def complete(
         self, usage: TokenUsage, provider_cost_usd: Decimal | float | None = None
@@ -120,6 +120,12 @@ class MeteredCall:
         self.provider_cost_usd = (
             None if provider_cost_usd is None else Decimal(str(provider_cost_usd))
         )
+
+    def usage_unknown(self) -> None:
+        """The call ran, but its usage is not known (for example, a stream
+        that stopped before its usage event). The reservation counts as the
+        cost, because the provider still bills the call."""
+        self.charge_reservation = True
 
 
 class Meter:
@@ -250,7 +256,7 @@ class Meter:
             await asyncio.shield(self._finish(call, error=error))
             raise
         if call.usage is None:
-            await self._finish(call, error="the adapter did not report usage")
+            await self._finish(call, error="the provider did not report usage")
         else:
             await self._finish(call, error=None)
 
@@ -271,8 +277,9 @@ class Meter:
             cost, source = provider_pusd, "provider"
         elif computed_pusd is not None:
             cost, source = computed_pusd, "price_table"
-        elif call.usage is not None:
-            # No price: count the reservation, so the budget still holds.
+        elif call.usage is not None or call.charge_reservation:
+            # No price or no usage: count the reservation, so the budget
+            # still holds.
             cost, source = call.reservation.amount_pusd, "reserved"
         else:
             cost, source = 0, "none"

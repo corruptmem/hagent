@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 from hagent_app.providers import BudgetExceededError, MeteredModel
-from helpers.fake_providers import Reply, route
+from helpers.fake_providers import Reply, fixture, route
 from helpers.providers_env import ProvidersEnv
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIResponsesModel
@@ -91,3 +91,66 @@ async def test_reservation_uses_max_tokens(providers_env: StartEnv) -> None:
     agent = Agent(model, instructions="Answer in one word.")
     run = await agent.run("Name a primary colour.", model_settings={"max_tokens": 1})
     assert run.output == "Blue."
+
+
+async def test_openai_cache_tokens_reach_the_record(providers_env: StartEnv) -> None:
+    env = await providers_env()
+    body = fixture("chat-openai")["response"]
+    usage = body["usage"]
+    usage["input_tokens"] = 2571
+    usage["input_tokens_details"]["cached_tokens"] = 2432
+    usage["output_tokens"] = 1
+    env.fake.reply(route("openai", "/responses"), Reply(json_body=body))
+    model = env.component.chat_model("openai", "gpt-4o-mini", agent_id="a1")
+    await _run(model, stream=False)
+    [row] = await env.calls()
+    assert row["input_tokens"] == 2571
+    assert row["cache_read_tokens"] == 2432
+    # The observed upstream cost of this usage was USD 0.00020385 (task-3).
+    assert row["cost_pusd"] == 203_850_000
+
+
+async def test_openrouter_cache_tokens_reach_the_record(
+    providers_env: StartEnv,
+) -> None:
+    env = await providers_env()
+    body = fixture("chat-openrouter")["response"]
+    details = body["usage"]["prompt_tokens_details"]
+    body["usage"]["prompt_tokens"] = 4000
+    details["cached_tokens"] = 1000
+    details["cache_write_tokens"] = 2500
+    env.fake.reply(route("openrouter", "/chat/completions"), Reply(json_body=body))
+    model = env.component.chat_model("openrouter", "openai/gpt-4o-mini", agent_id="a1")
+    await _run(model, stream=False)
+    [row] = await env.calls()
+    assert row["input_tokens"] == 4000
+    assert row["cache_read_tokens"] == 1000
+    assert row["cache_write_tokens"] == 2500
+    assert row["cost_source"] == "provider"
+
+
+async def test_stream_without_usage_counts_the_reservation(
+    providers_env: StartEnv,
+) -> None:
+    env = await providers_env()
+    text = fixture("chat-openrouter-stream")["response_text"]
+    first_chunk = text.split("\n\n")[0]
+    env.fake.reply(
+        route("openrouter", "/chat/completions"),
+        Reply(text=f"{first_chunk}\n\ndata: [DONE]\n\n"),
+    )
+    model = env.component.chat_model("openrouter", "openai/gpt-4o-mini", agent_id="a1")
+    async with Agent(model).run_stream("hi") as result:
+        await result.get_output()
+    [row] = await env.calls()
+    assert row["cost_source"] == "reserved"
+    assert row["cost_pusd"] == row["reserved_pusd"] > 0
+
+
+async def test_unmetered_paths_are_refused(providers_env: StartEnv) -> None:
+    env = await providers_env()
+    model = env.component.chat_model("openai", "gpt-4o-mini", agent_id="a1")
+    with pytest.raises(NotImplementedError, match="compaction"):
+        await model.compact_messages(None)  # type: ignore[arg-type]
+    with pytest.raises(NotImplementedError, match="batch"):
+        await model.batch_create([])

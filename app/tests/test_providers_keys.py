@@ -116,7 +116,9 @@ async def test_keys_absent_from_debug_logs_and_records(
         assert seen.headers["authorization"] == f"Bearer {expected}"
         _assert_no_key(json.dumps(seen.body))
 
-    assert caplog.records  # the DEBUG capture is active
+    # The DEBUG paths of the third-party HTTP clients ran.
+    loggers = {r.name.split(".")[0] for r in caplog.records}
+    assert loggers & {"openai", "httpx2", "httpx"}, loggers
     _assert_no_key(caplog.text)
     _assert_no_key(json.dumps(await env.calls()))
 
