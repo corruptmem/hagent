@@ -123,6 +123,7 @@ hagent has two parts: an app and an integration.
   - a last-result sensor;
   - a cost-today sensor;
   - an enabled switch;
+  - an AI Task entity (section 9.3);
   - a conversation entity, only if the agent allows Assist.
 - It provides the `hagent.invoke` action (section 9). The action targets the
   agent device.
@@ -146,7 +147,24 @@ The user enters the app host name in the integration once. The app
 authenticates the integration with a shared secret that the app creates on
 first start.
 
-**Installation.** For the first version, the user installs both parts by
+### 6.1 Ingress rules for the management UI
+
+HA does not prescribe a front-end framework. The Ingress proxy sets these
+rules:
+
+- The browser reaches the UI under `/api/hassio_ingress/<token>/`. The UI must
+  use relative URLs. HA sends the base path in the `X-Ingress-Path` header.
+- The app listens on port 8099, or on the port in `ingress_port`.
+- The app accepts connections only from the Supervisor address,
+  `172.30.32.2`.
+- The UI does not ask for a login. HA handles authentication. HA can send
+  user identity headers, but it does not guarantee them. The app therefore
+  relies on `panel_admin` to limit access to administrators.
+- The proxy supports HTTP/1.x, streaming responses and WebSockets.
+
+### 6.2 Installation
+
+For the first version, the user installs both parts by
 hand. The user adds the app from a local app folder, and copies the
 integration into the HA `custom_components` folder.
 
@@ -261,13 +279,15 @@ web search or notifications. Each group declares its own scope format.
 
 ### 9.1 Sources
 
-An invocation comes from one of five sources:
+An invocation comes from one of six sources:
 
 1. An automation calls `hagent.invoke`.
-2. A timer or cron schedule that the agent set.
-3. An HA event or state change that the agent subscribed to.
-4. The review schedule in the definition.
-5. A person, through Assist, if the definition allows it.
+2. An automation or script calls an HA AI Task action on the agent's AI Task
+   entity (section 9.3).
+3. A timer or cron schedule that the agent set.
+4. An HA event or state change that the agent subscribed to.
+5. The review schedule in the definition.
+6. A person, through Assist, if the definition allows it.
 
 Every invocation carries its source, the current input values and optional
 data from the caller.
@@ -298,7 +318,31 @@ If the app is not reachable, the action fails with an error. The automation
 can catch it with `continue_on_error`. A connectivity entity shows the state
 of the link.
 
-### 9.3 The router
+### 9.3 The AI Task entity
+
+AI Task is an HA entity type. Automations call it with standard HA actions,
+for example `ai_task.generate_data`. Each agent device has one AI Task entity.
+Any HA feature that accepts an AI Task entity can therefore use a hagent
+agent, with no hagent-specific action.
+
+The entity supports these AI Task features:
+
+| HA feature | hagent behaviour |
+|---|---|
+| `GENERATE_DATA` | The task becomes an invocation with the source `ai_task`. The task name, instructions and attachments go into the caller data. If the task has a structure, that structure replaces the agent's result type for this invocation. The runtime returns the result as the task data. |
+| `SUPPORT_ATTACHMENTS` | The runtime passes attachments to the model, if the chosen model accepts them. |
+| `EVALUATE` | The task supplies questions and a state, and expects answers. The runtime handles it as an invocation with the source `ai_task_evaluate`. Rules can answer it, and a decision rule fits this task type directly. |
+
+hagent does not support `GENERATE_IMAGE` in the first version.
+
+Rules can match on the task name. An automation that sends the same task
+every few minutes can therefore receive a rule answer at low cost.
+
+HA gives each task a new chat log, and the AI Task action has no input to
+continue an earlier conversation. This does not limit hagent: the agent
+keeps its own notes and history across all invocations.
+
+### 9.4 The router
 
 The router handles each invocation in this sequence:
 
@@ -311,7 +355,7 @@ The router handles each invocation in this sequence:
 
 Review and Assist invocations always start an agent turn.
 
-### 9.4 Agent turn
+### 9.5 Agent turn
 
 An agent turn sends the model:
 
@@ -531,6 +575,7 @@ primitives. None of this logic is part of hagent.
 | Calculation language for rules | HA templates. |
 | Default daily budget | USD 0.50 per agent. |
 | Where agents are defined | In the app, through its own management UI. The integration creates one HA device per agent automatically. |
+| AI Task entity | Each agent exposes one, with the `GENERATE_DATA`, `SUPPORT_ATTACHMENTS` and `EVALUATE` features. |
 
 ## 23. Open questions
 
@@ -541,8 +586,7 @@ primitives. None of this logic is part of hagent.
 | 3 | Default trial sample rate. | 1 in 5 matches. |
 | 4 | Should the app use a separate non-admin HA user for agents below `admin`? The Supervisor proxy always acts as an administrator. | No. Rely on the runtime scope check. |
 | 5 | Language and SDK for the app. | Python 3.12, with the official OpenAI SDK for both providers. |
-| 6 | Should each agent also expose an HA AI Task entity, so that the standard `ai_task.generate_data` action can call it? | Not in the first version. `hagent.invoke` covers this. |
-| 7 | Front-end stack for the management UI. | A single-page application served by the app, with a JSON API. |
+| 6 | Front-end stack for the management UI. HA requires only the Ingress rules in section 6.1. | A single-page application served by the app, with a JSON API and a WebSocket for live updates. |
 
 ## 24. References
 
