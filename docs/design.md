@@ -378,11 +378,12 @@ explains the order):
 
 1. The instructions from the definition.
 2. The tool definitions.
-3. The attached knowledge stores, with descriptions and access, and the
-   injected main files.
+3. The attached knowledge stores, with descriptions and access, the index of
+   their contents, and the injected main files (section 13.4).
 4. A short description of the agent's rules, schedules and scopes.
 5. Recent history for this source, within a size limit.
-6. Automatic recall results (section 13.3).
+6. Automatic recall results, only if the definition turns recall on
+   (section 13.3).
 7. The invocation: source, current time, inputs and caller data.
 
 The model then calls tools in a loop until it returns a result. The runtime
@@ -570,11 +571,20 @@ necessary.
 - `ha.find_entities` finds entities from a description, for example "the
   radiator in the back bedroom". It returns only entities in the agent's
   scope.
-- **Automatic recall.** Before an agent turn, the runtime can search all of
-  the agent's collections with the invocation text. It adds the best results
-  to the prompt, after the history and before the invocation. This is on by
-  default, with 5 results and a 1,000-token limit. The definition can change
-  both values or turn it off. Rules do not use automatic recall.
+- **Agent-driven retrieval.** By default, the agent decides when to search.
+  The always-loaded context tells it what it can search: the store
+  descriptions, the index of store contents and the injected main files
+  (section 13.4). This follows current practice: a small core memory is
+  always present, and the agent retrieves more on demand.
+- **Automatic recall (optional).** If the definition turns it on, the
+  runtime searches all of the agent's collections with the invocation text
+  before an agent turn. It adds the best results to the prompt, after the
+  history and before the invocation, with 5 results and a 1,000-token limit
+  by default. It is off by default. Invocations from automations are often
+  short and repetitive, so their text makes a poor search query, and recall
+  would add the same passages to every turn. Recall suits Assist
+  conversations, where a person's question is a good query. Recalled text is
+  marked as retrieved data, not instructions. Rules never use recall.
 
 **Embeddings**
 
@@ -651,10 +661,17 @@ hagent copies their write behaviour:
 The runtime checks store access on every call, in the same way as HA
 scopes.
 
-**Prompt.** Each agent turn includes the list of attached stores with their
-descriptions and access, after the tool definitions. The list changes only
-when the user changes it, so it does not stop the provider prompt cache from
-working.
+**Prompt.** Each agent turn includes, after the tool definitions:
+
+- the list of attached stores, with their descriptions and access;
+- an index of each store: the titles of its files and documents, with no
+  content, so that the agent knows what it can search or read;
+- the main files that the attachments inject.
+
+If the index of a store is larger than a limit, 50 entries by default, the
+runtime shows the most recently changed entries and the total count. This
+part of the prompt changes only when store contents or attachments change,
+so it seldom stops the provider prompt cache from working.
 
 **Shared writes.** Several agents can write the same store. Each write
 checks the version of the file that the agent read. If another agent changed
