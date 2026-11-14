@@ -15,6 +15,8 @@ SIGINT.
 | `src/hagent_app/config.py` | The configuration: `options.json` plus environment overrides. |
 | `src/hagent_app/storage/` | SQLite storage. `database.py` holds the connection and its worker thread. `migrate.py` holds the migration runner. `migrations/` holds the SQL files. |
 | `src/hagent_app/ha/` | The connection to HA Core. `client.py` is the WebSocket client. `state_cache.py` is the HA state cache. |
+| `src/hagent_app/http/` | The HTTP server component (`HttpServer`), the JSON error format and the change events (task-7). |
+| `src/hagent_app/agents/` | Agent definitions, definition versions, private store records and the agents management API (task-7). |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
@@ -37,10 +39,11 @@ modules of another area.
 
 ## Runtime choices
 
-- **aiohttp** is the only runtime dependency. It supplies the WebSocket
+- **aiohttp** supplies the WebSocket
   client for HA. It also supplies the HTTP server for the management API
   and the Ingress UI, and the WebSocket server for the integration link.
   HA Core uses aiohttp too.
+- **pydantic** validates agent definitions. Pydantic AI depends on it too.
 - **sqlite3** from the standard library holds the data. One worker thread
   owns the connection. Async code calls `await db.run(fn)`, where `fn`
   receives the connection. The connection uses `autocommit=True`. Use
@@ -65,6 +68,92 @@ modules of another area.
 `start` must return when the component is ready. It must not wait for HA.
 The HA client connects in the background. A component that needs HA can wait
 with `await ctx.ha.wait_connected()` in its own task.
+
+## How to add HTTP routes
+
+`HttpServer` serves the management API, and later the UI. It is a
+component. A route handler returns JSON. It raises `ApiError` for an error.
+The server converts the error to the format in `docs/api.md`.
+
+Add routes and middleware in `default_components()`, before the server
+starts. aiohttp freezes the routes when the server starts, so a later call
+raises `RuntimeError`:
+
+```python
+def default_components() -> list[Component]:
+    http = HttpServer()
+    agents = AgentsComponent(http.events)
+    http.add_routes(agents.routes())
+    rules = RulesComponent(http.events)
+    http.add_routes(rules.routes())
+    return [agents, rules, http]
+```
+
+- Keep `http` last in the list. `App` then starts the server after the
+  components that serve its routes, and stops it first.
+- A handler that runs before its component started returns 503
+  `not_ready`. `AgentsComponent.service()` shows the pattern.
+- Put routes under `/api/<area>`. Document each route in `docs/api.md`.
+- `http.add_middleware(mw)` adds a middleware that runs before every route.
+  The JSON error middleware runs before it, so an `ApiError` from the
+  middleware becomes a JSON response. Task-18 adds the Ingress
+  source-address check (`172.30.32.2`, design section 6.1) here.
+- `http.events` is the change-event hub. Call
+  `http.events.publish(topic, action, record_id, data)` after a change.
+  The `/api/events` WebSocket sends each event to the UI. An in-process
+  consumer, for example the integration link, calls
+  `http.events.subscribe(fn)`. `fn` is a plain function. It must be fast.
+
+## How to read agent definitions
+
+`AgentReader` is the read interface for agent definitions. Create it in
+the `start` of your component: `AgentReader(ctx.db)`. It has three methods:
+
+- `await reader.list_agents()`: every live agent.
+- `await reader.get(agent_id)`: the live agent, or `None`. The result is an
+  `Agent` snapshot with `version` and `definition`. Keep the snapshot for
+  the whole invocation, so that a change takes effect only between
+  invocations (design section 9.6). Record `version` in history.
+- `await reader.get_version(agent_id, version)`: one version, also of a
+  deleted agent, or `None`.
+
+The definition is an `AgentDefinition` (`agents/definition.py`). The models
+are frozen and the lists are tuples. The tool executor (task-8) reads the
+scopes from `definition.tools`, the outputs from `definition.outputs`, the
+store attachments from `definition.knowledge` and the approval settings
+from `definition.approval`.
+
+Agent tools must use only `AgentReader`. They must never receive
+`AgentService`, which writes definitions (design section 7). Only the
+management API uses `AgentService`.
+
+The app never removes a row from `agents`. A deleted agent has `deleted_at`
+set, and its versions stay. A table of another area can refer to
+`agents(id)` and to `agent_versions(agent_id, version)` with a plain
+foreign key.
+
+## Knowledge store records: hand-off to task-11
+
+Task-7 creates the private store of each agent, so it creates the first
+form of the `knowledge_stores` table (migration `0101`). The table has
+these columns: `id`, `name` (unique, not case-sensitive), `description`,
+`owner_agent_id`, `private` and `created_at`. Each agent has at most one
+private store.
+
+Task-11 owns knowledge stores. It extends this table with `ALTER TABLE` in
+its own range (0500–0599), for example with the size limit. It adds the
+tables for files and documents, and the management API for stores.
+
+Rules that task-7 applies, and that task-11 must keep:
+
+- When the user deletes an agent and keeps its private store, the app sets
+  `private = 0` and `owner_agent_id = NULL`. The store is then a normal
+  shared store.
+- When the user deletes an agent and its private store, the app deletes
+  the row from `knowledge_stores`. Task-11 tables that refer to a store
+  need `ON DELETE CASCADE`, or the delete must remove their rows first.
+- The app refuses to delete a private store that other live agents attach.
+- A definition can attach only stores that exist in `knowledge_stores`.
 
 ## How to use the HA client and the state cache
 

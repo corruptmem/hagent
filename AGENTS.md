@@ -41,6 +41,8 @@ and tooling.
 - `frontend/`: the management UI (React, TanStack, Vite). Not created yet.
 - `backlog/`: work tracking. Use the `backlog` CLI, not direct edits.
 - `docs/design.md`: the design.
+- `docs/api.md`: the management API contract. Update it when you add or
+  change a route.
 
 ## Tools
 
