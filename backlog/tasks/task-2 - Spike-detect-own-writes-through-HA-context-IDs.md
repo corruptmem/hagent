@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:18'
+updated_date: '2026-11-14 23:19'
 labels:
   - spike
   - app
@@ -65,6 +65,12 @@ Updated docs/design.md section 12 (Own writes): HA creates the context, the runt
 Not tested: indirect effects through automations (the brief allowed no automation). The parent_id behaviour comes from HA documentation and source, not from a live run.
 
 AC3: context matching works (live probe and tests), so no alternative is needed. Section 12 still documents the limits of the match. mise run check passed: ruff, mypy strict, 11 tests.
+
+Correction: the probe redacted user_id on both connections, so it did not compare them. The earlier note 'same user for both connections' is not proven by the probe; only 'user_id was set' is.
+
+Extra source check (HA Core commit fa470750): helpers/entity.py sets CONTEXT_RECENT_TIME_SECONDS = 5. An entity keeps a call's context for 5 seconds. A device that reports its state later gets a new context, so the tracker marks it external. components/automation/entity.py creates the trigger context as Context(parent_id=<triggering context id>). Section 12 now scopes the live result to input_boolean and lists both limits.
+
+Proposed follow-up (not created): a live check with a real device integration and with an automation, to confirm late-report contexts and parent_id.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
