@@ -100,28 +100,33 @@ hagent has two parts: an app and an integration.
 |  HA Core                                  hagent app (container)           |
 |  +--------------------------------+       +------------------------------+ |
 |  | hagent integration             | link  | Agent runtime                | |
-|  |  - agent definitions (UI)      |<----->|  - router                    | |
-|  |  - hagent.invoke action        |       |  - rule engine               | |
+|  |  - one device per agent        |<----->|  - agent definitions         | |
+|  |  - hagent.invoke action        |       |  - router + rule engine      | |
 |  |  - per-agent entities          |       |  - tool executor + scopes    | |
 |  |  - Assist agents (optional)    |       |  - scheduler                 | |
 |  +--------------------------------+       |  - memory, history (SQLite)  | |
 |  | Automations, entities, events  |<------|  - provider adapters         | |
-|  +--------------------------------+  HA   |  - inspector UI (Ingress)    | |
+|  +--------------------------------+  HA   |  - management UI (Ingress)   | |
 |                                      API  +--------------+---------------+ |
 +----------------------------------------------------------|-----------------+
                                                            | HTTPS
                                                 OpenAI / OpenRouter
 ```
 
-**The integration** is thin:
+**The integration** is thin. It holds no agent configuration:
 
-- It stores agent definitions. Each agent is one configuration subentry, so
-  the user edits agents in the normal HA settings screens.
-- It provides the `hagent.invoke` action (section 9).
-- It creates entities for each agent: status, last result, cost today and
-  enabled.
-- It registers an Assist conversation agent for each agent that allows it.
-- It sends definitions and invocations to the app.
+- It receives the list of agents from the app, and keeps it current. When
+  the user creates, changes or deletes an agent in the app, the integration
+  adds, updates or removes the matching device.
+- It creates one HA device for each agent, with these entities:
+  - a status sensor (idle, running, budget spent, error);
+  - a last-result sensor;
+  - a cost-today sensor;
+  - an enabled switch;
+  - a conversation entity, only if the agent allows Assist.
+- It provides the `hagent.invoke` action (section 9). The action targets the
+  agent device.
+- It forwards invocations to the app and returns the results.
 
 **The app** does all agent work:
 
@@ -132,9 +137,9 @@ hagent has two parts: an app and an integration.
   API for state, events and service calls.
 - It keeps agent state in SQLite in the app data directory. HA backups
   include this directory.
-- It serves an inspector UI through Ingress. Ingress shows an app web page in
-  the HA sidebar, behind HA login. The inspector shows each agent's rules,
-  notes, history, schedules and cost.
+- It stores agent definitions, and serves a management UI through Ingress.
+  Ingress shows an app web page in the HA sidebar, behind HA login. Only HA
+  administrators can open it. Section 7.1 describes the UI.
 
 **The link** is a WebSocket connection on the internal Supervisor network.
 The user enters the app host name in the integration once. The app
@@ -148,9 +153,9 @@ integration into the HA `custom_components` folder.
 ## 7. Agent definition and agent state
 
 The definition and the state are separate. This separation makes scope
-enforcement possible.
+enforcement possible. The app stores both, in separate tables.
 
-**Agent definition** (owned by the user, stored in the integration):
+**Agent definition** (owned by the user, edited only in the management UI):
 
 | Field | Content |
 |---|---|
@@ -173,8 +178,40 @@ enforcement possible.
 - History of invocations, tool calls, results and costs.
 
 An agent can read its definition, but no tool writes to it. Only the user
-changes a definition, through the HA UI. An agent therefore cannot widen its
-own scope, outputs or budget.
+changes a definition, through the management UI. An agent therefore cannot
+widen its own scope, outputs or budget.
+
+### 7.1 Management UI
+
+The management UI is a web application in the app. It has two jobs: define
+agents, and inspect what they do.
+
+**Define**
+
+- Create, edit, copy, turn off and delete agents.
+- Pick inputs, outputs and HA scopes from the live list of HA entities,
+  devices, areas and labels.
+- Turn tool groups on and off, and mark tools for approval.
+- Choose providers and models, and enter API keys.
+- Set the budget, the scheduling limits and the review schedule.
+- Run a test invocation with sample data, without changes to HA.
+
+**Inspect**
+
+- Invocations: a list with filters by agent, source, path and result. Each
+  entry opens a full trace: inputs, the rule or the model messages, every
+  tool call with its scope decision, the result and the cost.
+- Memory: the notes, with their change history.
+- History: search across past invocations.
+- Rules: each rule, its templates, its statistics and its trial agreement.
+  The user can turn a rule off or delete it.
+- Schedules and subscriptions: what is active, and when each one last ran.
+- Permissions: the effective scope of each tool, and a log of denied calls.
+- Changes to HA: the audit log, with the previous version of each `admin`
+  change.
+- Cost: by agent, by day and by path.
+- Approvals: pending approval requests, as an alternative to the HA
+  notification.
 
 ## 8. Tools and scopes
 
@@ -392,8 +429,8 @@ history, then changes rules and notes.
 
 ## 15. Assist exposure
 
-If the definition allows it, the integration registers the agent as an
-Assist conversation agent. A person can then select the agent in an Assist
+If the definition allows it, the integration adds a conversation entity to
+the agent device. HA then lists the agent as an Assist conversation agent. A person can then select the agent in an Assist
 pipeline, or talk to it in the HA chat window.
 
 A conversation is a series of agent turns with the same notes, history,
@@ -407,7 +444,7 @@ expire after 5 minutes. Rules do not answer Assist invocations.
   decisions endpoint, which provides Jev.
 
 Each provider has one adapter. The adapter reports token use and cost for
-each call. The user enters API keys in the app configuration. The app never
+each call. The user enters API keys in the management UI. The app never
 sends keys to HA and never writes them to logs.
 
 ## 17. Cost controls
@@ -438,8 +475,8 @@ sends keys to HA and never writes them to logs.
 - Agents cannot change their definitions.
 - Calls that change HA go to an audit log. `admin` changes keep the previous
   version.
-- The inspector UI is available only through Ingress, behind HA login.
-- API keys stay in the app configuration.
+- The management UI is available only through Ingress, behind HA login, to HA administrators. It can change any agent definition, so it is as sensitive as HA admin access.
+- API keys stay in the app. The UI shows them only masked.
 
 ## 20. Example: a heating agent
 
@@ -493,6 +530,7 @@ primitives. None of this logic is part of hagent.
 | Installation | By hand for the first version. |
 | Calculation language for rules | HA templates. |
 | Default daily budget | USD 0.50 per agent. |
+| Where agents are defined | In the app, through its own management UI. The integration creates one HA device per agent automatically. |
 
 ## 23. Open questions
 
@@ -503,6 +541,8 @@ primitives. None of this logic is part of hagent.
 | 3 | Default trial sample rate. | 1 in 5 matches. |
 | 4 | Should the app use a separate non-admin HA user for agents below `admin`? The Supervisor proxy always acts as an administrator. | No. Rely on the runtime scope check. |
 | 5 | Language and SDK for the app. | Python 3.12, with the official OpenAI SDK for both providers. |
+| 6 | Should each agent also expose an HA AI Task entity, so that the standard `ai_task.generate_data` action can call it? | Not in the first version. `hagent.invoke` covers this. |
+| 7 | Front-end stack for the management UI. | A single-page application served by the app, with a JSON API. |
 
 ## 24. References
 
