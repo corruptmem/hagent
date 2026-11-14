@@ -48,7 +48,8 @@ rules that the agent writes itself.
 | App | A container that the HA Supervisor runs next to HA Core. HA called apps "add-ons" before release 2026.2. |
 | Integration | Python code that HA Core loads. It adds entities, actions and configuration screens to HA. |
 | Agent definition | The configuration of one agent, owned by the user. |
-| Agent state | The data that an agent creates and changes itself: rules, schedules, notes and history. |
+| Agent state | The data that an agent creates and changes itself: rules, schedules and history. |
+| Knowledge store | A named collection of notes and uploaded documents. One or more agents can attach it (section 13.4). |
 | Invocation | One call to an agent. |
 | Agent turn | An invocation that the LLM handles, with instructions, memory, tools and history. |
 | Tool | A function that an agent can call during an agent turn. |
@@ -64,7 +65,10 @@ rules that the agent writes itself.
 - R3. The definition can attach entities or devices as inputs and as outputs.
   An output attachment lets the agent set that entity.
 - R4. An agent can return text or structured output to the caller instead.
-- R5. Each agent has persistent memory, notes and history.
+- R5. Each agent has persistent memory and history.
+- R5a. The user can create several knowledge stores, each with a description
+  of what belongs in it. The user can upload documents to a store. Several
+  agents can share a store, and one agent can attach several stores.
 - R6. An agent can write rules. A rule answers an invocation by a template
   calculation or by one decision model call, without an agent turn.
 - R7. An agent wakes up on a schedule to review its rules and change them.
@@ -192,7 +196,7 @@ enforcement possible. The app stores both, in separate tables.
 
 - Rules.
 - Schedules and event subscriptions.
-- Notes.
+- The content of its private knowledge store (section 13.4).
 - History of invocations, tool calls, results and costs.
 
 An agent can read its definition, but no tool writes to it. Only the user
@@ -219,7 +223,9 @@ agents, and inspect what they do.
 - Invocations: a list with filters by agent, source, path and result. Each
   entry opens a full trace: inputs, the rule or the model messages, every
   tool call with its scope decision, the result and the cost.
-- Memory: the notes, with their change history.
+- Knowledge stores: create stores, edit descriptions and size limits,
+  upload and replace documents, browse and edit files, see which agents
+  attach each store, and restore earlier versions of files.
 - History: search across past invocations.
 - Rules: each rule, its templates, its statistics and its trial agreement.
   The user can turn a rule off or delete it.
@@ -242,7 +248,10 @@ The definition turns on tool groups. hagent supplies three groups.
 - Subscribe to and unsubscribe from HA events and state changes, with a
   filter.
 
-**`memory`** — notes and history:
+**`knowledge`** — knowledge stores (section 13.4): list, read, search,
+write and delete, limited by the access of each attachment.
+
+**`memory`** — history:
 
 - Read, write, search and delete memory files (the Pydantic AI memory
   tools).
@@ -369,7 +378,8 @@ explains the order):
 
 1. The instructions from the definition.
 2. The tool definitions.
-3. The notes.
+3. The attached knowledge stores, with descriptions and access, and the
+   injected main files.
 4. A short description of the agent's rules, schedules and scopes.
 5. Recent history for this source, within a size limit.
 6. Automatic recall results (section 13.3).
@@ -436,7 +446,7 @@ review.
 - **Output entities.** The agent sets an output entity with a tool call in an
   agent turn, or through the writes of a rule. The runtime checks the scope.
   hagent adds no limits beyond the scope. An agent that needs limits, for
-  example a maximum change per step, writes them into its rules and notes. The
+  example a maximum change per step, writes them into its rules and knowledge stores. The
   user can also enforce limits in HA.
 - **Text and structured results.** The agent returns the result to the
   caller. The runtime validates a structured result against the JSON schema.
@@ -466,17 +476,16 @@ event source.
 
 ## 13. Memory and history
 
-- **Notes**: a notebook of Markdown files that the agent writes, from the
-  memory capability of the Pydantic AI Harness package. The main file,
-  `MEMORY.md`, goes into the context of each agent turn. Other files hold
-  longer notes, and the agent reaches them with the `read_memory` and
-  `search_memory` tools. The injected part is limited to 2,000 tokens by
-  default. The definition can change the limit. hagent supplies the store
-  for these files (section 13.3).
-- **History**: a record of each invocation, its inputs, path, tool calls,
-  result and cost. The agent searches it with the `memory` tools.
-- **Retention**: a daily task summarises old history and deletes raw records
-  after a retention period, 30 days by default.
+An agent remembers through two kinds of data:
+
+- **Knowledge stores** hold notes that agents write, and documents that the
+  user uploads. A store can belong to one agent or be shared by several.
+  Section 13.4 describes stores.
+- **History** is a record of each invocation: its inputs, path, tool calls,
+  result and cost. Each agent has its own history. The agent searches it with
+  the `memory.search` tool. A daily task summarises old history and deletes
+  raw records after a retention period, 30 days by default. Retention does
+  not apply to knowledge stores.
 
 ### 13.1 Context compaction
 
@@ -490,9 +499,10 @@ uses the compaction strategies in Pydantic AI, in three places:
 - **Across turns of one conversation.** An Assist conversation, or a series
   of invocations from one source, keeps a summary that grows over time,
   instead of a full transcript. A low-cost model writes the summary.
-- **Notes.** When `MEMORY.md` reaches 80 percent of its size limit, the
-  runtime asks the agent to move detail into other memory files and rewrite
-  `MEMORY.md` shorter. The runtime does not cut the notes itself.
+- **Main files.** When an injected main file (section 13.4) reaches 80
+  percent of its size limit, the runtime asks the agent to move detail into
+  other files and rewrite the main file shorter. The runtime does not cut the
+  file itself.
 
 The invocation trace in the management UI shows each compaction and the
 summary that replaced the original text.
@@ -543,18 +553,17 @@ necessary.
 
 **What hagent indexes**
 
-| Collection | Content | Scope |
+| Collection | Content | Who can search it |
 |---|---|---|
-| Memory | The agent's memory files, split into passages at headings and paragraphs. | One agent. |
+| Knowledge stores | Files and documents in each store, split into passages at headings and paragraphs (section 13.4). | Agents attached to the store. |
 | History | A short text for each invocation (source, decision, result), review reports and compaction summaries. | One agent. |
 | Conversations | Assist messages. | One agent. |
-| Entities | The HA entity catalogue: names, aliases, areas, labels, domains and device names. | Shared. Each query is filtered to the agent's `ha` scope. |
+| Entities | The HA entity catalogue: names, aliases, areas, labels, domains and device names. | All agents. Each query is filtered to the agent's `ha` scope. |
 
 **How agents use it**
 
-- `search_memory` (the Pydantic AI tool) searches the memory collection.
-  hagent implements the search method of the Pydantic AI memory store with
-  hybrid search.
+- `knowledge.search` searches the knowledge stores that the agent can read
+  (section 13.4).
 - `memory.search` searches history and conversations. It accepts filters for
   time range, source and record type, so that it combines exact filters with
   ranked search.
@@ -575,8 +584,9 @@ necessary.
 - The runtime creates embeddings when it writes a record, in batches, from a
   background queue. It does not create an embedding again for text that has
   the same content hash.
-- The cost records include embedding cost, charged to the agent that owns
-  the text. The entity catalogue cost is charged to the installation.
+- The cost records include embedding cost. Text that an agent writes is
+  charged to that agent. Uploaded documents and the entity catalogue are
+  charged to the installation.
 - Embedding sends text to the provider. The management UI states this when
   the user selects the model.
 
@@ -588,15 +598,98 @@ necessary.
   keeps all sqlite-vec statements in one module, and pins the version.
 - Retention deletes vectors and index entries with their records.
 
+### 13.4 Knowledge stores
+
+A knowledge store is a named collection of text that agents can read, and
+that some agents can write. The user creates and manages stores in the
+management UI.
+
+**Store properties**
+
+| Property | Content |
+|---|---|
+| Name | A short identifier, for example `heating` or `household`. |
+| Description | What belongs in the store, and what does not. For example: "Facts about the heating system: equipment, room warm-up times, settings that worked. Not occupant preferences." The runtime shows the description to every attached agent, so that agents write each fact to the correct store. |
+| Size limit | The maximum total text. The default is 1 MB. |
+
+A store holds two kinds of content:
+
+- **Files**: Markdown text that agents and the user write and edit. A store
+  can have a main file, `MAIN.md`.
+- **Documents**: files that the user uploads, for example a boiler manual.
+  Agents can read and search documents, but cannot change them.
+
+**Private stores.** When the user creates an agent, hagent creates a private
+store for it, with read-write access. The user can edit its description. The
+private store is where the agent keeps its own notes. There is no separate
+notebook.
+
+**Attachments.** The agent definition lists the stores that the agent can
+use. Each attachment has:
+
+| Setting | Values |
+|---|---|
+| Access | `read` or `read_write`. |
+| Inject main file | If on, `MAIN.md` of the store goes into each agent turn. The default is on for the private store and off for shared stores. |
+
+One agent can attach many stores, and one store can attach to many agents.
+An agent cannot attach a store to itself, or change its own access. Only the
+user does this, in the management UI.
+
+**Tools.** The `knowledge` tool group replaces the Pydantic AI Harness memory
+tools, because those tools serve one notebook and have no store parameter.
+hagent copies their write behaviour:
+
+| Tool | Effect |
+|---|---|
+| `knowledge.list` | List the attached stores, with descriptions and access, and the files and documents in a store. |
+| `knowledge.read` | Read a file or a document, or one section of it. Large documents are read in parts. |
+| `knowledge.search` | Hybrid search across all readable stores, or the stores named in the call. Each result names its store, its file or document, and its location. |
+| `knowledge.write` | Append to a file, or replace one exact passage. Needs `read_write` access. |
+| `knowledge.delete` | Delete a file. Needs `read_write` access. Documents cannot be deleted by agents. |
+
+The runtime checks store access on every call, in the same way as HA
+scopes.
+
+**Prompt.** Each agent turn includes the list of attached stores with their
+descriptions and access, after the tool definitions. The list changes only
+when the user changes it, so it does not stop the provider prompt cache from
+working.
+
+**Shared writes.** Several agents can write the same store. Each write
+checks the version of the file that the agent read. If another agent changed
+the file in the meantime, the write fails, and the agent must read the file
+again. Each change records the agent or user that made it. The management UI
+shows the change history of each file, and can restore an earlier version.
+
+**Documents**
+
+- The user uploads documents in the management UI. The first version accepts
+  PDF files with a text layer, Markdown, plain text and HTML.
+- The app extracts the text, splits it into passages at headings and pages,
+  and indexes it. A search result names the document and the page.
+- Scanned PDFs without a text layer, and images, are out of scope for the
+  first version.
+- The user can replace a document with a new version, or delete it. The app
+  updates the index.
+
+**Example.** A heating agent attaches three stores:
+
+- its private store (`read_write`, main file injected);
+- `heating` (`read_write`), shared with a hot-water agent, which holds the
+  boiler manual and notes about the heating equipment;
+- `household` (`read`), which holds facts about the occupants and their
+  routines, written by a separate household agent.
+
 ## 14. Review
 
 A review is an invocation with the source `review`. The definition sets the
 schedule, daily by default. An agent can also schedule extra reviews with the
 `self` tools.
 
-hagent does not define what a review does. The instructions and the notes of
-the agent define it. A typical review reads rule statistics and recent
-history, then changes rules and notes.
+hagent does not define what a review does. The instructions and the knowledge
+stores of the agent define it. A typical review reads rule statistics and recent
+history, then changes rules and store files.
 
 ## 15. Assist exposure
 
@@ -605,7 +698,7 @@ the agent device. HA then lists the agent as an Assist conversation agent.
 A person can then select the agent in an Assist pipeline, or talk to it in
 the HA chat window.
 
-A conversation is a series of agent turns with the same notes, history,
+A conversation is a series of agent turns with the same knowledge stores, history,
 tools and scopes. The app keeps the conversation history, so it does not
 expire after 5 minutes. Rules do not answer Assist invocations.
 
@@ -625,7 +718,7 @@ sends keys to HA and never writes them to logs.
 
 - Rules answer repeated invocations without an agent turn.
 - Decision actions bill input tokens only.
-- Notes and history summaries replace large context rebuilds.
+- Knowledge stores and history summaries replace large context rebuilds.
 - Each agent has a daily budget. The default is USD 0.50. When the budget is
   spent, agent turns stop and rules continue. The status entity shows the
   reason.
@@ -664,7 +757,7 @@ primitives. None of this logic is part of hagent.
 - Inputs: indoor and outdoor temperature, boiler state, presence, and one
   comfort selector for each occupant.
 - Outputs: the boiler flow temperature and the radiator valve positions.
-- Tools: `self`, `memory`, and `ha: read` on climate, presence and weather
+- Tools: `self`, `memory`, `knowledge`, and `ha: read` on climate, presence and weather
   entities.
 - Approval: none at first for outputs. The user can mark outputs for approval
   during a trial period.
@@ -694,6 +787,9 @@ primitives. None of this logic is part of hagent.
   (MCP) or the Agent2Agent (A2A) protocol.
 - Installation through HACS or an app repository.
 - HA installations without the Supervisor, for example a Container install.
+- A local embedding model inside the app.
+- Text extraction from scanned PDFs and images (optical character
+  recognition).
 
 ## 22. Decided
 
@@ -712,16 +808,15 @@ primitives. None of this logic is part of hagent.
 | Python version | Python 3.14 for the app and the integration. HA Core requires 3.14 and loads the integration with its own interpreter. The app uses the same version for consistency. |
 | Agent framework | Pydantic AI runs agent turns: tool loop, structured results, compaction and prompt caching, for both providers. hagent keeps history storage, scopes, rules and decision models. |
 | Scheduler | APScheduler, with its SQLAlchemy job store in SQLite. |
-| Memory and retrieval | Pydantic AI Harness memory for notes, with a hagent store. Hybrid search (SQLite FTS5 plus sqlite-vec, merged with RRF) over memory, history, conversations and the HA entity catalogue, in the first version. |
+| Memory and retrieval | Knowledge stores (several per agent, shareable between agents, with descriptions and uploaded documents) and per-agent history. Hybrid search (SQLite FTS5 plus sqlite-vec, merged with RRF) over stores, history, conversations and the HA entity catalogue, in the first version. |
+| Embedding model | A low-cost model available through both providers, for example OpenAI `text-embedding-3-small`. Check the current models before release. |
+| Local embedding model | Not in the first version. |
 | Tooling | mise installs the tools. uv manages Python and dependencies. Backlog.md tracks work. pre-commit runs ruff (lint, static analysis and formatting) and mypy (strict type checking) before each commit. |
 | Management UI stack | A React single-page application with TanStack Router, TanStack Query and TanStack Table, built with Vite. The app serves the built files through Ingress. A JSON API supplies data, and a WebSocket sends change events. The router uses the Ingress base path from `X-Ingress-Path`. |
 
 ## 23. Open questions
 
-| # | Question | Proposed default |
-|---|---|---|
-| 1 | Default embedding model. | A low-cost model available through both providers, for example OpenAI `text-embedding-3-small`. Check the current models before release. |
-| 2 | Should hagent also support a local embedding model inside the app, so that no text leaves the home? | Not in the first version. A small host such as a Raspberry Pi may be too slow. |
+None at present.
 
 ## 24. References
 
@@ -738,6 +833,6 @@ primitives. None of this logic is part of hagent.
 - [Pydantic AI caching](https://pydantic.dev/docs/ai/capabilities/caching/)
 - [Pydantic AI OpenRouter models](https://pydantic.dev/docs/ai/models/openrouter/)
 - [APScheduler](https://apscheduler.readthedocs.io/)
-- [Pydantic AI Harness memory](https://pydantic.dev/docs/ai/harness/memory/)
+- [Pydantic AI Harness memory](https://pydantic.dev/docs/ai/harness/memory/) (model for the write behaviour of the `knowledge` tools)
 - [sqlite-vec](https://github.com/asg017/sqlite-vec)
 - [OpenRouter embeddings API](https://openrouter.ai/docs/api-reference/embeddings)
