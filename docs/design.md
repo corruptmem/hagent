@@ -576,6 +576,7 @@ primitives. None of this logic is part of hagent.
 | Default daily budget | USD 0.50 per agent. |
 | Where agents are defined | In the app, through its own management UI. The integration creates one HA device per agent automatically. |
 | AI Task entity | Each agent exposes one, with the `GENERATE_DATA`, `SUPPORT_ATTACHMENTS` and `EVALUATE` features. |
+| Management UI stack | A React single-page application with TanStack Router, TanStack Query and TanStack Table, built with Vite. The app serves the built files through Ingress. A JSON API supplies data, and a WebSocket sends change events. The router uses the Ingress base path from `X-Ingress-Path`. |
 
 ## 23. Open questions
 
@@ -586,7 +587,6 @@ primitives. None of this logic is part of hagent.
 | 3 | Default trial sample rate. | 1 in 5 matches. |
 | 4 | Should the app use a separate non-admin HA user for agents below `admin`? The Supervisor proxy always acts as an administrator. | No. Rely on the runtime scope check. |
 | 5 | Language and SDK for the app. | Python 3.12, with the official OpenAI SDK for both providers. |
-| 6 | Front-end stack for the management UI. HA requires only the Ingress rules in section 6.1. | A single-page application served by the app, with a JSON API and a WebSocket for live updates. |
 
 ## 24. References
 
