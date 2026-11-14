@@ -4,22 +4,23 @@ Status: draft for review. No code exists yet.
 
 ## 1. Purpose
 
-hagent hosts persistent agents for Home Assistant (HA). HA is an open-source
-home automation platform. It models devices as entities, and device actions as
+hagent is an agent manager for Home Assistant (HA). HA is an open-source home
+automation platform. It models devices as entities, and device actions as
 services.
 
 An agent is a configured program that uses a large language model (LLM) to
-make decisions. An LLM is a model that reads and writes text. In hagent, an
-agent has its own instructions, inputs, outputs, tools, memory and history.
+do work. An LLM is a model that reads and writes text. In hagent, the user
+defines each agent: its instructions, models, tools and permissions. hagent
+runs the agents and keeps their memory and history.
 
 HA automations call hagent agents. An automation is an HA rule of the form
-"when a trigger occurs, if conditions are true, run actions." The agents work
-in the background. They supply decisions to automations, or they control
-entities directly. A person can also talk to an agent, but only if the agent
-definition allows it.
+"when a trigger occurs, if conditions are true, run actions." Agents can also
+start themselves on a schedule or on an HA event. A person can talk to an
+agent through Assist, if the definition allows it. Assist is the HA voice and
+chat assistant.
 
-hagent must be generic. Heating control is the first use case, but the design
-must not depend on it.
+hagent supplies general primitives. It does not contain logic for one use
+case. Each agent builds its own behaviour from the primitives.
 
 ## 2. Problem
 
@@ -30,32 +31,15 @@ HA has AI features, but each call starts from zero:
 - The `conversation.process` action continues a conversation, but HA deletes
   the session after 5 minutes without activity.
 
-The owner built two heating controllers with these features. Each controller
-is one automation:
+An automation that uses AI therefore must rebuild all context on every run.
+It must also contain all its own logic for safety, caching and evaluation.
+For example, the owner has heating automations that query days of history
+and call a model every 5 to 15 minutes. Each run pays for the full context
+again. Nothing remembers past decisions, and nothing improves the logic.
 
-- One automation runs every 5 minutes. It collects 24 hours of history, 72
-  hours of occupant comfort feedback and a weather forecast. It sends all of
-  this to a decision model with 16 possible flow temperatures. It converts the
-  returned probabilities to one value. Then it applies a clamp, a step limit
-  and on/off hysteresis, and writes the result.
-- One automation runs every 15 minutes. It collects 10 days of hourly history
-  and sends it to a large model. The model returns a structured result for the
-  boiler and for several radiator valves, plus warnings and suggestions.
-- A separate script sends a valve command again until the valve reports the
-  requested position.
-
-These automations show four gaps:
-
-1. Each run rebuilds all context from raw history. Nothing persists between
-   runs. Each run therefore pays for the full context again.
-2. Each automation contains its own safety logic: clamps, step limits,
-   hysteresis and retries.
-3. Each automation sends every question to a model, including repeated
-   questions that a simple calculation can answer.
-4. Nothing checks if past decisions were good, and nothing changes the logic
-   when they were not.
-
-hagent closes these gaps for any agent, not only for heating.
+hagent gives each agent persistent memory and history, a tool system with
+permissions, and the ability to replace repeated model calls with cheaper
+rules that the agent writes itself.
 
 ## 3. Terms
 
@@ -65,116 +49,105 @@ hagent closes these gaps for any agent, not only for heating.
 | Integration | Python code that HA Core loads. It adds entities, actions and configuration screens to HA. |
 | Agent definition | The configuration of one agent, owned by the user. |
 | Agent state | The data that an agent creates and changes itself: rules, schedules, notes and history. |
-| Attachment | An entity or device that the definition links to the agent, as an input, an output or feedback. |
-| Invocation | One call to an agent, from an automation, a schedule, an event or a conversation. |
-| Agent turn | An invocation that the full LLM pipeline handles: instructions, memory, tools and history. |
-| Rule | Logic that an agent writes to answer an invocation without an agent turn. |
-| Calculation rule | A rule that computes the answer from input values with a template. |
+| Invocation | One call to an agent. |
+| Agent turn | An invocation that the LLM handles, with instructions, memory, tools and history. |
+| Tool | A function that an agent can call during an agent turn. |
+| Scope | The set of HA data and actions that a tool may use for one agent. |
+| Rule | A fast path that an agent writes. A rule answers an invocation without an agent turn. |
 | Decision model | A model that returns typed answers with probabilities, not text. Examples: the OpenAI Decisions API, and Jev on OpenRouter. |
-| Decision rule | A rule that asks a decision model a fixed question. |
-| Reducer | The function that converts decision model probabilities into one output value. |
-| Output policy | Limits that the runtime applies to every write to an output entity. |
-| Scope | The set of HA data and actions that an agent may use. |
-| Shadow mode | A rule runs, but its answer is only logged and compared. It does not take effect. |
-| Review | A scheduled agent turn in which the agent examines its rules and decisions. |
 
 ## 4. Requirements
 
-The owner gave these requirements:
-
 - R1. Automations call an agent explicitly. This is the primary trigger.
-- R2. An agent can schedule its own triggers, from timers or from the HA
-  event stream.
-- R3. The definition attaches devices or entities as inputs and as outputs.
-  An output attachment gives the agent permission to set that entity.
-- R4. Instead of outputs, an agent can return text or structured output to
-  the caller.
-- R5. An agent learns through memory, notes and history.
-- R6. An agent can write its own rules. A rule answers an invocation without
-  an agent turn, by calculation or by a decision model.
-- R7. An agent wakes up on a schedule to review the performance of its rules,
-  and changes them if necessary.
-- R8. The definition lists the tools of the agent: self-modification, memory,
+- R2. An agent can schedule its own invocations, from timers or from HA
+  events.
+- R3. The definition can attach entities or devices as inputs and as outputs.
+  An output attachment lets the agent set that entity.
+- R4. An agent can return text or structured output to the caller instead.
+- R5. Each agent has persistent memory, notes and history.
+- R6. An agent can write rules. A rule answers an invocation by a template
+  calculation or by one decision model call, without an agent turn.
+- R7. An agent wakes up on a schedule to review its rules and change them.
+- R8. The definition lists the tools of the agent: self-modification, memory
   and HA access.
-- R9. HA access has a scope: read-only, specific devices or entities only, or
+- R9. Each HA tool has a scope: read-only, specific entities or devices, or
   full administration, including changes to automations.
-- R10. The definition can expose the agent to Assist, so that a person can
-  talk to it. Assist is the HA voice and chat assistant. This is optional and
+- R10. The definition can expose the agent to Assist. This is optional and
   off by default.
-- R11. hagent supports OpenAI and OpenRouter as providers.
+- R11. hagent supports OpenAI and OpenRouter.
 - R12. hagent runs as an HA app.
 - R13. Cost is a primary design goal.
+- R14. The design is generic. No feature exists for one use case only.
 
 ## 5. Prior art
 
-- **Jarvis-AIO** is a community integration with a related goal. It learns
-  routines, suggests automations, and acts alone only after the user accepts
-  the same suggestion 3 times. It sends events through a tiered pipeline:
-  templates, then a cache, then a classifier model, then a large model. hagent
-  takes three ideas from it: tiered handling, trust that the agent earns, and
-  local SQLite storage. hagent differs in one main way. Jarvis-AIO is one fixed
-  assistant. hagent hosts agents that the user defines.
-- **HA AI Task and conversation agents** are one-shot or short-lived. hagent
-  can use them as a fallback provider, but does not depend on them.
-- **Memory integrations** for Assist (several exist) add long-term notes to
-  chat agents. They do not add rules, schedules or output control.
+- **Jarvis-AIO** is a community integration. It learns routines, and acts
+  alone after the user accepts the same suggestion 3 times. It sends events
+  through tiers: templates, a cache, a classifier model, then a large model.
+  It is one fixed assistant. hagent instead hosts agents that the user
+  defines. hagent takes the tier idea as the rule primitive.
+- **HA AI Task and conversation agents** are one-shot or short-lived.
+- **Memory integrations for Assist** add notes to chat agents. They do not
+  add rules, schedules or background invocation.
 
 ## 6. Architecture
 
 hagent has two parts: an app and an integration.
 
 ```
-+---------------------------- Home Assistant host ----------------------------+
-|                                                                             |
-|  HA Core                                   hagent app (container)           |
-|  +--------------------------------+        +------------------------------+ |
-|  | hagent integration             |  link  | Agent runtime                | |
-|  |  - agent definitions (UI)      |<------>|  - router (rules -> LLM)     | |
-|  |  - hagent.invoke action        |        |  - rule engine + reducers    | |
-|  |  - per-agent entities          |        |  - scheduler + subscriptions | |
-|  |  - Assist agents (optional)    |        |  - scope + output policy     | |
-|  +--------------------------------+        |  - memory, history (SQLite)  | |
-|  | Automations, entities, events  |<-------|  - provider adapters         | |
-|  +--------------------------------+  HA    |  - inspector UI (Ingress)    | |
-|                                      API   +--------------+---------------+ |
-+-----------------------------------------------------------|-----------------+
-                                                            | HTTPS
-                                                 OpenAI / OpenRouter
++--------------------------- Home Assistant host ----------------------------+
+|                                                                            |
+|  HA Core                                  hagent app (container)           |
+|  +--------------------------------+       +------------------------------+ |
+|  | hagent integration             | link  | Agent runtime                | |
+|  |  - agent definitions (UI)      |<----->|  - router                    | |
+|  |  - hagent.invoke action        |       |  - rule engine               | |
+|  |  - per-agent entities          |       |  - tool executor + scopes    | |
+|  |  - Assist agents (optional)    |       |  - scheduler                 | |
+|  +--------------------------------+       |  - memory, history (SQLite)  | |
+|  | Automations, entities, events  |<------|  - provider adapters         | |
+|  +--------------------------------+  HA   |  - inspector UI (Ingress)    | |
+|                                      API  +--------------+---------------+ |
++----------------------------------------------------------|-----------------+
+                                                           | HTTPS
+                                                OpenAI / OpenRouter
 ```
 
-**The integration** is thin. It does these tasks:
+**The integration** is thin:
 
-- It stores agent definitions. Each agent is one configuration subentry of
-  the integration, so the user edits agents in the normal HA settings screens.
-  HA entity selectors let the user pick attachments.
+- It stores agent definitions. Each agent is one configuration subentry, so
+  the user edits agents in the normal HA settings screens.
 - It provides the `hagent.invoke` action (section 9).
-- It creates entities for each agent: status, last result, cost today,
-  enabled, and autonomy level.
+- It creates entities for each agent: status, last result, cost today and
+  enabled.
 - It registers an Assist conversation agent for each agent that allows it.
-- It sends definitions to the app, and forwards invocations to the app.
+- It sends definitions and invocations to the app.
 
-**The app** does all agent work. It has these properties:
+**The app** does all agent work:
 
-- It runs as a long-lived process, outside the HA Core event loop. A slow LLM
-  call cannot delay HA.
-- It continues to run when HA Core restarts.
+- It runs outside the HA Core event loop, so a slow model call cannot delay
+  HA. It continues to run when HA Core restarts.
 - It connects to HA Core through the Supervisor proxy, with the
   `SUPERVISOR_TOKEN` that the Supervisor supplies. It uses the HA WebSocket
   API for state, events and service calls.
-- It keeps agent state in SQLite under the app data directory. HA backups
+- It keeps agent state in SQLite in the app data directory. HA backups
   include this directory.
-- It serves an inspector UI through Ingress. Ingress shows an app web page
-  inside the HA sidebar, behind HA login. The inspector shows rules, notes,
-  decisions, costs and reviews for each agent.
+- It serves an inspector UI through Ingress. Ingress shows an app web page in
+  the HA sidebar, behind HA login. The inspector shows each agent's rules,
+  notes, history, schedules and cost.
 
-**The link** between the integration and the app is a WebSocket connection
-on the internal Supervisor network. The integration finds the app by its
-host name. The app authenticates the integration with a shared secret that
-the app creates on first start.
+**The link** is a WebSocket connection on the internal Supervisor network.
+The user enters the app host name in the integration once. The app
+authenticates the integration with a shared secret that the app creates on
+first start.
+
+**Installation.** For the first version, the user installs both parts by
+hand. The user adds the app from a local app folder, and copies the
+integration into the HA `custom_components` folder.
 
 ## 7. Agent definition and agent state
 
-hagent keeps the definition and the state apart. This separation makes scope
+The definition and the state are separate. This separation makes scope
 enforcement possible.
 
 **Agent definition** (owned by the user, stored in the integration):
@@ -182,452 +155,354 @@ enforcement possible.
 | Field | Content |
 |---|---|
 | Name and instructions | What the agent is for, in plain text. |
-| Models | A chat model for agent turns, a model for reviews, and an optional decision model. Each has a provider. |
-| Inputs | Entities, devices or areas whose values the agent receives. |
-| Outputs | Entities that the agent may set, each with an output policy. |
-| Feedback | Entities that report on the quality of decisions (section 14). |
-| Result type | `outputs`, `text`, or `structured` with a JSON schema. |
+| Models | A chat model, and an optional decision model. Each has a provider. |
+| Inputs | Entities or devices whose current values go into every invocation. |
+| Outputs | Entities that the agent may set. |
+| Result type | `none`, `text`, or `structured` with a JSON schema. |
 | Tools and scopes | Section 8. |
-| Autonomy | `observe`, `suggest` or `act` (section 11). |
-| Assist | Off by default. If on, the agent appears as an Assist conversation agent. |
-| Budget | A daily cost limit, and limits for self-scheduled triggers. |
-| Review schedule | How often the agent reviews itself. The default is daily. |
+| Approval | Tools or scopes that need the user's approval for each call. |
+| Assist | Off by default. |
+| Budget | A daily cost limit, and limits for self-scheduled invocations. |
+| Review schedule | When the agent receives a review invocation. The default is daily. |
 
 **Agent state** (owned by the agent, stored in the app):
 
-- Rules, with their lifecycle state and statistics.
+- Rules.
 - Schedules and event subscriptions.
 - Notes.
-- History: invocations, decisions, outcomes and feedback.
-- Review reports.
+- History of invocations, tool calls, results and costs.
 
-An agent can read its definition, but it cannot change it. No tool writes to
-the definition. Only the user changes a definition, through the HA UI. An
-agent therefore cannot widen its own scope, its outputs or its budget.
+An agent can read its definition, but no tool writes to it. Only the user
+changes a definition, through the HA UI. An agent therefore cannot widen its
+own scope, outputs or budget.
 
 ## 8. Tools and scopes
 
-The definition turns on tool groups and sets a scope for each group.
+The definition turns on tool groups. hagent supplies three groups.
 
-**`self`** — tools that change agent state:
+**`self`** — change agent state:
 
-- Create, change, promote, demote and retire rules.
+- Create, change, turn on, turn off and delete rules.
 - Set, list and cancel timers and cron schedules.
 - Subscribe to and unsubscribe from HA events and state changes, with a
   filter.
-- Request an early review.
 
-**`memory`** — tools for notes and history:
+**`memory`** — notes and history:
 
 - Read and replace notes.
-- Search history and decisions.
-- Read rule and decision statistics.
+- Search history.
+- Read rule statistics (section 10.4).
 
-**`ha`** — tools for Home Assistant, at one of four levels:
+**`ha`** — Home Assistant, at one of four levels:
 
 | Level | Permitted |
 |---|---|
 | `none` | Nothing. The agent receives only its inputs. |
 | `read` | Read states, history and statistics. The scope limits this to listed entities, devices, areas, labels or domains, or allows all. |
-| `control` | `read`, plus service calls on permitted targets. The scope can also list permitted services, for example `climate.set_temperature` but not `climate.turn_off`. |
+| `control` | `read`, plus service calls on permitted targets. The scope can also list permitted services. |
 | `admin` | `control`, plus changes to HA configuration: automations, scripts, helpers, scenes and dashboards. |
 
-Output attachments are a short form of `control`. An agent may always set its
-own output entities, through the output policy.
-
-For `admin`, the runtime adds these controls:
-
-- It saves the previous version of each item before a change.
-- It writes each change to an audit log.
-- If the definition requires it, it asks the user to approve each change
-  through an HA notification.
+An output attachment is a short form of `control` for one entity.
 
 **Enforcement.** Through the Supervisor proxy, the app has administrator
-access to HA. HA tokens have no fine-grained scopes. The app runtime therefore
+access to HA. HA tokens have no fine-grained scopes. The runtime therefore
 checks every tool call against the scope before it sends anything to HA. The
-instructions describe the scope to the model, but the runtime enforces it.
-Tests must show that a call outside the scope never reaches HA.
+runtime, not the instructions, enforces the scope. Tests must show that a
+call outside the scope never reaches HA.
+
+**Approval.** For a tool or scope that the definition marks for approval, the
+runtime sends an HA notification with accept and reject actions. The call
+waits for the answer, up to a time limit.
+
+**Audit.** The runtime records every call that changes HA. For `admin`
+changes, it also saves the previous version of the changed item.
+
+**Extension.** The tool system accepts more tool groups later, for example
+web search or notifications. Each group declares its own scope format.
 
 ## 9. Invocation
 
 ### 9.1 Sources
 
-An invocation comes from one of four sources:
+An invocation comes from one of five sources:
 
 1. An automation calls `hagent.invoke`.
 2. A timer or cron schedule that the agent set.
 3. An HA event or state change that the agent subscribed to.
-4. A person, through Assist, if the definition allows it.
+4. The review schedule in the definition.
+5. A person, through Assist, if the definition allows it.
+
+Every invocation carries its source, the current input values and optional
+data from the caller.
 
 ### 9.2 The `hagent.invoke` action
 
 | Field | Meaning |
 |---|---|
 | `agent` | The agent to call. |
-| `data` | Optional extra context, as a mapping. |
-| `wait` | `true` (default): return the result as response data. `false`: return at once, and send the result later. |
+| `data` | Optional context, as a mapping. |
+| `wait` | `true` (default): return the result as response data. `false`: return at once, and deliver the result later. |
 | `timeout` | Maximum wait in seconds. The default is 30. |
 
-When `wait` is true, the action returns this response data:
+When `wait` is true, the action returns response data:
 
 ```yaml
-value: 45            # the main result
-result: {...}        # structured result, if the result type is structured
-text: "..."          # text result, if the result type is text
-path: rule           # rule, decision or agent_turn
+result: ...          # text or structured result, per the result type
+path: rule           # rule or agent_turn
 rule_id: r12         # if a rule answered
-confidence: 0.82     # if a decision model answered
 cost_usd: 0.0000     # cost of this invocation
-applied: [...]       # output writes, if the agent set outputs
 ```
 
-When `wait` is false, or when the timeout expires, hagent finishes the work
-in the background. It then fires an `hagent_result` event and updates the
+When `wait` is false, or the timeout expires, hagent finishes in the
+background. It then fires an `hagent_result` event and updates the
 last-result entity of the agent.
 
 If the app is not reachable, the action fails with an error. The automation
-can catch the error with `continue_on_error`. A connectivity entity shows the
-state of the link.
+can catch it with `continue_on_error`. A connectivity entity shows the state
+of the link.
 
 ### 9.3 The router
 
 The router handles each invocation in this sequence:
 
-1. It reads the current values of the input attachments.
-2. It looks for an active rule that matches the invocation.
-3. If a calculation rule matches, the runtime computes the value. No model
-   call occurs.
-4. If a decision rule matches, the runtime sends one decision model request.
-5. If no rule matches, or a rule cannot answer, the runtime starts an agent
-   turn.
-6. The runtime applies the output policy to every output write.
-7. The runtime records the invocation, the path, the result and the cost.
+1. It collects the input values.
+2. It tests the agent's rules in order. The first rule that matches answers
+   the invocation (section 10).
+3. If no rule matches, or the rule declines to answer, the runtime starts an
+   agent turn.
+4. The runtime records the invocation, the path, the result and the cost.
 
-### 9.4 When a rule cannot answer
+Review and Assist invocations always start an agent turn.
 
-| Condition | Default action |
-|---|---|
-| A required input is `unknown` or `unavailable`. | Start an agent turn. The rule can declare "keep the last value" instead. |
-| The calculation fails. | Start an agent turn, and record the failure against the rule. |
-| Decision confidence is below the rule threshold. | Start an agent turn. |
-| The decision model provider fails. | Keep the last value if it is newer than a limit. Otherwise start an agent turn. |
-| The daily budget is spent. | Rules continue. Agent turns stop. The status entity shows the reason. |
+### 9.4 Agent turn
+
+An agent turn sends the model:
+
+- The instructions from the definition.
+- The notes.
+- A short description of the agent's rules, schedules and scopes.
+- The invocation: source, inputs and caller data.
+- Recent history for this source, within a size limit.
+
+The model then calls tools in a loop until it returns a result. The runtime
+checks each tool call against the scope, and records it.
 
 ## 10. Rules
 
-### 10.1 Calculation rules
+A rule is a fast path that the agent writes with the `self` tools. Rules let
+an agent answer repeated invocations at low or zero cost.
 
-A calculation rule is an HA template over the input values, with a match
-condition. Example: "Is a person home?" computed from presence entities.
-
-The app sends the template to HA Core to render it. HA templates are
-familiar to HA users, and HA renders them in a sandbox. A template rule
-therefore cannot run arbitrary code.
-
-### 10.2 Decision rules
-
-A decision rule has a fixed shape:
+### 10.1 Rule structure
 
 | Part | Content |
 |---|---|
-| Question | A compact question that the agent writes. |
-| Choices | A fixed list: yes/no, categories, or numbered options. |
-| Bindings | The input values and the history summary that go into the request. |
-| Reducer | The function that converts probabilities to a value. |
-| Threshold | The minimum confidence for the answer to take effect. |
+| Match | An HA template that returns true when the rule applies. It can test the source, the inputs and the caller data. |
+| Action | `template` or `decision` (below). |
+| Result | An HA template that builds the final result from the action output. It can also return "decline", which passes the invocation to an agent turn. |
+| Writes | Optional output entities to set from the result. They must be in scope. |
+| Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and records whether the answers agree. |
 
-hagent supplies three reducers:
+### 10.2 Template action
 
-- `most_likely`: the choice with the highest probability.
-- `expected_value`: the probability-weighted mean of numeric choices. A
-  choice can be marked as special, for example "off", and excluded from the
-  mean.
-- `threshold`: a yes/no result with separate on and off probabilities, for
-  hysteresis.
+The action is an HA template. The app sends it to HA Core to render. HA
+renders templates in a sandbox, so a rule cannot run arbitrary code.
 
-Example: the first heating automation in section 2 is one decision rule. Its
-16 temperatures are the choices. Its weighted mean is the `expected_value`
-reducer, with "0" as the special "off" choice. Its clamp, step limit and
-hysteresis move into the output policy.
+Example: "Is anyone home?" computed from presence entities.
 
-### 10.3 Providers for decision rules
+### 10.3 Decision action
+
+The action asks the decision model in the definition one question:
+
+- The question text, written by the agent.
+- A list of choices: yes/no, categories or numbered options.
+- The values to include, taken from the inputs and caller data.
+
+The decision model returns a probability for each choice. The result
+template turns the probabilities into the result. For example, it can take
+the most likely choice, compute a weighted mean, or decline when no choice
+is likely enough. The agent writes this logic. hagent does not build it in.
 
 The OpenAI Decisions API and the OpenRouter decisions endpoint both return
-typed answers with probabilities. hagent puts both behind one adapter
-interface. The OpenRouter decisions endpoint is in alpha, so the adapter must
-expect changes.
+typed answers with probabilities. hagent puts both behind one adapter. The
+OpenRouter decisions endpoint is in alpha, so the adapter must expect
+changes.
 
-hagent calls the providers directly. It does not use the existing HA
-decision or AI Task actions. Direct calls let hagent measure cost per
-invocation, use prompt caching, and run when HA Core restarts.
+### 10.4 Rule statistics
 
-### 10.4 Rule lifecycle
+The runtime records, for each rule:
 
-```
-draft --> shadow --> active --> retired
-            ^           |
-            +-----------+  (demoted by review or by failures)
-```
+- How often it matched, answered and declined.
+- Errors.
+- Cost.
+- Trial agreement, if trial is on.
 
-- **draft**: the agent wrote the rule. It does not run.
-- **shadow**: the rule runs on a sample of invocations. An agent turn also
-  runs on the same invocation. The runtime records whether the two answers
-  agree.
-- **active**: the rule answers invocations.
-- **retired**: the rule no longer runs. The runtime keeps it for history.
+Agents read these statistics with the `memory` tools. hagent does not
+promote, demote or delete rules by itself. The agent does this, usually in a
+review.
 
-The runtime promotes a rule from shadow to active only when it meets the
-promotion criteria. The defaults are 20 compared invocations and 90 percent
-agreement. A review or repeated failures can demote an active rule to
-shadow.
+## 11. Outputs and results
 
-### 10.5 Shadow mode and cost
-
-If an agent turn ran beside every shadow invocation, shadow mode would cost
-more than no rule at all. The runtime therefore samples shadow comparisons.
-The default rate is 1 in 5 invocations, with a daily limit. After promotion,
-the runtime continues a small sample, 1 in 50 by default, to detect drift.
-
-Decision models give no reasons for their answers. The review therefore
-judges decision rules by outcomes and agreement, not by explanations.
-
-## 11. Outputs
-
-### 11.1 Output policy
-
-The runtime applies an output policy to every write, from rules and from
-agent turns. The definition sets the policy for each output entity:
-
-| Setting | Effect |
-|---|---|
-| Minimum and maximum | Clamp the value. |
-| Allowed values | For select-type entities. |
-| Maximum step | Limit the change in one write. |
-| Minimum interval | Limit how often the entity changes. |
-| Deadband | Ignore changes smaller than this amount. |
-| Hysteresis | Separate thresholds for "turn on" and "turn off". |
-| Verify | Read the state back after the write, and retry if it does not match. |
-| Retries | Number of retries before the runtime reports a failure. |
-
-On a final failure, the runtime creates an HA notification and records the
-failure in history.
-
-### 11.2 Autonomy
-
-The definition sets one of three autonomy levels:
-
-- `observe`: the agent decides, and the runtime records the decision. It
-  writes nothing.
-- `suggest`: the runtime sends the decision as an HA notification with
-  actions to accept or reject it. Accept and reject are feedback.
-- `act`: the runtime applies the decision through the output policy.
-
-A new agent should start at `observe` or `suggest`. The user moves it to
-`act` after the decision log shows good results. This follows the Jarvis-AIO
-idea of earned trust, but the user makes the change, not the agent.
-
-### 11.3 Text and structured results
-
-If the result type is `text` or `structured`, the agent returns the result
-to the caller. It writes no entities. The runtime validates structured
-results against the JSON schema in the definition. If validation fails, the
-runtime asks the model once to correct the result, and then reports an error.
+- **Output entities.** The agent sets an output entity with a tool call in an
+  agent turn, or through the writes of a rule. The runtime checks the scope.
+  hagent adds no limits beyond the scope. An agent that needs limits, for
+  example a maximum change per step, writes them into its rules and notes. The
+  user can also enforce limits in HA.
+- **Text and structured results.** The agent returns the result to the
+  caller. The runtime validates a structured result against the JSON schema.
+  If it fails, the runtime asks the model once to correct it, then reports an
+  error.
 
 ## 12. Self-scheduling
 
-An agent with the `self` tools can create:
-
-- Timers, for one time in the future.
-- Cron schedules.
-- Event subscriptions, for HA events or state changes, with a filter.
-
-Each scheduled trigger is an invocation, and it goes through the router like
-any other. Rules can answer scheduled invocations too.
+An agent with the `self` tools can create timers, cron schedules and event
+subscriptions. Each one creates an invocation with its own source name, and
+the router handles it like any other invocation. Rules can answer scheduled
+invocations too.
 
 The definition sets limits:
 
 - The minimum interval between scheduled invocations. The default is 60
   seconds.
-- The maximum number of active schedules and subscriptions. The default is 20.
+- The maximum number of schedules and subscriptions. The default is 20.
 - A debounce period for each subscription, so that a sensor that changes
   often cannot cause many invocations.
 
-The scheduler keeps schedules in SQLite, and restores them when the app
+The scheduler keeps schedules in SQLite and restores them when the app
 starts.
 
 ## 13. Memory and history
 
-Each agent has three kinds of memory:
+- **Notes**: a text document that the agent edits. The runtime sends it with
+  every agent turn. The definition limits its size, 4,000 characters by
+  default.
+- **History**: a record of each invocation, its inputs, path, tool calls,
+  result and cost. The agent searches it with the `memory` tools.
+- **Retention**: a daily task summarises old history and deletes raw records
+  after a retention period, 30 days by default.
 
-- **Notes**: a text document that the agent edits. It holds facts and
-  conclusions, for example "the living room takes 40 minutes to warm by
-  1 °C." The runtime sends the notes with every agent turn. The definition
-  limits the size, 4,000 characters by default.
-- **History**: a record of each invocation, its inputs, path, result,
-  outputs, cost and later feedback. The agent searches it with the `memory`
-  tools.
-- **Input history**: the app subscribes to state changes of the input
-  attachments, and keeps hourly summaries. An agent turn receives a compact
-  summary instead of a fresh database query. This removes the context rebuild
-  that the current automations do on every run.
+## 14. Review
 
-A daily task summarises old history and deletes raw records after a retention
-period. The default retention is 30 days.
+A review is an invocation with the source `review`. The definition sets the
+schedule, daily by default. An agent can also schedule extra reviews with the
+`self` tools.
 
-## 14. Feedback
+hagent does not define what a review does. The instructions and the notes of
+the agent define it. A typical review reads rule statistics and recent
+history, then changes rules and notes.
 
-Feedback tells the agent if its decisions were good. The definition can
-attach feedback in three forms:
-
-- **Explicit feedback**: entities that a person sets, for example a comfort
-  selector with the values "cold", "OK" and "hot".
-- **Implicit feedback**: a person changes an output entity soon after the
-  agent set it. The runtime detects this as an override. The window is
-  configurable, 30 minutes by default.
-- **Suggestion responses**: accept or reject actions on `suggest`
-  notifications.
-
-The runtime links each feedback event to the decisions before it, and stores
-the link in history.
-
-## 15. Review
-
-The review is a scheduled agent turn. It uses the review model in the
-definition. The runtime gives the review model:
-
-- Statistics for each rule: number of answers, shadow agreement, failures,
-  overrides and feedback.
-- Cost for the period, by path.
-- The notes.
-- A sample of recent decisions with their outcomes.
-
-The review can create, change, promote, demote or retire rules, change
-schedules, and update the notes. It writes a review report. The inspector UI
-shows the report.
-
-The review runs daily by default. The runtime also starts a review early if
-a rule fails often, or if overrides exceed a limit.
-
-## 16. Assist exposure
+## 15. Assist exposure
 
 If the definition allows it, the integration registers the agent as an
 Assist conversation agent. A person can then select the agent in an Assist
 pipeline, or talk to it in the HA chat window.
 
-A conversation turn is an agent turn with the same notes, history, tools and
-scopes. The runtime keeps the conversation history in the app, so it does
-not expire after 5 minutes. Rules do not answer conversation turns.
+A conversation is a series of agent turns with the same notes, history,
+tools and scopes. The app keeps the conversation history, so it does not
+expire after 5 minutes. Rules do not answer Assist invocations.
 
-## 17. Providers
-
-hagent supports two providers:
+## 16. Providers
 
 - **OpenAI**: chat models through the Responses API, and the Decisions API.
 - **OpenRouter**: chat models through the OpenAI-compatible API, and the
   decisions endpoint, which provides Jev.
 
-Each provider has one adapter. The adapter reports the token use and cost of
-each call. The definition can choose a different provider and model for agent
-turns, reviews and decision rules. A low-cost model for agent turns and a
-stronger model for reviews is a typical choice.
+Each provider has one adapter. The adapter reports token use and cost for
+each call. The user enters API keys in the app configuration. The app never
+sends keys to HA and never writes them to logs.
 
-The user enters API keys in the app configuration. The app never sends keys
-to HA, and never writes them to logs.
+## 17. Cost controls
 
-## 18. Cost controls
+- Rules answer repeated invocations without an agent turn.
+- Decision actions bill input tokens only.
+- Notes and history summaries replace large context rebuilds.
+- Each agent has a daily budget. The default is USD 0.50. When the budget is
+  spent, agent turns stop and rules continue. The status entity shows the
+  reason.
+- Limits on self-scheduled invocations prevent runaway cost.
+- Cost entities in HA show the cost per agent per day.
 
-- Rules answer repeated invocations without an LLM.
-- Decision rules use decision models, which bill input tokens only.
-- Input history summaries replace large context rebuilds.
-- Shadow comparisons use samples.
-- Each agent has a daily budget. When the budget is spent, agent turns stop
-  and rules continue.
-- Limits on self-scheduled triggers prevent runaway invocations.
-- Cost entities in HA show the cost per agent per day, so the user can make
-  automations and alerts from them.
-
-## 19. Failure handling
+## 18. Failure handling
 
 | Failure | Behaviour |
 |---|---|
-| The app stops. | `hagent.invoke` fails with an error. The connectivity entity turns off. Existing automations can use a fallback. |
-| HA Core restarts. | The app reconnects, and restores subscriptions. |
-| A provider fails. | The runtime retries with backoff, then follows section 9.4. |
-| An output write fails. | The runtime follows the output policy (section 11.1). |
-| An input becomes unavailable. | The router follows section 9.4. |
+| The app stops. | `hagent.invoke` fails with an error. The connectivity entity turns off. |
+| HA Core restarts. | The app reconnects and restores subscriptions. |
+| A provider fails. | The runtime retries with backoff. A rule declines, and the runtime then tries an agent turn. If that also fails, the invocation returns an error. |
+| A rule fails. | The runtime records the error against the rule, and starts an agent turn. |
+| A service call fails. | The tool returns the error to the model. |
 
-## 20. Security
+## 19. Security
 
-- The app has administrator access to HA. The scope check in section 8 is the
-  only barrier between an agent and full access. It must have complete test
-  coverage.
-- Agents cannot change their definitions (section 7).
-- `admin` changes keep a previous version and an audit log.
+- The app has administrator access to HA. The scope check is the only barrier
+  between an agent and full access. It must have complete test coverage.
+- Agents cannot change their definitions.
+- Calls that change HA go to an audit log. `admin` changes keep the previous
+  version.
 - The inspector UI is available only through Ingress, behind HA login.
 - API keys stay in the app configuration.
 
-## 21. Worked example: heating
+## 20. Example: a heating agent
 
-This example shows one agent that uses most of the features.
+This example shows how one agent builds use-case logic from the generic
+primitives. None of this logic is part of hagent.
 
 **Definition**
 
-- Instructions: keep occupants comfortable at the lowest energy cost.
-- Inputs: indoor and outdoor temperature, boiler state, presence of each
-  occupant, calendars and the weather forecast.
-- Outputs: the boiler flow temperature (20–90 °C, maximum step 5 °C, "0"
-  means off), and the position of each radiator valve (0–100 percent, verify
-  and retry).
-- Feedback: one comfort selector for each occupant, plus overrides.
-- Tools: `self`, `memory`, and `ha: read` on the home's climate and
-  presence entities.
-- Autonomy: `suggest` at first, then `act`.
-- Models: a low-cost chat model, a stronger review model, and a decision
-  model.
+- Instructions: keep occupants comfortable at the lowest energy cost. Never
+  change the boiler flow temperature by more than 5 °C in one step.
+- Inputs: indoor and outdoor temperature, boiler state, presence, and one
+  comfort selector for each occupant.
+- Outputs: the boiler flow temperature and the radiator valve positions.
+- Tools: `self`, `memory`, and `ha: read` on climate, presence and weather
+  entities.
+- Approval: none at first for outputs. The user can mark outputs for approval
+  during a trial period.
+- Models: a low-cost chat model and a decision model.
 
-**Expected behaviour**
+**What the agent builds**
 
-1. An automation calls the agent every 5 minutes.
-2. At first, no rules exist. Each call is an agent turn. The agent records
-   decisions and writes notes, for example about warm-up times.
-3. The agent writes a calculation rule for occupancy, and a decision rule for
-   the flow temperature with the `expected_value` reducer.
-4. The rules run in shadow mode on a sample. After 20 comparisons with 90
-   percent agreement, the runtime promotes them.
-5. Most calls are then answered by rules, at low or no cost.
-6. When an occupant reports "cold", or changes a valve by hand, the runtime
-   records feedback. If this happens often, the runtime starts an early
-   review.
-7. The daily review checks the results, adjusts the rules and updates the
+1. An automation calls the agent every 5 minutes. At first each call is an
+   agent turn. The agent records warm-up times and occupant preferences in its
    notes.
+2. The agent subscribes to the comfort selectors, so that a "cold" report
+   starts an invocation at once.
+3. The agent subscribes to manual changes of the valves. It treats a manual
+   change soon after its own change as a sign of a bad decision, and notes it.
+4. The agent writes a rule for the 5-minute calls. The rule asks the decision
+   model to choose a flow temperature from a list. Its result template
+   computes the weighted mean, applies the 5 °C step limit, and declines when
+   confidence is low. The agent turns trial on.
+5. In the daily review, the agent reads the trial agreement and the comfort
+   reports. It turns trial off when the rule agrees with its own decisions,
+   and it changes or deletes the rule when it does not.
 
-## 22. Out of scope for the first version
+## 21. Out of scope for the first version
 
-- Agents that talk to other agents.
+- Agents that call other agents.
 - Access from outside HA, for example through the Model Context Protocol
   (MCP) or the Agent2Agent (A2A) protocol.
-- Trained statistical models, for example a learned room presence model.
-  Rules and memory come first.
-- Support for HA installations without the Supervisor, for example a
-  Container install.
+- Installation through HACS or an app repository.
+- HA installations without the Supervisor, for example a Container install.
+
+## 22. Decided
+
+| Question | Decision |
+|---|---|
+| Runtime location | An HA app. |
+| Providers | OpenAI and OpenRouter. |
+| Installation | By hand for the first version. |
+| Calculation language for rules | HA templates. |
+| Default daily budget | USD 0.50 per agent. |
 
 ## 23. Open questions
 
-Each question has a proposed default.
-
 | # | Question | Proposed default |
 |---|---|---|
-| 1 | How does the user install the integration? An app cannot install a custom integration through any documented API. | Publish the integration through HACS. As a later option, the app copies it into the configuration folder. |
-| 2 | Can the integration discover the app automatically? | Try Supervisor discovery. If it does not work for a custom integration, the user enters the host name once. |
-| 3 | Default `hagent.invoke` timeout. | 30 seconds. |
-| 4 | Default for `wait`. | `true`. |
-| 5 | Shadow sample rate and promotion criteria. | 1 in 5, then 20 comparisons at 90 percent agreement. |
-| 6 | Review frequency. | Daily, plus early reviews on failures. |
-| 7 | Default daily budget for each agent. | USD 0.50. |
-| 8 | Should calculation rules use HA templates, or an expression language inside the app? | HA templates. |
-| 9 | Should the app use a separate non-admin HA user for agents below `admin`? The Supervisor proxy always acts as an administrator. | No. Rely on the runtime scope check, and revisit if the risk changes. |
-| 10 | Should hagent also accept HA AI Task entities as a provider? | Not in the first version. |
-| 11 | Language and framework for the app. | Python 3.12, with the official OpenAI SDK for both providers. |
+| 1 | Default `hagent.invoke` timeout. | 30 seconds. |
+| 2 | Default for `wait`. | `true`. |
+| 3 | Default trial sample rate. | 1 in 5 matches. |
+| 4 | Should the app use a separate non-admin HA user for agents below `admin`? The Supervisor proxy always acts as an administrator. | No. Rely on the runtime scope check. |
+| 5 | Language and SDK for the app. | Python 3.12, with the official OpenAI SDK for both providers. |
 
 ## 24. References
 
