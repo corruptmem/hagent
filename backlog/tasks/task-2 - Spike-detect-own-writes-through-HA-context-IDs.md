@@ -1,11 +1,11 @@
 ---
 id: TASK-2
 title: 'Spike: detect own writes through HA context IDs'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:19'
+updated_date: '2026-11-14 23:20'
 labels:
   - spike
   - app
