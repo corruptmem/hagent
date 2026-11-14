@@ -42,6 +42,8 @@ from typing import Any
 import aiohttp
 
 EVENT_TYPE = "mobile_app_notification_action"
+# Older iOS app versions fire these event types. The probe logs them too.
+LEGACY_EVENT_TYPES = ("ios.notification_action_fired", "ios.action_fired")
 DEFAULT_TIMEOUT_S = 600
 ACCEPT = "ACCEPT"
 REJECT = "REJECT"
@@ -119,7 +121,8 @@ async def run(timeout_s: float) -> int:
         reader = asyncio.create_task(sock.reader())
         expected_user = await person_user_id(sock, person) if person else None
 
-        await sock.call({"type": "subscribe_events", "event_type": EVENT_TYPE})
+        for event_type in (EVENT_TYPE, *LEGACY_EVENT_TYPES):
+            await sock.call({"type": "subscribe_events", "event_type": event_type})
         await sock.call(
             {
                 "type": "call_service",
@@ -188,8 +191,10 @@ async def wait_for_answer(
         except TimeoutError:
             return None
         action = str(event.get("data", {}).get("action", ""))
-        if not action.endswith(f"_{request_id}"):
-            log("ignored an action event for another request")
+        if event.get("event_type") != EVENT_TYPE or not action.endswith(
+            f"_{request_id}"
+        ):
+            log(f"ignored event type={event.get('event_type')} action={action!r}")
             continue
         decision = ACCEPT if action.startswith(f"HAGENT_{ACCEPT}_") else REJECT
         return decision, event
