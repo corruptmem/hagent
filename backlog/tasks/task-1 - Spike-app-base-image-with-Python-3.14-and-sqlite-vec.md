@@ -1,11 +1,11 @@
 ---
 id: TASK-1
 title: 'Spike: app base image with Python 3.14 and sqlite-vec'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:17'
+updated_date: '2026-11-14 23:19'
 labels:
   - spike
   - app
