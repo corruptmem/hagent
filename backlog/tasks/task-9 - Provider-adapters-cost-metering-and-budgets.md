@@ -1,11 +1,11 @@
 ---
 id: TASK-9
 title: 'Provider adapters, cost metering and budgets'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:51'
+updated_date: '2026-11-14 23:52'
 labels:
   - providers
 dependencies:
@@ -109,6 +109,8 @@ AC evidence:
 - AC3: test_providers_budget.py::test_parallel_calls_cannot_overspend_agent_budget (10 parallel calls, 3 fit, 3 reservations held at the same time), ::test_installation_budget_covers_all_agents_and_none, ::test_budget_resets_on_the_next_local_day, ::test_failed_call_releases_its_reservation, ::test_cancelled_call_releases_its_reservation; test_providers_chat.py::test_reservation_uses_max_tokens (refused before any HTTP request).
 - AC4: test_providers_keys.py (DEBUG logs incl. openai/httpx2 loggers, error texts, call records, request bodies, FakeHA commands), plus the Config repr tests.
 - AC5: every provider test uses FakeProviders (httpx2 MockTransport) with recorded fixtures. No test makes a network call.
+
+Lead: merged with task-7 (component order: providers, agents, http). Accepted defaults: installation budget USD 5.00/day; OpenAI decision cache tokens at full rate until verified; invalid price_overrides fail at start. genai-prices UpdatePrices is not started; task-20 settings can enable it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
