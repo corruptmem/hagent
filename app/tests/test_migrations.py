@@ -22,16 +22,21 @@ def _versions(conn: sqlite3.Connection) -> list[int]:
 
 def test_package_migrations_apply_and_are_idempotent(tmp_path: Path) -> None:
     conn = connect(tmp_path / "db.sqlite")
-    assert migrate(conn) == [1]
+    assert migrate(conn) == _package_versions()
     assert "app_info" in _tables(conn)
     assert migrate(conn) == []
-    assert _versions(conn) == [1]
+    assert _versions(conn) == _package_versions()
 
 
 def test_package_migration_names_are_valid() -> None:
     migrations = discover(default_source())
     assert migrations[0].version == 1
-    assert all(0 < m.version < 100 for m in migrations)
+    # Each area owns a range of 100 versions below 1000 (app/README.md).
+    assert all(0 < m.version < 1000 for m in migrations)
+
+
+def _package_versions() -> list[int]:
+    return [m.version for m in discover(default_source())]
 
 
 def test_numeric_order_and_late_lower_version(tmp_path: Path) -> None:
@@ -92,7 +97,7 @@ async def test_database_open_runs_migrations(tmp_path: Path) -> None:
     path = tmp_path / "hagent.db"
     db = await Database.open(path)
     try:
-        assert db.applied_migrations == [1]
+        assert db.applied_migrations == _package_versions()
         mode = await db.run(lambda c: c.execute("PRAGMA journal_mode").fetchone()[0])
         fks = await db.run(lambda c: c.execute("PRAGMA foreign_keys").fetchone()[0])
         assert mode == "wal"

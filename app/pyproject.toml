@@ -5,6 +5,8 @@ description = "hagent app: runtime for persistent Home Assistant agents."
 requires-python = ">=3.14"
 dependencies = [
     "aiohttp>=3.13",
+    "genai-prices>=0.2.3",
+    "httpx2>=2.16",
     "pydantic-ai-slim[openai,openrouter]>=2.68",
 ]
 

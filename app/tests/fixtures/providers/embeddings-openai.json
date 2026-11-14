@@ -1,0 +1,53 @@
+{
+  "method": "POST",
+  "path": "/v1/embeddings",
+  "request": {
+    "model": "text-embedding-3-small",
+    "input": [
+      "Turn on the heating.",
+      "The light is off."
+    ],
+    "dimensions": 8,
+    "encoding_format": "float"
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "response": {
+    "object": "list",
+    "data": [
+      {
+        "object": "embedding",
+        "embedding": [
+          0.00811004638671875,
+          0.377685546875,
+          -0.63525390625,
+          -0.41162109375,
+          -0.41748046875,
+          0.0224151611328125,
+          -0.3291015625,
+          -0.037872314453125
+        ],
+        "index": 0
+      },
+      {
+        "object": "embedding",
+        "embedding": [
+          0.04010009765625,
+          0.34521484375,
+          -0.86572265625,
+          -0.22998046875,
+          -0.143798828125,
+          0.0325927734375,
+          -0.17822265625,
+          -0.15185546875
+        ],
+        "index": 1
+      }
+    ],
+    "model": "text-embedding-3-small",
+    "usage": {
+      "prompt_tokens": 10,
+      "total_tokens": 10
+    }
+  }
+}

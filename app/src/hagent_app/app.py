@@ -50,7 +50,9 @@ class Component(Protocol):
 
 def default_components() -> list[Component]:
     """The components that a normal app start runs, in start order."""
-    return []
+    from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
+
+    return [ProvidersComponent()]
 
 
 class App:
