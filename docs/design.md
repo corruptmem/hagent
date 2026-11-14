@@ -56,6 +56,8 @@ rules that the agent writes itself.
 | Tool | A function that an agent can call during an agent turn. |
 | Scope | The limits on what a tool may do for one agent: which HA data and actions it may use, or which knowledge stores it may read or write. |
 | Rule | A fast path that an agent writes. A rule answers an invocation without an agent turn (section 10). |
+| Version | An unchanging copy of a rule or an agent definition. A change creates a new version (section 10.6). |
+| Fallback | The result that an agent gives when it cannot run an agent turn (section 9.7). |
 | Decision model | A model that returns typed answers with probabilities, not text. Examples: the OpenAI Decisions API, and Jev on OpenRouter. |
 | Embedding model | A model that converts text into a vector, a list of numbers that represents its meaning (section 13.3). |
 
@@ -186,10 +188,10 @@ enforcement possible: no agent tool can change data that the user owns.
 
 | Data | Owner | Who changes it |
 |---|---|---|
-| Agent definitions | The user | The user, in the management UI. |
+| Agent definitions | The user | The user, in the management UI. Each change creates a new version (section 10.6). |
 | Knowledge store configuration: name, description, size limit and attachments | The user | The user, in the management UI. |
 | Knowledge store content: files and documents | Shared | Files: agents with `read_write` access, and the user. Documents: the user only. |
-| Agent state: rules and schedules | The agent | The agent, through its tools. The user can also turn off or delete rules and schedules. |
+| Agent state: rules and schedules | The agent | The agent, through its tools. Each rule change creates a new version. The user can also turn off, delete or roll back rules and schedules. |
 | History | The runtime | The runtime records it. Agents and the user only read it. Retention deletes old records (section 13). |
 
 An agent can read its own definition, but no tool writes to it. An agent
@@ -209,7 +211,9 @@ therefore cannot widen its own scope, outputs, store access or budget.
 | Retrieval | Automatic recall: `off` (default), `assist` or `all`, with the result count and token limit (section 13.3). |
 | Approval | Tools or scopes that need the user's approval for each call (section 8). |
 | Assist | Off by default (section 15). |
-| Budget | A daily cost limit, USD 0.50 by default (section 17). |
+| Budget | A daily cost limit, USD 0.50 by default, and limits for one agent turn: maximum tool calls (default 20) and maximum tokens (section 17). |
+| Concurrency | How the agent handles an invocation that arrives while another runs: `queued` (default), `single`, `restart` or `parallel` (section 9.6). |
+| Fallback | What the agent returns when it cannot run an agent turn: `last_result` (default), `fixed` with a value, `no_change`, or `error` (section 9.7). |
 | Scheduling limits | Minimum interval, maximum schedules and subscriptions, and debounce (section 12). |
 | Review schedule | When the agent receives a review invocation. The default is daily (section 14). |
 
@@ -230,6 +234,7 @@ The management UI is a web application in the app. It has four areas.
   approval.
 - Choose models, and set the budget, limits, retrieval and review schedule.
 - Run a test invocation with sample data, without changes to HA.
+- See earlier versions of the definition, compare them, and restore one.
 
 **Knowledge**
 
@@ -245,10 +250,12 @@ The management UI is a web application in the app. It has four areas.
   tool call with its scope decision, each compaction, the result and the
   cost.
 - History: search across past invocations.
-- Rules: each rule, its templates, its statistics and its trial agreement.
-  The user can turn a rule off or delete it.
+- Rules: each rule with its versions, templates, context, statistics per
+  version, backtest results and trial agreement. The user can turn a rule
+  off, delete it or roll it back to an earlier version.
 - Schedules and subscriptions: what is active, and when each one last ran.
-- Permissions: the effective scope of each tool, and a log of denied calls.
+- Permissions: the effective scope of each tool, resolved to entity IDs, and
+  a log of denied calls.
 - Changes to HA: the audit log, with the previous version of each `admin`
   change.
 - Cost: by agent, by day and by path, including cached tokens and embedding
@@ -260,6 +267,8 @@ The management UI is a web application in the app. It has four areas.
 
 - Providers and API keys.
 - The embedding model for the installation (section 13.3).
+- The installation-wide daily budget (section 17).
+- The HA users who can approve tool calls (section 8).
 
 ## 8. Tools and scopes
 
@@ -268,6 +277,8 @@ The definition turns on tool groups. hagent supplies four groups.
 **`self`** — change agent state:
 
 - Create, change, reorder, turn on, turn off and delete rules.
+- Run backtests, activate rule versions and roll rules back (sections 10.6
+  and 10.7).
 - Set, list and cancel timers and cron schedules, including extra reviews.
 - Subscribe to and unsubscribe from HA events and state changes, with a
   filter.
@@ -289,9 +300,32 @@ each attachment.
 | `none` | Nothing. The agent receives only its inputs. |
 | `read` | Read states, history and statistics, and find entities by description (`ha.find_entities`). The scope limits this to listed entities, devices, areas, labels or domains, or allows all. |
 | `control` | `read`, plus service calls on permitted targets. The scope can also list permitted services. |
-| `admin` | `control`, plus changes to HA configuration: automations, scripts, helpers, scenes and dashboards. |
+| `admin` | Full access to HA: all entities, all services, and changes to HA configuration, including automations, scripts, helpers, scenes and dashboards. `admin` has no narrower form. |
 
 An output attachment is a short form of `control` for one entity.
+
+`admin` is a blanket scope on purpose. An agent that can write automations
+or scripts can make HA do anything, because HA runs them with full rights.
+A narrowed `admin` would therefore be a false limit.
+
+**Rules for `read` and `control`.** The runtime applies these checks:
+
+- **Resolved targets.** Before each check, the runtime resolves area, label,
+  device and floor targets to entity IDs. It checks each entity ID against
+  the scope.
+- **Service data.** The runtime also checks entity IDs inside the service
+  data, not only in the target. A call that names an entity outside the
+  scope fails.
+- **Indirect services.** Some services run other actions, so they can reach
+  entities outside the scope. The runtime denies these services unless the
+  scope permits each one by name: `script.*`, `automation.*`, `scene.*`,
+  `homeassistant.*` (the generic services), `shell_command.*`,
+  `rest_command.*`, `python_script.*`, `pyscript.*`, `hassio.*` and
+  `notify.*`.
+- **Scope changes.** A scope that uses areas, labels or devices changes when
+  the user moves an entity. The runtime resolves each scope again when the HA
+  registries change. If a scope grows, the runtime sends an HA notification
+  and shows the change in the management UI.
 
 **Enforcement.** Through the Supervisor proxy, the app has administrator
 access to HA. HA tokens have no fine-grained scopes. The runtime therefore
@@ -301,8 +335,9 @@ enforces the scope. Tests must show that a call outside the scope never
 reaches HA or the store.
 
 **Approval.** For a tool or scope that the definition marks for approval, the
-runtime sends an HA notification with accept and reject actions. The agent
-turn waits for the answer, up to a time limit. Rules cannot wait for
+runtime sends an HA notification with accept and reject actions to the
+approvers in the settings. Only those HA users can approve. The agent turn
+waits for the answer, up to a time limit. Rules cannot wait for
 approval, so a rule cannot write an output that needs approval (section
 10.1).
 
@@ -338,20 +373,21 @@ The action targets the agent device, or any entity of that device.
 | `data` | Optional context, as a mapping. |
 | `wait` | `true` (default): return the result as response data. `false`: return at once, and deliver the result later. |
 | `timeout` | Maximum wait in seconds. The default is 30. |
+| `on_timeout` | `cancel`: stop the invocation, write nothing, and return an error. `continue`: finish in the background. The default is `cancel` for agents with outputs, and `continue` for other agents. |
 
 When `wait` is true, the action returns response data:
 
 ```yaml
 result: ...          # text or structured result, per the result type
 writes: [...]        # output entities that this invocation set
-path: rule           # rule or agent_turn
+path: rule           # rule, agent_turn or fallback
 rule_id: r12         # if a rule answered
 cost_usd: 0.0000     # cost of this invocation
 ```
 
-When `wait` is false, or the timeout expires, hagent finishes in the
-background. It then fires an `hagent_result` event and updates the
-last-result entity of the agent.
+When `wait` is false, or the timeout expires with `on_timeout: continue`,
+hagent finishes in the background. It then fires an `hagent_result` event
+and updates the last-result entity of the agent.
 
 If the app is not reachable, the action fails with an error. The automation
 can catch it with `continue_on_error`. The connectivity sensor shows the
@@ -386,13 +422,14 @@ keeps its own knowledge stores and history across all invocations.
 The router handles each invocation in this sequence:
 
 1. If the agent is turned off, it rejects the invocation with an error.
-2. It collects the input values.
-3. It tests the agent's rules in the order that the agent set. The first rule
-   that matches answers the invocation (section 10).
-4. If no rule matches, or the rule declines, it starts an agent turn. If the
-   daily budget is spent, it returns an error instead, and the status sensor
-   shows "budget spent".
-5. It records the invocation, the path, the result and the cost.
+2. It applies the concurrency mode of the agent (section 9.6).
+3. It collects the input values.
+4. It tests the agent's active rules in the order that the agent set. The
+   first rule that matches answers the invocation (section 10).
+5. If no rule matches, or the rule declines, it starts an agent turn. If it
+   cannot run an agent turn, it returns the fallback (section 9.7).
+6. It records the invocation, the path, the result, the cost, the version of
+   the definition and the version of the rule (section 10.6).
 
 Review and Assist invocations always start an agent turn.
 
@@ -418,7 +455,61 @@ parts come first, so that the provider prompt cache works (section 13.2):
 7. The invocation: source, current time, inputs and caller data.
 
 The model then calls tools in a loop until it returns a result. The runtime
-checks each tool call against the scope, and records it.
+checks each tool call against the scope, and records it. The turn stops when
+it reaches the limits in the definition: maximum tool calls and maximum
+tokens. The runtime then returns the fallback.
+
+### 9.6 Concurrency
+
+Invocations for one agent can arrive at the same time, for example from an
+automation, a subscription and the review. Each agent has one queue. The
+concurrency mode in the definition sets what happens when an invocation
+arrives while another one runs. The modes have the same names and meanings
+as HA automation modes:
+
+| Mode | Behaviour |
+|---|---|
+| `queued` (default) | The new invocation waits, and runs when the current one ends. The queue holds 10 invocations by default. |
+| `single` | The new invocation fails at once with an error. |
+| `restart` | The runtime cancels the current invocation, and starts the new one. A cancelled invocation writes nothing more. |
+| `parallel` | Both run. The user chooses this only for agents with no outputs. |
+
+Assist conversations have their own queue for each conversation, so that a
+person does not wait for background work.
+
+Changes to rules, schedules and the definition take effect between
+invocations, never during one. An invocation uses the versions that were
+active when it started.
+
+The runtime keeps the queue in SQLite. When the app starts again after a
+stop, it runs the queued invocations. An invocation that was running when
+the app stopped does not resume: the runtime records it as failed and
+returns the fallback.
+
+### 9.7 Fallback
+
+The router returns the fallback when it cannot run an agent turn. This
+happens when:
+
+- the daily budget of the agent, or the installation budget, is spent;
+- the chat model provider is not reachable, for example because the internet
+  connection is down;
+- the agent turn reaches its tool-call or token limit;
+- the agent turn fails after retries.
+
+The definition sets the fallback:
+
+| Fallback | Result |
+|---|---|
+| `last_result` (default) | The result of the last successful invocation from the same source. The runtime does not repeat its writes. If no earlier result exists, the router returns an error. |
+| `fixed` | A value from the definition. The runtime applies its writes, if any. |
+| `no_change` | No result and no writes. The caller receives an empty result. |
+| `error` | An error to the caller. |
+
+The response data and the history mark the path as `fallback`, with the
+reason. The status sensor shows the reason. Rules do not need the internet
+when they use only template actions, so they continue to work when the
+connection is down.
 
 ## 10. Rules
 
@@ -429,27 +520,39 @@ an agent answer repeated invocations at low or zero cost.
 
 | Part | Content |
 |---|---|
+| State | `draft`, `active` or `off`. Only active rules answer invocations. A new version starts as `draft` (section 10.7). |
 | Order | The position of the rule in the agent's list. The router tests rules in this order. |
-| Match | An HA template that returns true when the rule applies. It can test the source, the inputs and the caller data. |
+| Match | A template that returns true when the rule applies. It can test the source, the inputs, the caller data and the context. |
+| Context | Optional data that the runtime collects before the action runs (section 10.5). |
 | Action | `template` or `decision` (below). |
-| Result | An HA template that builds the final result from the action output. It can also return "decline", which passes the invocation to an agent turn. |
+| Result | A template that builds the final result from the action output. It can also return "decline", which passes the invocation to an agent turn. |
 | Writes | Optional output entities to set from the result. They must be in scope, and must not need approval. |
 | Cache | Optional. A time window and a list of inputs. If an invocation arrives with the same values for those inputs within the window, the runtime returns the previous result without running the action. Off by default. |
-| Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and records whether the answers agree. The default sample rate is 1 in 5. Each rule can set its own rate. Trial agent turns count towards the budget, and stop when the budget is spent. |
+| Agreement | A template that compares the rule result with an agent turn result, and returns true when they agree. For example: "the two flow temperatures differ by 3 °C or less". Backtests and trials use it. |
+| Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and compares the two results with the agreement template. The trial agent turn writes nothing: only the rule result takes effect. The default sample rate is 1 in 5. Each rule can set its own rate. Trial agent turns count towards the budget, and stop when the budget is spent. |
 
 ### 10.2 Template action
 
-The action is an HA template. The app sends it to HA Core to render. HA
-renders templates in a sandbox, so a rule cannot run arbitrary code.
+The action is a template. All rule templates (match, action, result and
+agreement) use HA template syntax: Jinja with the common HA functions, for
+example `states()`, `state_attr()`, `is_state()`, `now()` and the HA
+filters.
 
-All rule templates (match, action and result) render in HA Core through the
-WebSocket `render_template` command, with variables. The runtime passes the
-invocation source, the input values and the caller data as variables. The
-result template also receives the action output, for example the decision
-probabilities. Templates read live HA state, not the app's state cache.
+The app renders the templates itself, in a sandboxed Jinja environment. It
+does not send them to HA Core. The template functions read the app's state
+cache, filtered to the agent's `ha` scope. A template therefore cannot read
+an entity outside the scope: for that entity, `states()` returns `unknown`.
+An agent with `ha: none` sees only its inputs.
 
-Each template costs one round trip to HA Core. While HA Core is not
-reachable, rules decline, and the router starts an agent turn.
+The runtime passes these variables to each template: the invocation source,
+the input values, the caller data and the context (section 10.5). The result
+template also receives the action output, for example the decision
+probabilities.
+
+The sandbox supports a documented subset of HA template functions. The
+management UI shows an error when a rule uses a function outside the subset.
+Rules keep working when HA Core restarts, because they do not depend on HA
+to render.
 
 Example: "Is anyone home?" computed from presence entities.
 
@@ -460,7 +563,8 @@ request has one or more questions. Each question has:
 
 - The question text, written by the agent.
 - A list of choices: yes/no, categories or numbered options.
-- The values to include, taken from the inputs and caller data.
+- The values to include, taken from the inputs, the caller data and the
+  context.
 
 The decision model returns a probability for each choice of each question.
 The result template turns the probabilities into the result. For example,
@@ -475,16 +579,70 @@ changes.
 
 ### 10.4 Rule statistics
 
-The runtime records, for each rule:
+The runtime records, for each version of each rule:
 
 - How often it matched, answered, declined and used its cache.
 - Errors.
 - Cost.
+- Backtest results (section 10.7).
 - Trial agreement, if trial is on.
 
 Agents read these statistics with the `memory` tools. hagent does not
 promote, demote or delete rules by itself. The agent does this, usually in a
 review.
+
+### 10.5 Rule context
+
+Many decisions need more than the current input values. For example, a
+heating decision needs the last 24 hours of temperatures and the weather
+forecast. A rule can therefore declare context items. The runtime collects
+them before the action runs, and passes them to the templates and to the
+decision request.
+
+| Context item | Content |
+|---|---|
+| `history` | Statistics for entities in scope over a time window, for example hourly mean, minimum and maximum for 24 hours. |
+| `action_response` | The response of an HA action that only returns data, for example `weather.get_forecasts`. The action and its target must be in the agent's `ha` scope. |
+| `store_file` | The content of a file in an attached knowledge store, for example the main file. |
+| `invocation_history` | A summary of the agent's recent invocations from the same source. |
+
+Each item can set a cache time, so that a rule called every 5 minutes does
+not fetch a 24-hour history every time. The scope check applies to every
+item.
+
+### 10.6 Versions
+
+Rules and agent definitions have versions.
+
+- A version never changes. A change to a rule or a definition creates a new
+  version.
+- Statistics belong to one rule version. A new version starts with new
+  statistics.
+- Each history record stores the definition version and the rule version
+  that produced it.
+- The agent can roll a rule back with the `self` tools. The user can roll a
+  rule or a definition back in the management UI.
+
+### 10.7 Backtesting
+
+A backtest runs a rule version against recorded history before the rule
+answers live invocations.
+
+1. The runtime selects past invocations that the rule matches, from the
+   agent's history. The default is the last 7 days.
+2. For each one, it runs the rule action with the recorded inputs, caller
+   data and context. It writes nothing.
+3. It compares each rule result with the recorded agent turn result, with the
+   agreement template.
+4. It stores the agreement rate and the cost in the rule statistics.
+
+A new rule version starts in the state `draft`. The agent runs a backtest,
+reads the result, and then activates the rule or changes it. A backtest of a
+template rule costs nothing. A backtest of a decision rule costs one decision
+request for each past invocation, so the agent can limit the number of
+invocations that it tests. Backtests need the inputs and context of each past
+invocation, so history keeps them for the retention period, 30 days by
+default.
 
 ## 11. Outputs and results
 
@@ -513,6 +671,17 @@ The definition sets limits:
 - The maximum number of schedules and subscriptions. The default is 20.
 - A debounce period for each subscription, so that a sensor that changes
   often cannot cause many invocations.
+
+**Own writes.** Each service call that the runtime makes carries an HA
+context ID. HA copies this ID into the state changes that the call causes.
+By default, a subscription ignores state changes that the agent caused
+itself. An agent therefore cannot start itself through its own outputs.
+The runtime also marks each state change in history as `agent` or
+`external`, so that an agent can tell a person's change from its own.
+
+**Missed schedules.** If the app was stopped when a schedule was due, the
+schedule runs once when the app starts, if it is less than 10 minutes late.
+Otherwise the runtime skips it and records the skip.
 
 APScheduler runs timers and cron schedules. APScheduler is a Python library
 for scheduled jobs. It keeps jobs in SQLite through its SQLAlchemy job store,
@@ -569,9 +738,9 @@ hagent uses four caches:
 - **Rule result cache.** A rule can return its previous result for the same
   inputs within a time window (section 10.1).
 - **HA state cache.** The app subscribes to HA state changes, so it keeps a
-  current copy of entity states. State reads by tools use this copy, not a
-  request to HA. Rule templates render in HA Core, so they read live state
-  (section 10.2).
+  current copy of entity states. State reads by tools and rule templates use
+  this copy, not a request to HA, so both see the same state in one
+  invocation.
 - **Query cache.** Within one agent turn, the runtime keeps the results of
   history and statistics queries, so that a repeated query does not go to HA
   again.
@@ -718,10 +887,12 @@ The runtime checks store access on every call (section 8).
   content, so that the agent knows what it can search or read;
 - the main files that the attachments inject.
 
-If the index of a store is larger than a limit, 50 entries by default, the
-runtime shows the most recently changed entries and the total count. This
-part of the prompt changes only when store contents or attachments change,
-so it seldom stops the provider prompt cache from working.
+The index is sorted by name, so that a change to one file does not move the
+other entries. If the index of a store is larger than a limit, 50 entries by
+default, the runtime shows the first entries and the total count. This part
+of the prompt changes only when files are added, renamed or removed, or when
+attachments change, so it seldom stops the provider prompt cache from
+working.
 
 **Shared writes.** Several agents can write the same store. Each write
 checks the version of the file that the agent read. If another agent changed
@@ -796,8 +967,13 @@ keys to HA and never writes them to logs.
   not need.
 - Embeddings are created once for each unique text.
 - Each agent has a daily budget. The default is USD 0.50. When the budget is
-  spent, agent turns stop and rules continue. The status sensor shows the
-  reason.
+  spent, agent turns stop, rules continue, and the router returns the
+  fallback (section 9.7). The status sensor shows the reason.
+- The installation has a daily budget too, set in the management UI. It also
+  covers costs that belong to no agent, for example document embeddings.
+- Each agent turn has a maximum number of tool calls and tokens.
+- Before each model call, the runtime reserves the expected cost against the
+  budget, so that parallel turns cannot spend more than the budget.
 - Limits on self-scheduled invocations prevent runaway cost.
 - Cost sensors in HA show the cost per agent per day.
 
@@ -805,19 +981,27 @@ keys to HA and never writes them to logs.
 
 | Failure | Behaviour |
 |---|---|
-| The app stops. | `hagent.invoke` and the AI Task entities fail with an error. The connectivity sensor turns off. |
-| HA Core restarts. | The app reconnects and restores subscriptions. |
+| The app stops. | `hagent.invoke` and the AI Task entities fail with an error. The connectivity sensor turns off. When the app starts again, it runs queued invocations and records running ones as failed (section 9.6). |
+| HA Core restarts. | The app reconnects and restores subscriptions. Rules with template actions continue to work during the restart. |
+| The internet connection is down. | Template rules continue. Decision rules decline. Agent turns return the fallback (section 9.7). |
 | A decision call fails. | The runtime retries with backoff. If it still fails, the rule declines, and the router starts an agent turn. |
-| A chat model call fails. | The runtime retries with backoff. If it still fails, the invocation returns an error. |
+| A chat model call fails. | The runtime retries with backoff. If it still fails, the router returns the fallback. |
 | The embedding provider fails. | Search falls back to keyword search. The runtime embeds the queued texts later. |
 | A rule fails. | The runtime records the error against the rule, and starts an agent turn. |
 | A service call fails. | The tool returns the error to the model. |
-| The budget is spent. | Rules continue. Agent turns return an error until the next day. |
+| The budget is spent. | Rules continue. Agent turns return the fallback until the next day. |
 
 ## 19. Security
 
 - The app has administrator access to HA. The scope check is the only barrier
   between an agent and full access. It must have complete test coverage.
+- `admin` is a blanket scope. The user gives it only to agents that the user
+  trusts with full control of HA.
+- Rule templates render in the app against a scoped view of state, so a rule
+  cannot read entities outside the agent's scope (section 10.2).
+- The scope check resolves targets to entity IDs, checks service data, and
+  denies indirect services such as scripts and automations unless the scope
+  names them (section 8).
 - Agents cannot change their definitions, their store attachments or their
   access.
 - Calls that change HA go to an audit log. `admin` changes keep the previous
@@ -850,6 +1034,9 @@ primitives. None of this logic is part of hagent.
 - Approval: none. During a trial period, the user can mark outputs for
   approval. Rules cannot write those outputs, so every decision then goes
   through an agent turn until the user removes the approval.
+- Concurrency: `queued`.
+- Fallback: `last_result`, so that the heating keeps its last setting when
+  the budget is spent or the internet connection is down.
 - Models: a low-cost chat model and a decision model.
 
 **What the agent builds**
@@ -860,16 +1047,23 @@ primitives. None of this logic is part of hagent.
    boiler limits in the boiler manual when it needs them.
 2. The agent subscribes to the comfort selectors, so that a "cold" report
    starts an invocation at once.
-3. The agent subscribes to manual changes of the valves. It treats a manual
-   change soon after its own change as a sign of a bad decision, and records
-   it in its private store.
-4. The agent writes a rule for the 5-minute calls. The rule asks the decision
-   model to choose a flow temperature from a list. Its result template
-   computes the weighted mean, applies the 5 °C step limit, and declines when
-   confidence is low. The agent turns trial on.
-5. In the daily review, the agent reads the trial agreement and the comfort
-   reports. It turns trial off when the rule agrees with its own decisions,
-   and it changes or deletes the rule when it does not.
+3. The agent subscribes to changes of the valves. The runtime ignores the
+   agent's own writes, by their HA context IDs, so the agent sees only manual
+   changes. It treats a manual change soon after its own change as a sign of
+   a bad decision, and records it in its private store.
+4. The agent writes a rule for the 5-minute calls. Its context collects the
+   last 24 hours of temperatures, cached for 30 minutes, and the weather
+   forecast, cached for 1 hour. The rule asks the decision model to choose a
+   flow temperature from a list. Its result template computes the weighted
+   mean, applies the 5 °C step limit, and declines when confidence is low.
+   Its agreement template accepts a difference of 3 °C or less.
+5. The agent backtests the rule against the last 7 days of its own
+   decisions. The rule agrees on 92 percent of them, so the agent activates
+   it with trial on.
+6. In the daily review, the agent reads the trial agreement, the comfort
+   reports and the manual changes. It turns trial off when the rule agrees
+   with its own decisions. When it does not, it writes a new rule version,
+   backtests it, and activates it or rolls back.
 
 ## 21. Out of scope for the first version
 
@@ -892,7 +1086,19 @@ primitives. None of this logic is part of hagent.
 | Installation | By hand for the first version. |
 | Where agents are defined | In the app, through its own management UI. The integration creates one HA device per agent automatically. |
 | AI Task entity | Each agent exposes one, with the `GENERATE_DATA`, `SUPPORT_ATTACHMENTS` and `EVALUATE` features. |
-| Calculation language for rules | HA templates. |
+| Calculation language for rules | HA template syntax (Jinja with HA functions), rendered by the app in a sandbox against a state view limited to the agent's scope. |
+| `admin` scope | A blanket scope: full access to HA, with no narrower form. |
+| Indirect services | Denied for `read` and `control` scopes unless the scope names each one (section 8). |
+| Prompt injection | No measures beyond marking retrieved text as data. |
+| Concurrency | A per-agent queue with HA automation modes. `queued` by default. |
+| Fallback | `last_result` by default. Used when the budget is spent, the provider is unreachable, or a turn fails or reaches its limits. |
+| Rule quality | Agreement templates, backtests against history before activation, and trials whose agent turns write nothing. |
+| Versions | Rules and definitions have unchanging versions, statistics per version, and rollback. |
+| Rule context | Rules can collect history statistics, data-only action responses, store files and invocation summaries. |
+| Own writes | Recognised by HA context IDs, and ignored by subscriptions by default. |
+| Timeout | `on_timeout: cancel` by default for agents with outputs. |
+| Approval of rules | No user approval before a rule goes live. |
+| First version scope | All features in this document. No phased release. |
 | Default daily budget | USD 0.50 per agent. |
 | Invocation defaults | `hagent.invoke` waits for the result by default, with a 30-second timeout. Each call can override both. |
 | Rule trial sample rate | 1 in 5 matches by default. Each rule can override it. |
