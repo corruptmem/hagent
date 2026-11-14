@@ -2,7 +2,7 @@
 name = "hagent-app"
 version = "0.0.0"
 description = "hagent app: runtime for persistent Home Assistant agents."
-requires-python = ">=3.15"
+requires-python = ">=3.14"
 dependencies = []
 
 [build-system]

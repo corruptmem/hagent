@@ -579,8 +579,8 @@ primitives. None of this logic is part of hagent.
 | Invocation defaults | `hagent.invoke` waits for the result by default, with a 30-second timeout. Each call can override both. |
 | Rule trial sample rate | 1 in 5 matches by default. Each rule can override it. |
 | HA user for the app | The app uses the Supervisor proxy, which acts as an administrator. The runtime scope check enforces agent scopes. A separate non-admin HA user is a possible later option. |
-| App language | Python 3.15. The official OpenAI SDK serves both providers. |
-| Integration language | Python 3.14, the version that HA Core requires, because HA Core loads the integration with its own interpreter. |
+| Python version | Python 3.14 for the app and the integration. HA Core requires 3.14 and loads the integration with its own interpreter. The app uses the same version for consistency. |
+| Provider SDK | The official OpenAI SDK serves both providers. |
 | Tooling | mise installs the tools. uv manages Python and dependencies. Backlog.md tracks work. pre-commit runs ruff (lint, static analysis and formatting) and mypy (strict type checking) before each commit. |
 | Management UI stack | A React single-page application with TanStack Router, TanStack Query and TanStack Table, built with Vite. The app serves the built files through Ingress. A JSON API supplies data, and a WebSocket sends change events. The router uses the Ingress base path from `X-Ingress-Path`. |
 

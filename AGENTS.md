@@ -32,9 +32,12 @@ use case. Agents build use-case logic from the generic primitives.
 ## Layout
 
 - `app/`: the hagent app (agent runtime and management UI back end).
-  Python 3.15.
 - `integration/custom_components/hagent/`: the HA integration. HA Core loads
-  it with its own interpreter, so keep it compatible with Python 3.14.
+  it with its own interpreter.
+
+All Python code targets Python 3.14, the version that HA Core requires. The
+app uses the same version, so that the app and the integration can share code
+and tooling.
 - `frontend/`: the management UI (React, TanStack, Vite). Not created yet.
 - `backlog/`: work tracking. Use the `backlog` CLI, not direct edits.
 - `docs/design.md`: the design.
