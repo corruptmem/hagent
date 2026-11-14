@@ -357,13 +357,20 @@ Review and Assist invocations always start an agent turn.
 
 ### 9.5 Agent turn
 
-An agent turn sends the model:
+Pydantic AI runs the agent turn. Pydantic AI is a Python framework for LLM
+agents. It supplies the tool loop, typed tool definitions, structured
+results, context compaction and provider prompt caching. hagent supplies the
+tools, the scope check, the stored history and the cost records.
 
-- The instructions from the definition.
-- The notes.
-- A short description of the agent's rules, schedules and scopes.
-- The invocation: source, inputs and caller data.
-- Recent history for this source, within a size limit.
+An agent turn sends the model these parts, in this order (section 13.2
+explains the order):
+
+1. The instructions from the definition.
+2. The tool definitions.
+3. The notes.
+4. A short description of the agent's rules, schedules and scopes.
+5. Recent history for this source, within a size limit.
+6. The invocation: source, current time, inputs and caller data.
 
 The model then calls tools in a loop until it returns a result. The runtime
 checks each tool call against the scope, and records it.
@@ -448,8 +455,11 @@ The definition sets limits:
 - A debounce period for each subscription, so that a sensor that changes
   often cannot cause many invocations.
 
-The scheduler keeps schedules in SQLite and restores them when the app
-starts.
+APScheduler runs timers and cron schedules. APScheduler is a Python library
+for scheduled jobs. It keeps jobs in SQLite through its SQLAlchemy job store,
+and restores them when the app starts. hagent runs event subscriptions
+itself, from the HA WebSocket event stream, because APScheduler has no HA
+event source.
 
 ## 13. Memory and history
 
@@ -460,6 +470,52 @@ starts.
   result and cost. The agent searches it with the `memory` tools.
 - **Retention**: a daily task summarises old history and deletes raw records
   after a retention period, 30 days by default.
+
+### 13.1 Context compaction
+
+Compaction makes the context smaller before it goes to the model. hagent
+uses the compaction strategies in Pydantic AI, in three places:
+
+- **Inside an agent turn.** A tool loop can collect large tool results. The
+  runtime cuts each tool result to a size limit, and keeps the full result in
+  history. When the turn reaches a token limit, Pydantic AI compacts the older
+  part of the turn.
+- **Across turns of one conversation.** An Assist conversation, or a series
+  of invocations from one source, keeps a summary that grows over time,
+  instead of a full transcript. A low-cost model writes the summary.
+- **Notes.** When the notes reach 80 percent of their size limit, the
+  runtime asks the agent to rewrite them shorter. The runtime does not cut
+  the notes itself.
+
+The invocation trace in the management UI shows each compaction and the
+summary that replaced the original text.
+
+### 13.2 Caching
+
+hagent uses four caches:
+
+- **Provider prompt cache.** Providers charge less for a prompt that starts
+  with the same text as a recent prompt. The agent turn therefore puts the
+  most stable parts first and the parts that change last (section 9.5). The
+  current time and input values go last, so that they do not stop the cache
+  from working. OpenAI caches automatically. Through OpenRouter, some models
+  need cache markers, which Pydantic AI adds. Pydantic AI also reports when a
+  request misses the cache unexpectedly. The cost records keep the cached
+  token count for each call.
+- **Result cache.** A rule can declare a time window and a list of inputs.
+  If an invocation arrives with the same values for those inputs within the
+  window, the runtime returns the previous result without running the rule
+  action. The default is no result cache.
+- **HA state cache.** The app subscribes to HA state changes, so it keeps a
+  current copy of entity states. State reads by tools and templates use this
+  copy, not a request to HA.
+- **Query cache.** Within one agent turn, the runtime keeps the results of
+  history and statistics queries, so that a repeated query does not go to HA
+  again.
+
+Compaction changes the start of the conversation, so it can stop the
+provider prompt cache from working for one request. The runtime compacts
+only when the saving is larger than this cost.
 
 ## 14. Review
 
@@ -474,8 +530,9 @@ history, then changes rules and notes.
 ## 15. Assist exposure
 
 If the definition allows it, the integration adds a conversation entity to
-the agent device. HA then lists the agent as an Assist conversation agent. A person can then select the agent in an Assist
-pipeline, or talk to it in the HA chat window.
+the agent device. HA then lists the agent as an Assist conversation agent.
+A person can then select the agent in an Assist pipeline, or talk to it in
+the HA chat window.
 
 A conversation is a series of agent turns with the same notes, history,
 tools and scopes. The app keeps the conversation history, so it does not
@@ -487,8 +544,10 @@ expire after 5 minutes. Rules do not answer Assist invocations.
 - **OpenRouter**: chat models through the OpenAI-compatible API, and the
   decisions endpoint, which provides Jev.
 
-Each provider has one adapter. The adapter reports token use and cost for
-each call. The user enters API keys in the management UI. The app never
+Pydantic AI supplies the chat model adapters for both providers. hagent
+writes its own adapter for the two decision endpoints, because Pydantic AI
+does not support them. Each adapter reports token use, cached tokens and
+cost for each call. The user enters API keys in the management UI. The app never
 sends keys to HA and never writes them to logs.
 
 ## 17. Cost controls
@@ -580,7 +639,8 @@ primitives. None of this logic is part of hagent.
 | Rule trial sample rate | 1 in 5 matches by default. Each rule can override it. |
 | HA user for the app | The app uses the Supervisor proxy, which acts as an administrator. The runtime scope check enforces agent scopes. A separate non-admin HA user is a possible later option. |
 | Python version | Python 3.14 for the app and the integration. HA Core requires 3.14 and loads the integration with its own interpreter. The app uses the same version for consistency. |
-| Provider SDK | The official OpenAI SDK serves both providers. |
+| Agent framework | Pydantic AI runs agent turns: tool loop, structured results, compaction and prompt caching, for both providers. hagent keeps history storage, scopes, rules and decision models. |
+| Scheduler | APScheduler, with its SQLAlchemy job store in SQLite. |
 | Tooling | mise installs the tools. uv manages Python and dependencies. Backlog.md tracks work. pre-commit runs ruff (lint, static analysis and formatting) and mypy (strict type checking) before each commit. |
 | Management UI stack | A React single-page application with TanStack Router, TanStack Query and TanStack Table, built with Vite. The app serves the built files through Ingress. A JSON API supplies data, and a WebSocket sends change events. The router uses the Ingress base path from `X-Ingress-Path`. |
 
@@ -599,3 +659,7 @@ None at present.
 - [OpenAI Decisions guide](https://developers.openai.com/api/docs/guides/decisions)
 - [OpenRouter decisions endpoint](https://openrouter.ai/docs/guides/features/decisions)
 - [Jev on OpenRouter](https://openrouter.ai/docs/guides/community/jev)
+- [Pydantic AI compaction](https://pydantic.dev/docs/ai/capabilities/compaction/)
+- [Pydantic AI caching](https://pydantic.dev/docs/ai/capabilities/caching/)
+- [Pydantic AI OpenRouter models](https://pydantic.dev/docs/ai/models/openrouter/)
+- [APScheduler](https://apscheduler.readthedocs.io/)
