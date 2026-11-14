@@ -78,3 +78,21 @@ async def test_run_stops_on_event(fake_ha: FakeHA, tmp_path: Path) -> None:
     stop.set()
     await asyncio.wait_for(task, 2)
     assert app.ctx is None
+
+
+async def test_app_context_repr_hides_secrets(fake_ha: FakeHA, tmp_path: Path) -> None:
+    key = "sk-key-SENTINEL"
+    config = Config(
+        ha_url=fake_ha.url,
+        ha_token=fake_ha.token,
+        data_dir=tmp_path,
+        options={"providers": {"openai_api_key": key}},
+    )
+    app = App(config, [])
+    ctx = await app.start()
+    try:
+        text = repr(ctx)
+        assert key not in text
+        assert fake_ha.token not in text
+    finally:
+        await app.stop()

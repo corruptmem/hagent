@@ -41,11 +41,13 @@ class Config:
     """
 
     ha_url: str
-    ha_token: str
+    # ha_token and options hold secrets (the HA token, provider API keys),
+    # so repr never shows them.
+    ha_token: str = field(repr=False)
     data_dir: Path
     port: int = DEFAULT_PORT
     log_level: str = "INFO"
-    options: Mapping[str, Any] = field(default_factory=dict)
+    options: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def database_path(self) -> Path:
