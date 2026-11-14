@@ -4,6 +4,8 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from hagent.agent import Agent
 from hagent.ha import HomeAssistantClient
 from hagent.tools import Toolbox
@@ -66,3 +68,24 @@ def test_agent_reports_tool_errors_to_model(ha: HomeAssistantClient) -> None:
     Agent(api, Toolbox(ha), model="m").ask("Is the hall light on?")
     result = api.requests[1]["messages"][-1]["content"][0]
     assert result["is_error"] is True
+
+
+def test_failed_turn_leaves_history_unchanged(ha: HomeAssistantClient) -> None:
+    class FailingAPI(ScriptedAPI):
+        def create(self, **kwargs: Any) -> SimpleNamespace:
+            if self._responses:
+                return super().create(**kwargs)
+            raise RuntimeError("network down")
+
+    api = FailingAPI(
+        [
+            SimpleNamespace(
+                stop_reason="tool_use",
+                content=[tool_use("t1", "list_entities", {})],
+            )
+        ]
+    )
+    agent = Agent(api, Toolbox(ha), model="m")
+    with pytest.raises(RuntimeError):
+        agent.ask("List everything")
+    assert agent.history == []

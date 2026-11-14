@@ -20,10 +20,12 @@ example locks, alarms and heating.
 Build hagent as a standalone Python 3.12 package with a command-line
 interface (CLI).
 
-- Use the Anthropic Python SDK for the LLM. Run the tool-use loop in hagent
+- Use the Anthropic Python software development kit (SDK) for the LLM. Run the tool-use loop in hagent
   code, not in a framework. The default model is `claude-sonnet-5-5`. The
   `HAGENT_MODEL` variable overrides it.
-- Use the HA REST API through `httpx`. Authenticate with a long-lived access
+- Use the HA REST API through `httpx`. An application programming interface
+  (API) is the set of requests that a program accepts. REST is a style of API
+  that uses plain HTTP requests. Authenticate with a long-lived access
   token. A long-lived access token is a bearer token that an HA user creates
   on their profile page.
 - Read all settings from environment variables. Keep secrets out of the

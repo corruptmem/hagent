@@ -42,7 +42,18 @@ class Agent:
         self.history: list[dict[str, Any]] = []
 
     def ask(self, text: str) -> str:
-        """Send one user message. Return the final text reply."""
+        """Send one user message. Return the final text reply.
+
+        If the turn fails, remove its messages so the history stays valid.
+        """
+        start = len(self.history)
+        try:
+            return self._run_turn(text)
+        except BaseException:
+            del self.history[start:]
+            raise
+
+    def _run_turn(self, text: str) -> str:
         self.history.append({"role": "user", "content": text})
         for _ in range(MAX_TURNS):
             response = self._api.create(

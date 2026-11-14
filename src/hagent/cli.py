@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Any
 
@@ -25,12 +26,15 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as err:
         print(err, file=sys.stderr)
         return 2
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("Missing environment variables: ANTHROPIC_API_KEY", file=sys.stderr)
+        return 2
 
     # Import here so that --help works without the SDK configured.
     import anthropic
 
     from hagent.agent import Agent
-    from hagent.ha import HomeAssistantClient
+    from hagent.ha import HomeAssistantClient, HomeAssistantError
     from hagent.tools import Toolbox
 
     with HomeAssistantClient(settings.ha_url, settings.ha_token) as ha:
@@ -39,9 +43,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         agent = Agent(anthropic.Anthropic().messages, toolbox, model=settings.model)
 
+        def ask(text: str) -> bool:
+            try:
+                print(agent.ask(text))
+            except (anthropic.APIError, HomeAssistantError) as err:
+                print(f"Error: {err}", file=sys.stderr)
+                return False
+            except KeyboardInterrupt:
+                print("\nCancelled.", file=sys.stderr)
+                return False
+            return True
+
         if args.prompt:
-            print(agent.ask(" ".join(args.prompt)))
-            return 0
+            return 0 if ask(" ".join(args.prompt)) else 1
 
         mode = "actions need approval" if settings.allow_actions else "read-only"
         print(f"hagent ({settings.model}, {mode}). Ctrl-D to exit.")
@@ -52,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
                 print()
                 return 0
             if text:
-                print(agent.ask(text))
+                ask(text)
 
 
 if __name__ == "__main__":

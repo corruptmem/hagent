@@ -3,8 +3,9 @@
 ## Layout
 
 - `src/hagent/config.py`: settings from environment variables.
-- `src/hagent/ha.py`: Home Assistant (HA) REST client.
-- `src/hagent/tools.py`: tool definitions for the LLM, and the code that runs them.
+- `src/hagent/ha.py`: client for the Home Assistant (HA) REST application
+  programming interface (API).
+- `src/hagent/tools.py`: tool definitions for the large language model (LLM), and the code that runs them.
 - `src/hagent/agent.py`: tool-use loop against the Anthropic Messages API.
 - `src/hagent/cli.py`: `hagent` command.
 - `tests/`: tests with a fake HA (`httpx.MockTransport`) and a scripted fake LLM.

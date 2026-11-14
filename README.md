@@ -1,7 +1,8 @@
 # hagent
 
 hagent is an agent that manages a home through Home Assistant (HA). It sends
-your request to a Claude large language model (LLM). The LLM uses tools to
+your request to a Claude large language model (LLM). An LLM is a model that
+reads and writes text. The LLM uses tools to
 read HA entities and, if you allow it, to call HA services.
 
 hagent is read-only by default. It changes devices only when you set
@@ -12,7 +13,7 @@ hagent is read-only by default. It changes devices only when you set
 - Python 3.12 or newer, and [uv](https://docs.astral.sh/uv/).
 - An HA instance and a long-lived access token. To create a token, open your
   HA profile page, go to the Security tab, and select "Create token".
-- An Anthropic API key.
+- An Anthropic application programming interface (API) key.
 
 ## Set up
 
@@ -26,7 +27,7 @@ set -a; source .env; set +a
 |---|---|---|
 | `HA_URL` | Yes | Base URL of HA, for example `http://homeassistant.local:8123`. |
 | `HA_TOKEN` | Yes | HA long-lived access token. |
-| `ANTHROPIC_API_KEY` | Yes | Anthropic API key. The SDK reads it. |
+| `ANTHROPIC_API_KEY` | Yes | Anthropic API key. The Anthropic software development kit (SDK) reads it. |
 | `HAGENT_MODEL` | No | Claude model ID. The default is `claude-sonnet-5-5`. |
 | `HAGENT_ALLOW_ACTIONS` | No | Set to `true` to let hagent call services after approval. |
 
