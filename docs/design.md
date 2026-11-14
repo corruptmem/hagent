@@ -1,6 +1,7 @@
 # hagent design
 
-Status: draft for review. No code exists yet.
+Status: draft for review. The repository has tooling, but no application code
+yet.
 
 ## 1. Purpose
 
@@ -11,7 +12,7 @@ services.
 An agent is a configured program that uses a large language model (LLM) to
 do work. An LLM is a model that reads and writes text. In hagent, the user
 defines each agent: its instructions, models, tools and permissions. hagent
-runs the agents and keeps their memory and history.
+runs the agents and keeps their knowledge and history.
 
 HA automations call hagent agents. An automation is an HA rule of the form
 "when a trigger occurs, if conditions are true, run actions." Agents can also
@@ -37,7 +38,7 @@ For example, the owner has heating automations that query days of history
 and call a model every 5 to 15 minutes. Each run pays for the full context
 again. Nothing remembers past decisions, and nothing improves the logic.
 
-hagent gives each agent persistent memory and history, a tool system with
+hagent gives each agent persistent knowledge and history, a tool system with
 permissions, and the ability to replace repeated model calls with cheaper
 rules that the agent writes itself.
 
@@ -47,15 +48,16 @@ rules that the agent writes itself.
 |---|---|
 | App | A container that the HA Supervisor runs next to HA Core. HA called apps "add-ons" before release 2026.2. |
 | Integration | Python code that HA Core loads. It adds entities, actions and configuration screens to HA. |
-| Agent definition | The configuration of one agent, owned by the user. |
-| Agent state | The data that an agent creates and changes itself: rules, schedules and history. |
+| Agent definition | The configuration of one agent, owned by the user (section 7). |
+| Agent state | The data that an agent creates and changes itself: rules, schedules and history (section 7). |
 | Knowledge store | A named collection of notes and uploaded documents. One or more agents can attach it (section 13.4). |
 | Invocation | One call to an agent. |
-| Agent turn | An invocation that the LLM handles, with instructions, memory, tools and history. |
+| Agent turn | An invocation that the LLM handles, with instructions, knowledge, tools and history. |
 | Tool | A function that an agent can call during an agent turn. |
-| Scope | The set of HA data and actions that a tool may use for one agent. |
-| Rule | A fast path that an agent writes. A rule answers an invocation without an agent turn. |
+| Scope | The limits on what a tool may do for one agent: which HA data and actions it may use, or which knowledge stores it may read or write. |
+| Rule | A fast path that an agent writes. A rule answers an invocation without an agent turn (section 10). |
 | Decision model | A model that returns typed answers with probabilities, not text. Examples: the OpenAI Decisions API, and Jev on OpenRouter. |
+| Embedding model | A model that converts text into a vector, a list of numbers that represents its meaning (section 13.3). |
 
 ## 4. Requirements
 
@@ -65,23 +67,24 @@ rules that the agent writes itself.
 - R3. The definition can attach entities or devices as inputs and as outputs.
   An output attachment lets the agent set that entity.
 - R4. An agent can return text or structured output to the caller instead.
-- R5. Each agent has persistent memory and history.
-- R5a. The user can create several knowledge stores, each with a description
+- R5. Each agent has persistent knowledge and history.
+- R6. The user can create several knowledge stores, each with a description
   of what belongs in it. The user can upload documents to a store. Several
   agents can share a store, and one agent can attach several stores.
-- R6. An agent can write rules. A rule answers an invocation by a template
+- R7. An agent can write rules. A rule answers an invocation by a template
   calculation or by one decision model call, without an agent turn.
-- R7. An agent wakes up on a schedule to review its rules and change them.
-- R8. The definition lists the tools of the agent: self-modification, memory
-  and HA access.
-- R9. Each HA tool has a scope: read-only, specific entities or devices, or
+- R8. An agent wakes up on a schedule to review its rules and change them.
+- R9. The definition lists the tools of the agent: self-modification,
+  knowledge, history and HA access.
+- R10. Each HA tool has a scope: read-only, specific entities or devices, or
   full administration, including changes to automations.
-- R10. The definition can expose the agent to Assist. This is optional and
+- R11. The definition can expose the agent to Assist. This is optional and
   off by default.
-- R11. hagent supports OpenAI and OpenRouter.
-- R12. hagent runs as an HA app.
-- R13. Cost is a primary design goal.
-- R14. The design is generic. No feature exists for one use case only.
+- R12. hagent supports OpenAI and OpenRouter.
+- R13. hagent runs as an HA app.
+- R14. Cost is a primary design goal.
+- R15. The design is generic. No feature exists for one use case only.
+- R16. Every default can be overridden, per agent, per rule or per call.
 
 ## 5. Prior art
 
@@ -106,12 +109,13 @@ hagent has two parts: an app and an integration.
 |  | hagent integration             | link  | Agent runtime                | |
 |  |  - one device per agent        |<----->|  - agent definitions         | |
 |  |  - hagent.invoke action        |       |  - router + rule engine      | |
-|  |  - per-agent entities          |       |  - tool executor + scopes    | |
+|  |  - AI Task entities            |       |  - tool executor + scopes    | |
 |  |  - Assist agents (optional)    |       |  - scheduler                 | |
-|  +--------------------------------+       |  - memory, history (SQLite)  | |
-|  | Automations, entities, events  |<------|  - provider adapters         | |
-|  +--------------------------------+  HA   |  - management UI (Ingress)   | |
-|                                      API  +--------------+---------------+ |
+|  +--------------------------------+       |  - knowledge, history,       | |
+|  | Automations, entities, events  |<------|    search (SQLite)           | |
+|  +--------------------------------+  HA   |  - provider adapters         | |
+|                                      API  |  - management UI (Ingress)   | |
+|                                           +--------------+---------------+ |
 +----------------------------------------------------------|-----------------+
                                                            | HTTPS
                                                 OpenAI / OpenRouter
@@ -123,14 +127,15 @@ hagent has two parts: an app and an integration.
   the user creates, changes or deletes an agent in the app, the integration
   adds, updates or removes the matching device.
 - It creates one HA device for each agent, with these entities:
-  - a status sensor (idle, running, budget spent, error);
+  - a status sensor (idle, running, budget spent, turned off, error);
   - a last-result sensor;
   - a cost-today sensor;
   - an enabled switch;
   - an AI Task entity (section 9.3);
-  - a conversation entity, only if the agent allows Assist.
-- It provides the `hagent.invoke` action (section 9). The action targets the
-  agent device.
+  - a conversation entity, only if the agent allows Assist (section 15).
+- It creates one more device for hagent itself, with a connectivity sensor
+  that shows the state of the link to the app.
+- It provides the `hagent.invoke` action (section 9.2).
 - It forwards invocations to the app and returns the results.
 
 **The app** does all agent work:
@@ -140,11 +145,11 @@ hagent has two parts: an app and an integration.
 - It connects to HA Core through the Supervisor proxy, with the
   `SUPERVISOR_TOKEN` that the Supervisor supplies. It uses the HA WebSocket
   API for state, events and service calls.
-- It keeps agent state in SQLite in the app data directory. HA backups
-  include this directory.
-- It stores agent definitions, and serves a management UI through Ingress.
-  Ingress shows an app web page in the HA sidebar, behind HA login. Only HA
-  administrators can open it. Section 7.1 describes the UI.
+- It keeps agent definitions, agent state, knowledge stores and history in
+  SQLite, in the app data directory. HA backups include this directory.
+- It serves a management UI through Ingress. Ingress shows an app web page
+  in the HA sidebar, behind HA login. Only HA administrators can open it.
+  Section 7.2 describes the UI.
 
 **The link** is a WebSocket connection on the internal Supervisor network.
 The user enters the app host name in the integration once. The app
@@ -168,64 +173,74 @@ rules:
 
 ### 6.2 Installation
 
-For the first version, the user installs both parts by
-hand. The user adds the app from a local app folder, and copies the
-integration into the HA `custom_components` folder.
+For the first version, the user installs both parts by hand. The user adds
+the app from a local app folder, and copies the integration into the HA
+`custom_components` folder.
 
-## 7. Agent definition and agent state
+## 7. Ownership of data
 
-The definition and the state are separate. This separation makes scope
-enforcement possible. The app stores both, in separate tables.
+The app keeps three kinds of data apart. This separation makes scope
+enforcement possible: no agent tool can change data that the user owns.
 
-**Agent definition** (owned by the user, edited only in the management UI):
+| Data | Owner | Who changes it |
+|---|---|---|
+| Agent definitions | The user | The user, in the management UI. |
+| Knowledge store configuration: name, description, size limit and attachments | The user | The user, in the management UI. |
+| Knowledge store content: files and documents | Shared | Files: agents with `read_write` access, and the user. Documents: the user only. |
+| Agent state: rules, schedules and history | The agent | The agent, through its tools. The user can also turn off or delete rules and schedules. |
+
+An agent can read its own definition, but no tool writes to it. An agent
+therefore cannot widen its own scope, outputs, store access or budget.
+
+### 7.1 Agent definition
 
 | Field | Content |
 |---|---|
 | Name and instructions | What the agent is for, in plain text. |
-| Models | A chat model, and an optional decision model. Each has a provider. |
+| Models | A chat model; an optional decision model; and an optional low-cost model for compaction summaries. The summary model defaults to the chat model. Each model has a provider. |
 | Inputs | Entities or devices whose current values go into every invocation. |
 | Outputs | Entities that the agent may set. |
 | Result type | `none`, `text`, or `structured` with a JSON schema. |
 | Tools and scopes | Section 8. |
-| Approval | Tools or scopes that need the user's approval for each call. |
-| Assist | Off by default. |
-| Budget | A daily cost limit, and limits for self-scheduled invocations. |
-| Review schedule | When the agent receives a review invocation. The default is daily. |
+| Knowledge stores | The attached stores, with access and main-file injection for each (section 13.4). |
+| Retrieval | Automatic recall: `off` (default), `assist` or `all`, with the result count and token limit (section 13.3). |
+| Approval | Tools or scopes that need the user's approval for each call (section 8). |
+| Assist | Off by default (section 15). |
+| Budget | A daily cost limit, USD 0.50 by default (section 17). |
+| Scheduling limits | Minimum interval, maximum schedules and subscriptions, and debounce (section 12). |
+| Review schedule | When the agent receives a review invocation. The default is daily (section 14). |
 
-**Agent state** (owned by the agent, stored in the app):
+When the user creates an agent, hagent also creates its private knowledge
+store (section 13.4). When the user deletes an agent, the management UI asks
+whether to delete or keep the private store.
 
-- Rules.
-- Schedules and event subscriptions.
-- The content of its private knowledge store (section 13.4).
-- History of invocations, tool calls, results and costs.
+### 7.2 Management UI
 
-An agent can read its definition, but no tool writes to it. Only the user
-changes a definition, through the management UI. An agent therefore cannot
-widen its own scope, outputs or budget.
+The management UI is a web application in the app. It has four areas.
 
-### 7.1 Management UI
-
-The management UI is a web application in the app. It has two jobs: define
-agents, and inspect what they do.
-
-**Define**
+**Agents**
 
 - Create, edit, copy, turn off and delete agents.
 - Pick inputs, outputs and HA scopes from the live list of HA entities,
   devices, areas and labels.
-- Turn tool groups on and off, and mark tools for approval.
-- Choose providers and models, and enter API keys.
-- Set the budget, the scheduling limits and the review schedule.
+- Turn tool groups on and off, attach knowledge stores, and mark tools for
+  approval.
+- Choose models, and set the budget, limits, retrieval and review schedule.
 - Run a test invocation with sample data, without changes to HA.
+
+**Knowledge**
+
+- Create stores, and edit their names, descriptions and size limits.
+- Upload, replace and delete documents.
+- Browse and edit files, see which agents attach each store, and restore
+  earlier versions of files.
 
 **Inspect**
 
 - Invocations: a list with filters by agent, source, path and result. Each
   entry opens a full trace: inputs, the rule or the model messages, every
-  tool call with its scope decision, the result and the cost.
-- Knowledge stores: create stores, edit descriptions and size limits,
-  upload and replace documents, browse and edit files, see which agents
-  attach each store, and restore earlier versions of files.
+  tool call with its scope decision, each compaction, the result and the
+  cost.
 - History: search across past invocations.
 - Rules: each rule, its templates, its statistics and its trial agreement.
   The user can turn a rule off or delete it.
@@ -233,28 +248,33 @@ agents, and inspect what they do.
 - Permissions: the effective scope of each tool, and a log of denied calls.
 - Changes to HA: the audit log, with the previous version of each `admin`
   change.
-- Cost: by agent, by day and by path.
+- Cost: by agent, by day and by path, including cached tokens and embedding
+  cost.
 - Approvals: pending approval requests, as an alternative to the HA
   notification.
 
+**Settings**
+
+- Providers and API keys.
+- The embedding model for the installation (section 13.3).
+
 ## 8. Tools and scopes
 
-The definition turns on tool groups. hagent supplies three groups.
+The definition turns on tool groups. hagent supplies four groups.
 
 **`self`** — change agent state:
 
-- Create, change, turn on, turn off and delete rules.
-- Set, list and cancel timers and cron schedules.
+- Create, change, reorder, turn on, turn off and delete rules.
+- Set, list and cancel timers and cron schedules, including extra reviews.
 - Subscribe to and unsubscribe from HA events and state changes, with a
   filter.
 
 **`knowledge`** — knowledge stores (section 13.4): list, read, search,
-write and delete, limited by the access of each attachment.
+write and delete. The scope is the set of attached stores, with the access of
+each attachment.
 
 **`memory`** — history:
 
-- Read, write, search and delete memory files (the Pydantic AI memory
-  tools).
 - Search history and conversations, with filters and hybrid ranking
   (`memory.search`, section 13.3).
 - Read rule statistics (section 10.4).
@@ -272,13 +292,16 @@ An output attachment is a short form of `control` for one entity.
 
 **Enforcement.** Through the Supervisor proxy, the app has administrator
 access to HA. HA tokens have no fine-grained scopes. The runtime therefore
-checks every tool call against the scope before it sends anything to HA. The
-runtime, not the instructions, enforces the scope. Tests must show that a
-call outside the scope never reaches HA.
+checks every tool call against the scope before it acts. This applies to HA
+calls and to knowledge store calls. The runtime, not the instructions,
+enforces the scope. Tests must show that a call outside the scope never
+reaches HA or the store.
 
 **Approval.** For a tool or scope that the definition marks for approval, the
-runtime sends an HA notification with accept and reject actions. The call
-waits for the answer, up to a time limit.
+runtime sends an HA notification with accept and reject actions. The agent
+turn waits for the answer, up to a time limit. Rules cannot wait for
+approval, so a rule cannot write an output that needs approval (section
+10.1).
 
 **Audit.** The runtime records every call that changes HA. For `admin`
 changes, it also saves the previous version of the changed item.
@@ -305,9 +328,10 @@ data from the caller.
 
 ### 9.2 The `hagent.invoke` action
 
+The action targets the agent device, or any entity of that device.
+
 | Field | Meaning |
 |---|---|
-| `agent` | The agent to call. |
 | `data` | Optional context, as a mapping. |
 | `wait` | `true` (default): return the result as response data. `false`: return at once, and deliver the result later. |
 | `timeout` | Maximum wait in seconds. The default is 30. |
@@ -316,6 +340,7 @@ When `wait` is true, the action returns response data:
 
 ```yaml
 result: ...          # text or structured result, per the result type
+writes: [...]        # output entities that this invocation set
 path: rule           # rule or agent_turn
 rule_id: r12         # if a rule answered
 cost_usd: 0.0000     # cost of this invocation
@@ -326,8 +351,8 @@ background. It then fires an `hagent_result` event and updates the
 last-result entity of the agent.
 
 If the app is not reachable, the action fails with an error. The automation
-can catch it with `continue_on_error`. A connectivity entity shows the state
-of the link.
+can catch it with `continue_on_error`. The connectivity sensor shows the
+state of the link.
 
 ### 9.3 The AI Task entity
 
@@ -351,18 +376,20 @@ every few minutes can therefore receive a rule answer at low cost.
 
 HA gives each task a new chat log, and the AI Task action has no input to
 continue an earlier conversation. This does not limit hagent: the agent
-keeps its own notes and history across all invocations.
+keeps its own knowledge stores and history across all invocations.
 
 ### 9.4 The router
 
 The router handles each invocation in this sequence:
 
-1. It collects the input values.
-2. It tests the agent's rules in order. The first rule that matches answers
-   the invocation (section 10).
-3. If no rule matches, or the rule declines to answer, the runtime starts an
-   agent turn.
-4. The runtime records the invocation, the path, the result and the cost.
+1. If the agent is turned off, it rejects the invocation with an error.
+2. It collects the input values.
+3. It tests the agent's rules in the order that the agent set. The first rule
+   that matches answers the invocation (section 10).
+4. If no rule matches, or the rule declines, it starts an agent turn. If the
+   daily budget is spent, it returns an error instead, and the status sensor
+   shows "budget spent".
+5. It records the invocation, the path, the result and the cost.
 
 Review and Assist invocations always start an agent turn.
 
@@ -373,15 +400,16 @@ agents. It supplies the tool loop, typed tool definitions, structured
 results, context compaction and provider prompt caching. hagent supplies the
 tools, the scope check, the stored history and the cost records.
 
-An agent turn sends the model these parts, in this order (section 13.2
-explains the order):
+An agent turn sends the model these parts, in this order. The most stable
+parts come first, so that the provider prompt cache works (section 13.2):
 
 1. The instructions from the definition.
 2. The tool definitions.
 3. The attached knowledge stores, with descriptions and access, the index of
    their contents, and the injected main files (section 13.4).
 4. A short description of the agent's rules, schedules and scopes.
-5. Recent history for this source, within a size limit.
+5. Recent history for this source: a running summary plus the latest
+   records, within a size limit (section 13.1).
 6. Automatic recall results, only if the definition turns recall on
    (section 13.3).
 7. The invocation: source, current time, inputs and caller data.
@@ -398,10 +426,12 @@ an agent answer repeated invocations at low or zero cost.
 
 | Part | Content |
 |---|---|
+| Order | The position of the rule in the agent's list. The router tests rules in this order. |
 | Match | An HA template that returns true when the rule applies. It can test the source, the inputs and the caller data. |
 | Action | `template` or `decision` (below). |
 | Result | An HA template that builds the final result from the action output. It can also return "decline", which passes the invocation to an agent turn. |
-| Writes | Optional output entities to set from the result. They must be in scope. |
+| Writes | Optional output entities to set from the result. They must be in scope, and must not need approval. |
+| Cache | Optional. A time window and a list of inputs. If an invocation arrives with the same values for those inputs within the window, the runtime returns the previous result without running the action. Off by default. |
 | Trial | Optional. When on, the runtime also runs an agent turn on a sample of matches, and records whether the answers agree. The default sample rate is 1 in 5. Each rule can set its own rate. |
 
 ### 10.2 Template action
@@ -433,7 +463,7 @@ changes.
 
 The runtime records, for each rule:
 
-- How often it matched, answered and declined.
+- How often it matched, answered, declined and used its cache.
 - Errors.
 - Cost.
 - Trial agreement, if trial is on.
@@ -446,9 +476,9 @@ review.
 
 - **Output entities.** The agent sets an output entity with a tool call in an
   agent turn, or through the writes of a rule. The runtime checks the scope.
-  hagent adds no limits beyond the scope. An agent that needs limits, for
-  example a maximum change per step, writes them into its rules and knowledge stores. The
-  user can also enforce limits in HA.
+  hagent adds no limits beyond the scope and approval. An agent that needs
+  limits, for example a maximum change per step, writes them into its rules
+  and its instructions to itself. The user can also enforce limits in HA.
 - **Text and structured results.** The agent returns the result to the
   caller. The runtime validates a structured result against the JSON schema.
   If it fails, the runtime asks the model once to correct it, then reports an
@@ -475,13 +505,13 @@ and restores them when the app starts. hagent runs event subscriptions
 itself, from the HA WebSocket event stream, because APScheduler has no HA
 event source.
 
-## 13. Memory and history
+## 13. Knowledge and history
 
 An agent remembers through two kinds of data:
 
 - **Knowledge stores** hold notes that agents write, and documents that the
-  user uploads. A store can belong to one agent or be shared by several.
-  Section 13.4 describes stores.
+  user uploads. Each agent has a private store, and can attach shared stores
+  (section 13.4).
 - **History** is a record of each invocation: its inputs, path, tool calls,
   result and cost. Each agent has its own history. The agent searches it with
   the `memory.search` tool. A daily task summarises old history and deletes
@@ -497,9 +527,10 @@ uses the compaction strategies in Pydantic AI, in three places:
   runtime cuts each tool result to a size limit, and keeps the full result in
   history. When the turn reaches a token limit, Pydantic AI compacts the older
   part of the turn.
-- **Across turns of one conversation.** An Assist conversation, or a series
-  of invocations from one source, keeps a summary that grows over time,
-  instead of a full transcript. A low-cost model writes the summary.
+- **Across turns of one conversation or source.** An Assist conversation, or
+  a series of invocations from one source, keeps a running summary plus the
+  latest records, instead of a full transcript. The summary model in the
+  definition writes the summary.
 - **Main files.** When an injected main file (section 13.4) reaches 80
   percent of its size limit, the runtime asks the agent to move detail into
   other files and rewrite the main file shorter. The runtime does not cut the
@@ -520,10 +551,8 @@ hagent uses four caches:
   need cache markers, which Pydantic AI adds. Pydantic AI also reports when a
   request misses the cache unexpectedly. The cost records keep the cached
   token count for each call.
-- **Result cache.** A rule can declare a time window and a list of inputs.
-  If an invocation arrives with the same values for those inputs within the
-  window, the runtime returns the previous result without running the rule
-  action. The default is no result cache.
+- **Rule result cache.** A rule can return its previous result for the same
+  inputs within a time window (section 10.1).
 - **HA state cache.** The app subscribes to HA state changes, so it keeps a
   current copy of entity states. State reads by tools and templates use this
   copy, not a request to HA.
@@ -543,9 +572,9 @@ hagent uses hybrid search: it runs a keyword search and a vector search on
 the same query, and merges the two result lists.
 
 - **Keyword search** uses FTS5, the full-text index that SQLite includes.
-- **Vector search** uses sqlite-vec, a SQLite extension. An embedding model
-  converts each text into a vector, a list of numbers that represents its
-  meaning. Texts with similar meaning have vectors that are near each other.
+- **Vector search** uses sqlite-vec, a SQLite extension. The embedding model
+  converts each text into a vector. Texts with similar meaning have vectors
+  that are near each other.
 - **Merge** uses reciprocal rank fusion (RRF). RRF gives each result a score
   from its rank in each list, and adds the scores.
 
@@ -556,7 +585,7 @@ necessary.
 
 | Collection | Content | Who can search it |
 |---|---|---|
-| Knowledge stores | Files and documents in each store, split into passages at headings and paragraphs (section 13.4). | Agents attached to the store. |
+| Knowledge stores | Files and documents in each store, split into passages at headings, paragraphs and pages (section 13.4). | Agents attached to the store. |
 | History | A short text for each invocation (source, decision, result), review reports and compaction summaries. | One agent. |
 | Conversations | Assist messages. | One agent. |
 | Entities | The HA entity catalogue: names, aliases, areas, labels, domains and device names. | All agents. Each query is filtered to the agent's `ha` scope. |
@@ -571,39 +600,46 @@ necessary.
 - `ha.find_entities` finds entities from a description, for example "the
   radiator in the back bedroom". It returns only entities in the agent's
   scope.
-- **Agent-driven retrieval.** By default, the agent decides when to search.
-  The always-loaded context tells it what it can search: the store
-  descriptions, the index of store contents and the injected main files
-  (section 13.4). This follows current practice: a small core memory is
-  always present, and the agent retrieves more on demand.
-- **Automatic recall (optional).** If the definition turns it on, the
-  runtime searches all of the agent's collections with the invocation text
-  before an agent turn. It adds the best results to the prompt, after the
-  history and before the invocation, with 5 results and a 1,000-token limit
-  by default. It is off by default. Invocations from automations are often
-  short and repetitive, so their text makes a poor search query, and recall
-  would add the same passages to every turn. Recall suits Assist
-  conversations, where a person's question is a good query. Recalled text is
-  marked as retrieved data, not instructions. Rules never use recall.
+
+**Agent-driven retrieval.** By default, the agent decides when to search.
+The always-loaded context tells it what it can search: the store
+descriptions, the index of store contents and the injected main files
+(section 13.4). This follows current practice: a small core memory is always
+present, and the agent retrieves more on demand.
+
+**Automatic recall.** The definition can turn on automatic recall. The
+runtime then searches all of the agent's collections with the invocation
+text before an agent turn. It adds the best results to the prompt, after the
+history and before the invocation. The setting has three values:
+
+- `off` (default);
+- `assist`: only for Assist conversations, where a person's question is a
+  good search query;
+- `all`: for every agent turn.
+
+The defaults are 5 results and a 1,000-token limit. Recall is off by default
+because invocations from automations are often short and repetitive. Their
+text makes a poor search query, and recall would add the same passages to
+every turn. Rules never use recall.
 
 **Embeddings**
 
 - One embedding model serves the whole installation, so that all vectors are
-  comparable. The user selects it in the management UI, from OpenAI or
-  OpenRouter. A change of model starts a full re-index in the background.
+  comparable. The user selects it in the management UI settings, from OpenAI
+  or OpenRouter. A change of model starts a full re-index in the background.
 - The runtime creates embeddings when it writes a record, in batches, from a
   background queue. It does not create an embedding again for text that has
   the same content hash.
-- The cost records include embedding cost. Text that an agent writes is
-  charged to that agent. Uploaded documents and the entity catalogue are
-  charged to the installation.
+- Embedding cost of text that an agent writes counts towards that agent's
+  budget. Uploaded documents and the entity catalogue are charged to the
+  installation.
 - Embedding sends text to the provider. The management UI states this when
   the user selects the model.
 
 **Failure and limits**
 
 - If sqlite-vec does not load, or the embedding provider fails, search falls
-  back to keyword search only. The status entity shows the reason.
+  back to keyword search only. The status sensor shows the reason.
 - sqlite-vec is before version 1.0, so its SQL interface can change. hagent
   keeps all sqlite-vec statements in one module, and pins the version.
 - Retention deletes vectors and index entries with their records.
@@ -629,10 +665,9 @@ A store holds two kinds of content:
 - **Documents**: files that the user uploads, for example a boiler manual.
   Agents can read and search documents, but cannot change them.
 
-**Private stores.** When the user creates an agent, hagent creates a private
-store for it, with read-write access. The user can edit its description. The
-private store is where the agent keeps its own notes. There is no separate
-notebook.
+**Private stores.** Each agent has a private store, with `read_write` access
+(section 7.1). It is where the agent keeps its own notes. The user can edit
+its description, and can attach it to other agents too.
 
 **Attachments.** The agent definition lists the stores that the agent can
 use. Each attachment has:
@@ -646,20 +681,19 @@ One agent can attach many stores, and one store can attach to many agents.
 An agent cannot attach a store to itself, or change its own access. Only the
 user does this, in the management UI.
 
-**Tools.** The `knowledge` tool group replaces the Pydantic AI Harness memory
-tools, because those tools serve one notebook and have no store parameter.
-hagent copies their write behaviour:
+**Tools.** The `knowledge` tool group serves all stores. hagent does not use
+the memory tools of the Pydantic AI Harness package, because they serve one
+notebook and have no store parameter. hagent copies their write behaviour:
 
 | Tool | Effect |
 |---|---|
 | `knowledge.list` | List the attached stores, with descriptions and access, and the files and documents in a store. |
 | `knowledge.read` | Read a file or a document, or one section of it. Large documents are read in parts. |
 | `knowledge.search` | Hybrid search across all readable stores, or the stores named in the call. Each result names its store, its file or document, and its location. |
-| `knowledge.write` | Append to a file, or replace one exact passage. Needs `read_write` access. |
-| `knowledge.delete` | Delete a file. Needs `read_write` access. Documents cannot be deleted by agents. |
+| `knowledge.write` | Create a file, append to a file, or replace one exact passage. Needs `read_write` access. |
+| `knowledge.delete` | Delete a file. Needs `read_write` access. Agents cannot delete documents. |
 
-The runtime checks store access on every call, in the same way as HA
-scopes.
+The runtime checks store access on every call (section 8).
 
 **Prompt.** Each agent turn includes, after the tool definitions:
 
@@ -685,8 +719,6 @@ shows the change history of each file, and can restore an earlier version.
   PDF files with a text layer, Markdown, plain text and HTML.
 - The app extracts the text, splits it into passages at headings and pages,
   and indexes it. A search result names the document and the page.
-- Scanned PDFs without a text layer, and images, are out of scope for the
-  first version.
 - The user can replace a document with a new version, or delete it. The app
   updates the index.
 
@@ -704,9 +736,9 @@ A review is an invocation with the source `review`. The definition sets the
 schedule, daily by default. An agent can also schedule extra reviews with the
 `self` tools.
 
-hagent does not define what a review does. The instructions and the knowledge
-stores of the agent define it. A typical review reads rule statistics and recent
-history, then changes rules and store files.
+hagent does not define what a review does. The instructions and the
+knowledge stores of the agent define it. A typical review reads rule
+statistics and recent history, then changes rules and store files.
 
 ## 15. Assist exposure
 
@@ -715,51 +747,73 @@ the agent device. HA then lists the agent as an Assist conversation agent.
 A person can then select the agent in an Assist pipeline, or talk to it in
 the HA chat window.
 
-A conversation is a series of agent turns with the same knowledge stores, history,
-tools and scopes. The app keeps the conversation history, so it does not
-expire after 5 minutes. Rules do not answer Assist invocations.
+A conversation is a series of agent turns with the same knowledge stores,
+history, tools and scopes. The app keeps the conversation history, with
+compaction (section 13.1), so it does not expire after 5 minutes. Rules do
+not answer Assist invocations.
 
 ## 16. Providers
 
-- **OpenAI**: chat models through the Responses API, and the Decisions API.
-- **OpenRouter**: chat models through the OpenAI-compatible API, and the
-  decisions endpoint, which provides Jev.
+- **OpenAI**: chat models through the Responses API, the Decisions API, and
+  embeddings.
+- **OpenRouter**: chat models through the OpenAI-compatible API, the
+  decisions endpoint, which provides Jev, and embeddings.
 
 Pydantic AI supplies the chat model adapters for both providers. hagent
-writes its own adapter for the two decision endpoints, because Pydantic AI
-does not support them. Each adapter reports token use, cached tokens and
-cost for each call. The user enters API keys in the management UI. The app never
-sends keys to HA and never writes them to logs.
+writes its own adapters for the decision endpoints, because Pydantic AI does
+not support them. hagent calls the embeddings endpoints of both providers
+through their OpenAI-compatible interface. Each adapter reports token use,
+cached tokens and cost for each call.
+
+The user enters API keys in the management UI settings. The app never sends
+keys to HA and never writes them to logs.
 
 ## 17. Cost controls
 
 - Rules answer repeated invocations without an agent turn.
 - Decision actions bill input tokens only.
-- Knowledge stores and history summaries replace large context rebuilds.
+- Rule result caches skip repeated rule actions.
+- The prompt order lets providers cache the stable part of each prompt.
+- Knowledge stores, running summaries and compaction replace large context
+  rebuilds.
+- Retrieval is agent-driven, so that no turn pays for passages that it does
+  not need.
+- Embeddings are created once for each unique text.
 - Each agent has a daily budget. The default is USD 0.50. When the budget is
-  spent, agent turns stop and rules continue. The status entity shows the
+  spent, agent turns stop and rules continue. The status sensor shows the
   reason.
 - Limits on self-scheduled invocations prevent runaway cost.
-- Cost entities in HA show the cost per agent per day.
+- Cost sensors in HA show the cost per agent per day.
 
 ## 18. Failure handling
 
 | Failure | Behaviour |
 |---|---|
-| The app stops. | `hagent.invoke` fails with an error. The connectivity entity turns off. |
+| The app stops. | `hagent.invoke` and the AI Task entities fail with an error. The connectivity sensor turns off. |
 | HA Core restarts. | The app reconnects and restores subscriptions. |
-| A provider fails. | The runtime retries with backoff. A rule declines, and the runtime then tries an agent turn. If that also fails, the invocation returns an error. |
+| A decision call fails. | The runtime retries with backoff. If it still fails, the rule declines, and the router starts an agent turn. |
+| A chat model call fails. | The runtime retries with backoff. If it still fails, the invocation returns an error. |
+| The embedding provider fails. | Search falls back to keyword search. The runtime embeds the queued texts later. |
 | A rule fails. | The runtime records the error against the rule, and starts an agent turn. |
 | A service call fails. | The tool returns the error to the model. |
+| The budget is spent. | Rules continue. Agent turns return an error until the next day. |
 
 ## 19. Security
 
 - The app has administrator access to HA. The scope check is the only barrier
   between an agent and full access. It must have complete test coverage.
-- Agents cannot change their definitions.
+- Agents cannot change their definitions, their store attachments or their
+  access.
 - Calls that change HA go to an audit log. `admin` changes keep the previous
   version.
-- The management UI is available only through Ingress, behind HA login, to HA administrators. It can change any agent definition, so it is as sensitive as HA admin access.
+- Text from outside the instructions can contain instructions that an
+  attacker planted. This includes uploaded documents, HA entity names, store
+  files that other agents wrote, and recalled history. The runtime marks such
+  text as data, not instructions. Store change history lets the user find and
+  undo a bad write.
+- The management UI is available only through Ingress, behind HA login, to
+  HA administrators. It can change any agent definition, so it is as
+  sensitive as HA admin access.
 - API keys stay in the app. The UI shows them only masked.
 
 ## 20. Example: a heating agent
@@ -774,21 +828,25 @@ primitives. None of this logic is part of hagent.
 - Inputs: indoor and outdoor temperature, boiler state, presence, and one
   comfort selector for each occupant.
 - Outputs: the boiler flow temperature and the radiator valve positions.
-- Tools: `self`, `memory`, `knowledge`, and `ha: read` on climate, presence and weather
-  entities.
-- Approval: none at first for outputs. The user can mark outputs for approval
-  during a trial period.
+- Tools: `self`, `memory`, `knowledge`, and `ha: read` on climate, presence
+  and weather entities.
+- Knowledge stores: the three stores in the example in section 13.4.
+- Approval: none. During a trial period, the user can mark outputs for
+  approval. Rules cannot write those outputs, so every decision then goes
+  through an agent turn until the user removes the approval.
 - Models: a low-cost chat model and a decision model.
 
 **What the agent builds**
 
 1. An automation calls the agent every 5 minutes. At first each call is an
-   agent turn. The agent records warm-up times and occupant preferences in its
-   notes.
+   agent turn. The agent records room warm-up times in the `heating` store,
+   and reads occupant routines from the `household` store. It looks up the
+   boiler limits in the boiler manual when it needs them.
 2. The agent subscribes to the comfort selectors, so that a "cold" report
    starts an invocation at once.
 3. The agent subscribes to manual changes of the valves. It treats a manual
-   change soon after its own change as a sign of a bad decision, and notes it.
+   change soon after its own change as a sign of a bad decision, and records
+   it in its private store.
 4. The agent writes a rule for the 5-minute calls. The rule asks the decision
    model to choose a flow temperature from a list. Its result template
    computes the weighted mean, applies the 5 °C step limit, and declines when
@@ -807,6 +865,7 @@ primitives. None of this logic is part of hagent.
 - A local embedding model inside the app.
 - Text extraction from scanned PDFs and images (optical character
   recognition).
+- Image generation through the AI Task entity.
 
 ## 22. Decided
 
@@ -815,21 +874,22 @@ primitives. None of this logic is part of hagent.
 | Runtime location | An HA app. |
 | Providers | OpenAI and OpenRouter. |
 | Installation | By hand for the first version. |
-| Calculation language for rules | HA templates. |
-| Default daily budget | USD 0.50 per agent. |
 | Where agents are defined | In the app, through its own management UI. The integration creates one HA device per agent automatically. |
 | AI Task entity | Each agent exposes one, with the `GENERATE_DATA`, `SUPPORT_ATTACHMENTS` and `EVALUATE` features. |
+| Calculation language for rules | HA templates. |
+| Default daily budget | USD 0.50 per agent. |
 | Invocation defaults | `hagent.invoke` waits for the result by default, with a 30-second timeout. Each call can override both. |
 | Rule trial sample rate | 1 in 5 matches by default. Each rule can override it. |
 | HA user for the app | The app uses the Supervisor proxy, which acts as an administrator. The runtime scope check enforces agent scopes. A separate non-admin HA user is a possible later option. |
 | Python version | Python 3.14 for the app and the integration. HA Core requires 3.14 and loads the integration with its own interpreter. The app uses the same version for consistency. |
-| Agent framework | Pydantic AI runs agent turns: tool loop, structured results, compaction and prompt caching, for both providers. hagent keeps history storage, scopes, rules and decision models. |
+| Agent framework | Pydantic AI runs agent turns: tool loop, structured results, compaction and prompt caching, for both providers. hagent keeps history storage, scopes, rules, knowledge stores and decision models. |
 | Scheduler | APScheduler, with its SQLAlchemy job store in SQLite. |
-| Memory and retrieval | Knowledge stores (several per agent, shareable between agents, with descriptions and uploaded documents) and per-agent history. Hybrid search (SQLite FTS5 plus sqlite-vec, merged with RRF) over stores, history, conversations and the HA entity catalogue, in the first version. |
+| Knowledge | Knowledge stores: several per agent, shareable between agents, each with a description, with agent-written files and user-uploaded documents. |
+| Retrieval | Hybrid search (SQLite FTS5 plus sqlite-vec, merged with RRF) over stores, history, conversations and the HA entity catalogue, in the first version. Agent-driven by default. Automatic recall is optional and off by default. |
 | Embedding model | A low-cost model available through both providers, for example OpenAI `text-embedding-3-small`. Check the current models before release. |
 | Local embedding model | Not in the first version. |
-| Tooling | mise installs the tools. uv manages Python and dependencies. Backlog.md tracks work. pre-commit runs ruff (lint, static analysis and formatting) and mypy (strict type checking) before each commit. |
 | Management UI stack | A React single-page application with TanStack Router, TanStack Query and TanStack Table, built with Vite. The app serves the built files through Ingress. A JSON API supplies data, and a WebSocket sends change events. The router uses the Ingress base path from `X-Ingress-Path`. |
+| Tooling | mise installs the tools. uv manages Python and dependencies. Backlog.md tracks work. pre-commit runs ruff (lint, static analysis and formatting) and mypy (strict type checking) before each commit. |
 
 ## 23. Open questions
 
@@ -846,10 +906,10 @@ None at present.
 - [OpenAI Decisions guide](https://developers.openai.com/api/docs/guides/decisions)
 - [OpenRouter decisions endpoint](https://openrouter.ai/docs/guides/features/decisions)
 - [Jev on OpenRouter](https://openrouter.ai/docs/guides/community/jev)
+- [OpenRouter embeddings API](https://openrouter.ai/docs/api-reference/embeddings)
 - [Pydantic AI compaction](https://pydantic.dev/docs/ai/capabilities/compaction/)
 - [Pydantic AI caching](https://pydantic.dev/docs/ai/capabilities/caching/)
 - [Pydantic AI OpenRouter models](https://pydantic.dev/docs/ai/models/openrouter/)
-- [APScheduler](https://apscheduler.readthedocs.io/)
 - [Pydantic AI Harness memory](https://pydantic.dev/docs/ai/harness/memory/) (model for the write behaviour of the `knowledge` tools)
+- [APScheduler](https://apscheduler.readthedocs.io/)
 - [sqlite-vec](https://github.com/asg017/sqlite-vec)
-- [OpenRouter embeddings API](https://openrouter.ai/docs/api-reference/embeddings)
