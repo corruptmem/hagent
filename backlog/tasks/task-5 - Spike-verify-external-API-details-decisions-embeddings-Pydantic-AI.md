@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:24'
+updated_date: '2026-11-14 23:25'
 labels:
   - spike
   - providers
@@ -100,6 +100,8 @@ Dependencies: pydantic-ai-slim[openai,openrouter]>=2.68 added to hagent-app. pyd
 Spend: about USD 0.02 in total. OpenRouter daily usage was USD 0.0087 after the first runs, and the reruns added about USD 0.002. OpenAI usage was about 60k input tokens on gpt-6-luna and 15 embedding tokens.
 
 Checks: mise run check passed (ruff, mypy, pytest).
+
+Sweep of docs/design.md for stale copies of the corrected claims: no contradictions outside the edited sections. Section 7.2 (line 261) says cost views include cached tokens; this stays true, but it can name cache-read and cache-write tokens when the UI task starts.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
