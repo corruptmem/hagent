@@ -1,11 +1,11 @@
 ---
 id: TASK-7
 title: 'Agent definitions, versions and management API'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:47'
+updated_date: '2026-11-14 23:48'
 labels:
   - app
 dependencies:
@@ -74,6 +74,8 @@ AC evidence:
 - AC5: docs/api.md; test_api_doc.py checks that the document names every served route.
 
 Correction: test_agent_definition.py has 54 invalid cases, not 56.
+
+Lead: reviewed and merged. Proposed follow-ups (HA registry lookup endpoint for pickers; test invocation endpoint) fall under task-18 AC #3/#5, so the lead passed them to task-18 instead of creating tasks.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
