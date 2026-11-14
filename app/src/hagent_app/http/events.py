@@ -48,6 +48,9 @@ class ChangeEvents:
 
     A listener is a plain function. It must be fast and must not block. An
     exception in a listener does not stop the other listeners.
+
+    Call ``publish`` on the event-loop thread only, never inside
+    ``Database.run``. The WebSocket queues are not thread-safe.
     """
 
     def __init__(self) -> None:

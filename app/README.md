@@ -97,12 +97,15 @@ def default_components() -> list[Component]:
 - `http.add_middleware(mw)` adds a middleware that runs before every route.
   The JSON error middleware runs before it, so an `ApiError` from the
   middleware becomes a JSON response. Task-18 adds the Ingress
-  source-address check (`172.30.32.2`, design section 6.1) here.
+  source-address check (`172.30.32.2`, design section 6.1) here. The
+  integration link connects from HA Core, not from that address. The check
+  must therefore exempt the link path, or the link must use its own port.
 - `http.events` is the change-event hub. Call
   `http.events.publish(topic, action, record_id, data)` after a change.
   The `/api/events` WebSocket sends each event to the UI. An in-process
   consumer, for example the integration link, calls
   `http.events.subscribe(fn)`. `fn` is a plain function. It must be fast.
+  Call `publish` on the event-loop thread only, never inside `db.run`.
 
 ## How to read agent definitions
 
