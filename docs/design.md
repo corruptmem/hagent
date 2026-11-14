@@ -672,12 +672,49 @@ The definition sets limits:
 - A debounce period for each subscription, so that a sensor that changes
   often cannot cause many invocations.
 
-**Own writes.** Each service call that the runtime makes carries an HA
-context ID. HA copies this ID into the state changes that the call causes.
+**Own writes.** An HA context is a record with an ID that HA attaches to a
+service call and to each state change that the call causes. HA creates the
+context for each WebSocket `call_service` command. The client cannot supply
+one: HA rejects an extra `context` field with `invalid_format`. HA returns
+the context in the command result. When an entity writes its state during
+the call, the `state_changed` event carries the same context ID, in the
+event and in the new state. Task-2 tested this live with an `input_boolean`
+helper only.
+
+HA sends the event before the command result. The runtime therefore holds an
+event with an unknown context ID while one of its calls is in flight. When
+the result arrives, the runtime matches the held events. An event that is
+still unmatched after a short hold period is external. The runtime keeps the
+ID of a finished call for a TTL (time to live), because one call can cause
+several state changes or none.
+
 By default, a subscription ignores state changes that the agent caused
 itself. An agent therefore cannot start itself through its own outputs.
 The runtime also marks each state change in history as `agent` or
 `external`, so that an agent can tell a person's change from its own.
+
+Limits:
+
+- Late device reports. HA keeps a call's context on an entity for 5
+  seconds (`CONTEXT_RECENT_TIME_SECONDS` in `helpers/entity.py`). A device
+  that reports its new state later, through a poll or a push, gets a new
+  context. The runtime then marks the change `external`. Task-2 did not
+  test a real device.
+- The match covers only direct effects. An automation that reacts to an
+  agent's write runs with a new context. That context has `parent_id` set
+  to the agent's context ID (`components/automation/entity.py`). The
+  runtime treats such changes as `external` for now. A later decision can
+  make subscriptions follow `parent_id`. Task-2 read this from source and
+  did not test it live.
+- The context also carries a `user_id`. All agents share the app's HA user,
+  so the `user_id` can tell hagent from a person, but not one agent from
+  another. The runtime does not use it for the match.
+- A long hold delays external events while a call is in flight. A short
+  hold can mark a slow call's own write as `external`.
+
+Task-2 verified the `call_service` behaviour against HA Core 2026.11.1 and
+the HA Core `dev` source (commit `fa470750`). `spikes/task-2/` holds the
+probe and its result.
 
 **Missed schedules.** If the app was stopped when a schedule was due, the
 schedule runs once when the app starts, if it is less than 10 minutes late.
