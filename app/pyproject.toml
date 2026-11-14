@@ -3,7 +3,9 @@ name = "hagent-app"
 version = "0.0.0"
 description = "hagent app: runtime for persistent Home Assistant agents."
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "pydantic-ai-slim[openai,openrouter]>=2.68",
+]
 
 [build-system]
 requires = ["uv_build>=0.9"]

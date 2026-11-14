@@ -443,8 +443,9 @@ tools, the scope check, the stored history and the cost records.
 An agent turn sends the model these parts, in this order. The most stable
 parts come first, so that the provider prompt cache works (section 13.2):
 
-1. The instructions from the definition.
-2. The tool definitions.
+1. The tool definitions. Providers read these before the instructions, so
+   hagent does not control this order. Both parts are stable.
+2. The instructions from the definition.
 3. The attached knowledge stores, with descriptions and access, the index of
    their contents, and the injected main files (section 13.4).
 4. A short description of the agent's rules, schedules and scopes.
@@ -562,20 +563,50 @@ The action sends one request to the decision model in the definition. The
 request has one or more questions. Each question has:
 
 - The question text, written by the agent.
-- A list of choices: yes/no, categories or numbered options.
+- A question type, with its options (see below).
 - The values to include, taken from the inputs, the caller data and the
   context.
 
-The decision model returns a probability for each choice of each question.
-The result template turns the probabilities into the result. For example,
-it can take the most likely choice, compute a weighted mean, or decline when
-no choice is likely enough. The agent writes this logic. hagent does not
-build it in.
+All questions in one request see the same values. Each question gets an
+independent answer. One question cannot read the answer to another. There
+are three question types:
 
-The OpenAI Decisions API and the OpenRouter decisions endpoint both return
-typed answers with probabilities. hagent puts both behind one adapter. The
-OpenRouter decisions endpoint is in alpha, so the adapter must expect
-changes.
+| Type | Options | Answer |
+|---|---|---|
+| Yes/no | Optional text for yes and for no. On OpenAI, the adapter puts this text in the instructions. | The probability of yes, from 0 to 1. |
+| Choice | 2 to 255 named options. | The most likely option, a probability for each option, and a confidence value. |
+| Score | 2 to 10 ordered levels. | A score: the probability-weighted mean of the level numbers (0, 1, 2 ...). Also a probability for each level, and a confidence value. |
+
+The confidence value describes how the probabilities spread. It is not the
+probability that the answer is correct. On OpenAI, the model can refuse one
+question. The other questions still get answers.
+
+The result template turns the answers into the result. For example, it can
+take the most likely choice, use the score, or decline when no choice is
+likely enough. The agent writes this logic. hagent does not build it in.
+
+Thresholds belong to one decision model. In a probe, the same input gave a
+score of 1.09 (confidence 0.84) on OpenAI and 1.51 (confidence 0.26) on Jev.
+A change of decision model therefore needs a new backtest (section 10.7).
+
+The OpenAI Decisions API (`POST /v1/decisions`, model `gpt-6-luna`) and the
+OpenRouter decisions endpoint (`POST /api/alpha/decisions`, Jev models such
+as `typesafe/jev-1.14`) both return typed answers with probabilities. Their
+request and response shapes differ:
+
+| | OpenAI | OpenRouter |
+|---|---|---|
+| Values | `input`: text, or messages with text, JSON and image parts | `state`: text, a JSON object or an array |
+| Questions | An array. Each question has a `name`. | An object keyed by question name. |
+| Yes/no type name | `predicate` | `noul` |
+| Options | `choices` and `levels`: arrays of objects | `criteria`: an object or an array |
+| Answers | An array in question order, with `name` | An object keyed by question name |
+| Probabilities | An array of objects | An object keyed by option or level number |
+| Usage | Tokens, and cached and cache-write tokens. No cost. | Tokens and cost in USD |
+
+hagent puts both behind one adapter. The OpenRouter decisions endpoint is in
+alpha, so the adapter must expect changes. Neither provider charges for
+output tokens.
 
 ### 10.4 Rule statistics
 
@@ -742,12 +773,19 @@ An agent remembers through two kinds of data:
 ### 13.1 Context compaction
 
 Compaction makes the context smaller before it goes to the model. hagent
-uses the compaction strategies in Pydantic AI, in three places:
+uses the compaction strategies of Pydantic AI Harness. Pydantic AI Harness
+(`pydantic-ai-harness`) is a separate package from the Pydantic AI team. It
+works with every model. It is before version 1.0, so its interface can
+change between minor releases. hagent pins its version. The strategies run
+before each model request. Examples are `ClearToolResults`, which replaces
+old tool results with a placeholder, and `TieredCompaction`, which runs
+cheap strategies first and summarises only when necessary. hagent uses
+compaction in three places:
 
 - **Inside an agent turn.** A tool loop can collect large tool results. The
   runtime cuts each tool result to a size limit, and keeps the full result in
-  history. When the turn reaches a token limit, Pydantic AI compacts the older
-  part of the turn.
+  history. When the turn reaches a token limit, a compaction strategy
+  compacts the older part of the turn.
 - **Across turns of one conversation or source.** An Assist conversation, or
   a series of invocations from one source, keeps a running summary plus the
   latest records, instead of a full transcript. The summary model in the
@@ -769,9 +807,16 @@ hagent uses four caches:
   most stable parts first and the parts that change last (section 9.5). The
   current time and input values go last, so that they do not stop the cache
   from working. OpenAI caches automatically. Through OpenRouter, some models
-  need cache markers, which Pydantic AI adds. Pydantic AI also reports when a
-  request misses the cache unexpectedly. The cost records keep the cached
-  token count for each call.
+  (Anthropic and Gemini) need cache markers. The Pydantic AI `Caching`
+  capability adds them, and it also adds a breakpoint after the
+  instructions on OpenAI. The `WarnOnCacheBusts` capability of Pydantic AI
+  Harness warns when a request reads back much less of the cached prefix
+  than before. By default it warns only for a miss of at least 2,000 tokens
+  and 5 percent of the prefix. A cache write costs more than uncached
+  input: 1.25 times the input price for the default retention on OpenAI and
+  on Anthropic models. A cache read costs 0.1 times. The cost records keep
+  both the cache-read and the cache-write token counts for each call. Input
+  token counts include both.
 - **Rule result cache.** A rule can return its previous result for the same
   inputs within a time window (section 10.1).
 - **HA state cache.** The app subscribes to HA state changes, so it keeps a
@@ -784,7 +829,10 @@ hagent uses four caches:
 
 Compaction changes the start of the conversation, so it can stop the
 provider prompt cache from working for one request. The runtime compacts
-only when the saving is larger than this cost.
+only when the saving is larger than this cost. A probe showed the effect:
+when compaction cleared tool results on each request, each request read
+back only the instructions from the cache. The levers are a minimum saving
+for each clear (`min_clear_tokens`) and clears in batches (`max_messages`).
 
 ### 13.3 Retrieval
 
@@ -857,6 +905,13 @@ every turn. Rules never use recall.
   installation.
 - Embedding sends text to the provider. The management UI states this when
   the user selects the model.
+- Both providers accept the OpenAI embeddings request, with a batch of
+  texts and the `dimensions` parameter. The same model gives the same
+  vectors on both, for example `text-embedding-3-small` on OpenAI and
+  `openai/text-embedding-3-small` on OpenRouter. The OpenAI Python client
+  asks for base64 vectors by default. The adapter asks for `float`, or
+  decodes base64. OpenRouter returns the cost of each call. OpenAI does not,
+  so the adapter calculates the OpenAI cost from a price table.
 
 **Failure and limits**
 
@@ -983,11 +1038,31 @@ not answer Assist invocations.
 - **OpenRouter**: chat models through the OpenAI-compatible API, the
   decisions endpoint, which provides Jev, and embeddings.
 
-Pydantic AI supplies the chat model adapters for both providers. hagent
-writes its own adapters for the decision endpoints, because Pydantic AI does
-not support them. hagent calls the embeddings endpoints of both providers
-through their OpenAI-compatible interface. Each adapter reports token use,
-cached tokens and cost for each call.
+Pydantic AI supplies the chat model adapters for both providers:
+`OpenAIResponsesModel` for OpenAI and `OpenRouterModel` for OpenRouter.
+hagent calls the embeddings endpoints of both providers through their
+OpenAI-compatible interface. Each adapter reports token use, cache-read and
+cache-write tokens, and cost for each call. Pydantic AI reports a cost for
+each run on both providers, also where the provider response has no cost.
+
+Pydantic AI also has decision model classes. `OpenAIDecisionsModel` calls
+the OpenAI Decisions API. `SystemOneModel` calls Jev through a second
+OpenRouter route, `POST /api/v1/systemone`. A probe ran both. These classes
+build the questions from the fields of a Pydantic output type, and put the
+probabilities in `provider_details`. They differ from what section 10.3
+needs:
+
+- A yes/no field gives a confidence margin, not the probability of yes. A
+  field of type `float` from 0 to 1 gives the probability.
+- Agents write questions at run time, so hagent must build the output type
+  at run time.
+- A refusal of one question fails the whole request.
+- One request has at most 200 questions. The OpenAI API accepts 400.
+
+The decision adapter can therefore use these classes or call the two
+endpoints directly. This choice is open. The OpenRouter model list
+(`/api/v1/models`) does not include the Jev decision models. The
+management UI cannot use that list to offer them.
 
 Cost source (task-3). OpenRouter returns the cost of each call in
 `usage.cost`, for chat, decision and embedding calls. OpenAI returns token

@@ -1,0 +1,91 @@
+{
+  "url": "https://openrouter.ai/api/alpha/decisions",
+  "status": 200,
+  "request": {
+    "model": "typesafe/jev-1.14",
+    "state": {
+      "instruction": "Decide about home heating from this sensor reading.",
+      "sensor": "living room temperature",
+      "value_c": 17.2,
+      "target_c": 21.0,
+      "occupied": true,
+      "window_open": false,
+      "time": "07:10"
+    },
+    "questions": {
+      "should_heat": {
+        "type": "noul",
+        "instructions": "Should the heating turn on now?",
+        "criteria": {
+          "true": "The room is occupied, below target and no window is open.",
+          "false": "Heating would waste energy or is not needed."
+        }
+      },
+      "mode": {
+        "type": "choice",
+        "instructions": "Which heating mode fits best?",
+        "criteria": {
+          "comfort": "Occupied room, well below target.",
+          "eco": "Small gap to target, or nobody is home.",
+          "off": "No heating needed."
+        }
+      },
+      "urgency": {
+        "type": "score",
+        "instructions": "How urgent is heating?",
+        "criteria": [
+          "low: At or near target.",
+          "medium: A few degrees below target.",
+          "high: Far below target and occupied."
+        ]
+      }
+    }
+  },
+  "response": {
+    "model": "typesafe/jev-1.14-20261014",
+    "answers": {
+      "should_heat": {
+        "type": "noul",
+        "noul": 0.95
+      },
+      "mode": {
+        "type": "choice",
+        "choice": "comfort",
+        "probabilities": {
+          "comfort": 0.98,
+          "eco": 0.02,
+          "off": 0
+        },
+        "confidence": 0.97
+      },
+      "urgency": {
+        "type": "score",
+        "score": 1.51,
+        "legend": {
+          "0": "low: At or near target.",
+          "1": "medium: A few degrees below target.",
+          "2": "high: Far below target and occupied."
+        },
+        "probabilities": {
+          "0": 0,
+          "1": 0.49,
+          "2": 0.51
+        },
+        "confidence": 0.26
+      }
+    },
+    "usage": {
+      "input_tokens": 516,
+      "output_tokens": 70,
+      "cost": 2.1672e-05,
+      "is_byok": false,
+      "cost_details": {
+        "upstream_inference_cost": 2.1672e-05,
+        "upstream_inference_prompt_cost": 2.1672e-05,
+        "upstream_inference_completions_cost": 0
+      }
+    },
+    "id": "gen-dec-1794698279-H3pZZrTHFhQrdn0DQbjG",
+    "provider": "TypeSafe"
+  }
+}

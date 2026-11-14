@@ -1,0 +1,57 @@
+{
+  "base_url": "https://openrouter.ai/api/v1",
+  "request": {
+    "model": "openai/text-embedding-3-small",
+    "input": [
+      "Turn on the heating in the living room.",
+      "The kitchen light is off."
+    ],
+    "dimensions": 256
+  },
+  "response_keys": [
+    "data",
+    "id",
+    "model",
+    "object",
+    "provider",
+    "usage"
+  ],
+  "model": "text-embedding-3-small",
+  "count": 2,
+  "dims": [
+    256,
+    256
+  ],
+  "norms": [
+    0.9996,
+    1.0005
+  ],
+  "first_values": [
+    [
+      0.00955963134765625,
+      0.1058349609375,
+      -0.1385498046875
+    ],
+    [
+      -0.06781005859375,
+      0.096923828125,
+      -0.1239013671875
+    ]
+  ],
+  "usage": {
+    "prompt_tokens": 15,
+    "total_tokens": 15,
+    "cost": 3e-07,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 3e-07,
+      "upstream_inference_prompt_cost": 3e-07,
+      "upstream_inference_completions_cost": 0
+    }
+  },
+  "extra": {
+    "object": "list",
+    "provider": "OpenAI",
+    "id": "gen-emb-1794698298-NJtxT5wmB23JOeqzqRW9"
+  }
+}
