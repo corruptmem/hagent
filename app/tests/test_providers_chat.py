@@ -151,6 +151,6 @@ async def test_unmetered_paths_are_refused(providers_env: StartEnv) -> None:
     env = await providers_env()
     model = env.component.chat_model("openai", "gpt-4o-mini", agent_id="a1")
     with pytest.raises(NotImplementedError, match="compaction"):
-        await model.compact_messages(None)  # type: ignore[arg-type]
+        await model.compact_messages(None)
     with pytest.raises(NotImplementedError, match="batch"):
         await model.batch_create([])
