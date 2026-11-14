@@ -244,8 +244,10 @@ The definition turns on tool groups. hagent supplies three groups.
 
 **`memory`** — notes and history:
 
-- Read and replace notes.
-- Search history.
+- Read, write, search and delete memory files (the Pydantic AI memory
+  tools).
+- Search history and conversations, with filters and hybrid ranking
+  (`memory.search`, section 13.3).
 - Read rule statistics (section 10.4).
 
 **`ha`** — Home Assistant, at one of four levels:
@@ -253,7 +255,7 @@ The definition turns on tool groups. hagent supplies three groups.
 | Level | Permitted |
 |---|---|
 | `none` | Nothing. The agent receives only its inputs. |
-| `read` | Read states, history and statistics. The scope limits this to listed entities, devices, areas, labels or domains, or allows all. |
+| `read` | Read states, history and statistics, and find entities by description (`ha.find_entities`). The scope limits this to listed entities, devices, areas, labels or domains, or allows all. |
 | `control` | `read`, plus service calls on permitted targets. The scope can also list permitted services. |
 | `admin` | `control`, plus changes to HA configuration: automations, scripts, helpers, scenes and dashboards. |
 
@@ -370,7 +372,8 @@ explains the order):
 3. The notes.
 4. A short description of the agent's rules, schedules and scopes.
 5. Recent history for this source, within a size limit.
-6. The invocation: source, current time, inputs and caller data.
+6. Automatic recall results (section 13.3).
+7. The invocation: source, current time, inputs and caller data.
 
 The model then calls tools in a loop until it returns a result. The runtime
 checks each tool call against the scope, and records it.
@@ -463,9 +466,13 @@ event source.
 
 ## 13. Memory and history
 
-- **Notes**: a text document that the agent edits. The runtime sends it with
-  every agent turn. The definition limits its size, 4,000 characters by
-  default.
+- **Notes**: a notebook of Markdown files that the agent writes, from the
+  memory capability of the Pydantic AI Harness package. The main file,
+  `MEMORY.md`, goes into the context of each agent turn. Other files hold
+  longer notes, and the agent reaches them with the `read_memory` and
+  `search_memory` tools. The injected part is limited to 2,000 tokens by
+  default. The definition can change the limit. hagent supplies the store
+  for these files (section 13.3).
 - **History**: a record of each invocation, its inputs, path, tool calls,
   result and cost. The agent searches it with the `memory` tools.
 - **Retention**: a daily task summarises old history and deletes raw records
@@ -483,9 +490,9 @@ uses the compaction strategies in Pydantic AI, in three places:
 - **Across turns of one conversation.** An Assist conversation, or a series
   of invocations from one source, keeps a summary that grows over time,
   instead of a full transcript. A low-cost model writes the summary.
-- **Notes.** When the notes reach 80 percent of their size limit, the
-  runtime asks the agent to rewrite them shorter. The runtime does not cut
-  the notes itself.
+- **Notes.** When `MEMORY.md` reaches 80 percent of its size limit, the
+  runtime asks the agent to move detail into other memory files and rewrite
+  `MEMORY.md` shorter. The runtime does not cut the notes itself.
 
 The invocation trace in the management UI shows each compaction and the
 summary that replaced the original text.
@@ -516,6 +523,70 @@ hagent uses four caches:
 Compaction changes the start of the conversation, so it can stop the
 provider prompt cache from working for one request. The runtime compacts
 only when the saving is larger than this cost.
+
+### 13.3 Retrieval
+
+Retrieval finds stored text that is relevant to a question, and gives it to
+the model. Retrieval-augmented generation (RAG) is the name for this method.
+hagent uses hybrid search: it runs a keyword search and a vector search on
+the same query, and merges the two result lists.
+
+- **Keyword search** uses FTS5, the full-text index that SQLite includes.
+- **Vector search** uses sqlite-vec, a SQLite extension. An embedding model
+  converts each text into a vector, a list of numbers that represents its
+  meaning. Texts with similar meaning have vectors that are near each other.
+- **Merge** uses reciprocal rank fusion (RRF). RRF gives each result a score
+  from its rank in each list, and adds the scores.
+
+All indexes are in the app SQLite database. No separate vector database is
+necessary.
+
+**What hagent indexes**
+
+| Collection | Content | Scope |
+|---|---|---|
+| Memory | The agent's memory files, split into passages at headings and paragraphs. | One agent. |
+| History | A short text for each invocation (source, decision, result), review reports and compaction summaries. | One agent. |
+| Conversations | Assist messages. | One agent. |
+| Entities | The HA entity catalogue: names, aliases, areas, labels, domains and device names. | Shared. Each query is filtered to the agent's `ha` scope. |
+
+**How agents use it**
+
+- `search_memory` (the Pydantic AI tool) searches the memory collection.
+  hagent implements the search method of the Pydantic AI memory store with
+  hybrid search.
+- `memory.search` searches history and conversations. It accepts filters for
+  time range, source and record type, so that it combines exact filters with
+  ranked search.
+- `ha.find_entities` finds entities from a description, for example "the
+  radiator in the back bedroom". It returns only entities in the agent's
+  scope.
+- **Automatic recall.** Before an agent turn, the runtime can search all of
+  the agent's collections with the invocation text. It adds the best results
+  to the prompt, after the history and before the invocation. This is on by
+  default, with 5 results and a 1,000-token limit. The definition can change
+  both values or turn it off. Rules do not use automatic recall.
+
+**Embeddings**
+
+- One embedding model serves the whole installation, so that all vectors are
+  comparable. The user selects it in the management UI, from OpenAI or
+  OpenRouter. A change of model starts a full re-index in the background.
+- The runtime creates embeddings when it writes a record, in batches, from a
+  background queue. It does not create an embedding again for text that has
+  the same content hash.
+- The cost records include embedding cost, charged to the agent that owns
+  the text. The entity catalogue cost is charged to the installation.
+- Embedding sends text to the provider. The management UI states this when
+  the user selects the model.
+
+**Failure and limits**
+
+- If sqlite-vec does not load, or the embedding provider fails, search falls
+  back to keyword search only. The status entity shows the reason.
+- sqlite-vec is before version 1.0, so its SQL interface can change. hagent
+  keeps all sqlite-vec statements in one module, and pins the version.
+- Retention deletes vectors and index entries with their records.
 
 ## 14. Review
 
@@ -641,12 +712,16 @@ primitives. None of this logic is part of hagent.
 | Python version | Python 3.14 for the app and the integration. HA Core requires 3.14 and loads the integration with its own interpreter. The app uses the same version for consistency. |
 | Agent framework | Pydantic AI runs agent turns: tool loop, structured results, compaction and prompt caching, for both providers. hagent keeps history storage, scopes, rules and decision models. |
 | Scheduler | APScheduler, with its SQLAlchemy job store in SQLite. |
+| Memory and retrieval | Pydantic AI Harness memory for notes, with a hagent store. Hybrid search (SQLite FTS5 plus sqlite-vec, merged with RRF) over memory, history, conversations and the HA entity catalogue, in the first version. |
 | Tooling | mise installs the tools. uv manages Python and dependencies. Backlog.md tracks work. pre-commit runs ruff (lint, static analysis and formatting) and mypy (strict type checking) before each commit. |
 | Management UI stack | A React single-page application with TanStack Router, TanStack Query and TanStack Table, built with Vite. The app serves the built files through Ingress. A JSON API supplies data, and a WebSocket sends change events. The router uses the Ingress base path from `X-Ingress-Path`. |
 
 ## 23. Open questions
 
-None at present.
+| # | Question | Proposed default |
+|---|---|---|
+| 1 | Default embedding model. | A low-cost model available through both providers, for example OpenAI `text-embedding-3-small`. Check the current models before release. |
+| 2 | Should hagent also support a local embedding model inside the app, so that no text leaves the home? | Not in the first version. A small host such as a Raspberry Pi may be too slow. |
 
 ## 24. References
 
@@ -663,3 +738,6 @@ None at present.
 - [Pydantic AI caching](https://pydantic.dev/docs/ai/capabilities/caching/)
 - [Pydantic AI OpenRouter models](https://pydantic.dev/docs/ai/models/openrouter/)
 - [APScheduler](https://apscheduler.readthedocs.io/)
+- [Pydantic AI Harness memory](https://pydantic.dev/docs/ai/harness/memory/)
+- [sqlite-vec](https://github.com/asg017/sqlite-vec)
+- [OpenRouter embeddings API](https://openrouter.ai/docs/api-reference/embeddings)
