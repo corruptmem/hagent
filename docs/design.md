@@ -672,12 +672,39 @@ The definition sets limits:
 - A debounce period for each subscription, so that a sensor that changes
   often cannot cause many invocations.
 
-**Own writes.** Each service call that the runtime makes carries an HA
-context ID. HA copies this ID into the state changes that the call causes.
+**Own writes.** An HA context is a record with an ID that HA attaches to a
+service call and to each state change that the call causes. HA creates the
+context for each WebSocket `call_service` command. The client cannot supply
+one: HA rejects an extra `context` field with `invalid_format`. HA returns
+the context in the command result. Each `state_changed` event that the call
+causes carries the same context ID, in the event and in the new state.
+
+HA sends the event before the command result. The runtime therefore holds an
+event with an unknown context ID while one of its calls is in flight. When
+the result arrives, the runtime matches the held events. An event that is
+still unmatched after a short hold period is external. The runtime keeps the
+ID of a finished call for a TTL (time to live), because one call can cause
+several state changes or none.
+
 By default, a subscription ignores state changes that the agent caused
 itself. An agent therefore cannot start itself through its own outputs.
 The runtime also marks each state change in history as `agent` or
 `external`, so that an agent can tell a person's change from its own.
+
+Limits:
+
+- The match covers only direct effects. An automation that reacts to an
+  agent's write runs with a new context. That context has `parent_id` set
+  to the agent's context ID. The runtime treats such changes as `external`
+  for now. A later decision can make subscriptions follow `parent_id`.
+- The context also carries a `user_id`. All agents share the app's HA user,
+  so the `user_id` can tell hagent from a person, but not one agent from
+  another. The runtime does not use it for the match.
+- A long hold delays external events while a call is in flight. A short
+  hold can mark a slow call's own write as `external`.
+
+Task-2 verified this behaviour against HA Core 2026.11.1 and the HA Core
+`dev` source. `spikes/task-2/` holds the probe and its result.
 
 **Missed schedules.** If the app was stopped when a schedule was due, the
 schedule runs once when the app starts, if it is less than 10 minutes late.
