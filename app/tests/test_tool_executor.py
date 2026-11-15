@@ -1,0 +1,659 @@
+"""The tool executor with FakeHA and fake stores.
+
+The main test is ``test_out_of_scope_call_never_reaches_ha_or_a_store``. It
+runs a table of out-of-scope calls for every registered tool, and fails if a
+tool has no case. For each call it proves three things: the executor denies
+the call, FakeHA receives no command, and no fake store receives a call.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import pytest
+from hagent_app.agents import Agent
+from hagent_app.agents.definition import AgentDefinition
+from hagent_app.tools import ALL_TOOLS
+from helpers.fake_ha import FakeHA
+from helpers.tools import Harness, RecordingGate, harness
+from helpers.wait import wait_until
+
+OTHER_STORE = "f" * 32
+
+
+@pytest.fixture
+async def h(tmp_path: Path) -> AsyncIterator[Harness]:
+    async with harness(tmp_path) as value:
+        yield value
+
+
+@dataclass(frozen=True)
+class Case:
+    """One out-of-scope call."""
+
+    tool: str
+    args: dict[str, Any]
+    code: str
+    definition: dict[str, Any] = field(default_factory=dict)
+    # "other_store": attach the private store of another agent, read only.
+    # "other_owner": the item belongs to another agent.
+    setup: str = ""
+
+
+READ_HALL = {"tools__ha": {"level": "read", "scope": {"entities": ["light.hall"]}}}
+CONTROL_KITCHEN = {"tools__ha": {"level": "control", "scope": {"areas": ["kitchen"]}}}
+SELF_READ_HALL = {"tools__self": True, **READ_HALL}
+
+CASES = [
+    # ha
+    Case("ha.get_state", {"entity_id": "light.kitchen"}, "out_of_scope", READ_HALL),
+    Case("ha.get_state", {"entity_id": "light.hall"}, "tool_off"),
+    Case("ha.find_entities", {"query": "hall"}, "tool_off"),
+    # find_entities filters its results to the read scope; see
+    # test_find_entities_returns_only_the_read_scope.
+    Case("ha.find_entities", {"domain": "Light"}, "invalid_arguments", READ_HALL),
+    Case(
+        "ha.get_history",
+        {"entity_ids": ["light.hall", "lock.front"], "start": "2026-11-01T00:00:00Z"},
+        "out_of_scope",
+        READ_HALL,
+    ),
+    Case(
+        "ha.get_statistics",
+        {"statistic_ids": ["light.kitchen"], "start": "2026-11-01T00:00:00Z"},
+        "out_of_scope",
+        READ_HALL,
+    ),
+    Case(
+        "ha.get_statistics",
+        {"statistic_ids": ["sensor:external"], "start": "2026-11-01T00:00:00Z"},
+        "invalid_arguments",
+        READ_HALL,
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.hall"},
+        },
+        "out_of_scope",
+        CONTROL_KITCHEN,
+    ),
+    Case(
+        "ha.call_service",
+        {"domain": "light", "service": "turn_on", "target": {"area_id": "lounge"}},
+        "out_of_scope",
+        CONTROL_KITCHEN,
+    ),
+    Case(
+        "ha.call_service",
+        {"domain": "light", "service": "turn_off", "target": {"floor_id": "ground"}},
+        "out_of_scope",
+        CONTROL_KITCHEN,
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.kitchen"},
+            "data": {"flash": "lock.front"},
+        },
+        "out_of_scope",
+        CONTROL_KITCHEN,
+    ),
+    Case(
+        "ha.call_service",
+        {"domain": "script", "service": "morning"},
+        "indirect_service",
+        {"tools__ha": {"level": "control", "scope": {"all": True}}},
+    ),
+    Case(
+        "ha.call_service",
+        {"domain": "mqtt", "service": "publish", "data": {"topic": "t"}},
+        "no_target",
+        {"tools__ha": {"level": "control", "scope": {"all": True}}},
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.hall"},
+        },
+        "tool_off",
+        READ_HALL,
+    ),
+    Case(
+        "ha.admin_read",
+        {"command": {"type": "config/entity_registry/list"}},
+        "tool_off",
+        CONTROL_KITCHEN,
+    ),
+    Case(
+        "ha.admin_read",
+        {"command": {"type": "auth/current_user"}},
+        "command_not_permitted",
+        {"tools__ha": {"level": "admin"}},
+    ),
+    Case(
+        "ha.admin_change",
+        {"command": {"type": "input_boolean/delete", "input_boolean_id": "guest"}},
+        "tool_off",
+        CONTROL_KITCHEN,
+    ),
+    Case(
+        "ha.admin_change",
+        {"command": {"type": "execute_script", "sequence": []}},
+        "command_not_permitted",
+        {"tools__ha": {"level": "admin"}},
+    ),
+    # knowledge
+    Case("knowledge.list", {"store_id": OTHER_STORE}, "store_not_attached"),
+    Case(
+        "knowledge.read",
+        {"store_id": OTHER_STORE, "path": "MAIN.md"},
+        "store_not_attached",
+    ),
+    Case(
+        "knowledge.search",
+        {"query": "boiler", "store_ids": [OTHER_STORE]},
+        "store_not_attached",
+    ),
+    Case(
+        "knowledge.write",
+        {"store_id": "<other>", "path": "a.md", "mode": "create", "content": "x"},
+        "read_only",
+        setup="other_store",
+    ),
+    Case(
+        "knowledge.write",
+        {"store_id": OTHER_STORE, "path": "a.md", "mode": "create", "content": "x"},
+        "store_not_attached",
+    ),
+    Case(
+        "knowledge.delete",
+        {"store_id": "<other>", "path": "a.md"},
+        "read_only",
+        setup="other_store",
+    ),
+    Case("knowledge.list", {}, "tool_off", {"tools__knowledge": False}),
+    # memory
+    Case(
+        "memory.search",
+        {"query": "heating", "agent_id": "<other agent>"},
+        "invalid_arguments",
+    ),
+    Case("memory.search", {"query": "heating"}, "tool_off", {"tools__memory": False}),
+    Case("memory.rule_stats", {"rule_id": "r1"}, "not_owner", setup="other_owner"),
+    # self
+    Case("self.list", {"kind": "rule"}, "tool_off"),
+    Case(
+        "self.list",
+        {"kind": "rule", "agent_id": "<other agent>"},
+        "invalid_arguments",
+        {"tools__self": True},
+    ),
+    Case(
+        "self.create",
+        {"kind": "subscription", "spec": {"entity_ids": ["lock.front"]}},
+        "out_of_scope",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.create",
+        {"kind": "subscription", "spec": {"event_type": "call_service"}},
+        "event_not_permitted",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.update",
+        {"kind": "rule", "item_id": "r1", "spec": {}},
+        "not_owner",
+        {"tools__self": True},
+        setup="other_owner",
+    ),
+    Case(
+        "self.update",
+        {
+            "kind": "subscription",
+            "item_id": "s1",
+            "spec": {"entity_ids": ["light.kitchen"]},
+        },
+        "out_of_scope",
+        SELF_READ_HALL,
+        setup="own_item",
+    ),
+    Case(
+        "self.set_enabled",
+        {"kind": "schedule", "item_id": "r1", "enabled": False},
+        "not_owner",
+        {"tools__self": True},
+        setup="other_owner",
+    ),
+    Case(
+        "self.delete",
+        {"kind": "rule", "item_id": "r1"},
+        "not_owner",
+        {"tools__self": True},
+        setup="other_owner",
+    ),
+    # Unknown tool names.
+    Case("ha.run_anything", {}, "unknown_tool"),
+]
+
+
+def test_every_tool_has_an_out_of_scope_case() -> None:
+    names = {tool.name for tool in ALL_TOOLS}
+    covered = {case.tool for case in CASES if case.code not in {"tool_off"}}
+    assert names - covered == set()
+
+
+async def _agent_for(h: Harness, case: Case) -> Agent:
+    changes = dict(case.definition)
+    if case.setup == "other_store":
+        other = await h.agent(name="Other")
+        assert other.private_store is not None
+        own = await h.agent(name="Probe")
+        assert own.private_store is not None
+        knowledge = [
+            {"store_id": own.private_store.id, "access": "read_write"},
+            {"store_id": other.private_store.id, "access": "read"},
+        ]
+        definition = own.definition.to_data()
+        definition["knowledge"] = knowledge
+        return await h.agents.update(
+            own.id, AgentDefinition.from_json(json.dumps(definition))
+        )
+    agent = await h.agent(**changes)
+    if case.setup == "other_owner":
+        h.history.owners["r1"] = "another-agent"
+        h.agent_state.owners["r1"] = "another-agent"
+    if case.setup == "own_item":
+        h.agent_state.owners["s1"] = agent.id
+    return agent
+
+
+def _resolve_args(agent: Agent, args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("store_id") == "<other>":
+        other = next(
+            a.store_id
+            for a in agent.definition.knowledge
+            if agent.private_store is None or a.store_id != agent.private_store.id
+        )
+        return {**args, "store_id": other}
+    return args
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda c: f"{c.tool}-{c.code}")
+async def test_out_of_scope_call_never_reaches_ha_or_a_store(
+    h: Harness, case: Case
+) -> None:
+    agent = await _agent_for(h, case)
+    args = _resolve_args(agent, case.args)
+    h.reset()
+    result = await h.call(agent, case.tool, args)
+    assert not result.ok
+    assert result.error_code == case.code, result.error
+    assert h.ha.ha_commands() == []
+    assert h.store_calls() == []
+    # Every denied call is in the audit log.
+    entries = await h.audit.entries(agent.id)
+    assert entries[0].decision == "denied"
+    assert entries[0].reason_code == case.code
+    assert entries[0].tool == case.tool
+
+
+# ----------------------------------------------------- permitted calls
+
+
+async def test_permitted_service_call_sends_explicit_entities(h: Harness) -> None:
+    agent = await h.agent(**CONTROL_KITCHEN)
+    h.reset()
+    result = await h.call(
+        agent,
+        "ha.call_service",
+        {"domain": "light", "service": "turn_on", "target": {"area_id": "kitchen"}},
+    )
+    assert result.ok, result.error
+    [command] = h.ha.commands_of("call_service")
+    assert command["target"] == {"entity_id": ["light.kitchen"]}
+    entry = (await h.audit.entries(agent.id))[0]
+    assert entry.decision == "allowed"
+    assert entry.status == "ok"
+    assert entry.context_id == result.data["context_id"]
+    assert entry.request["target"] == {"entity_id": ["light.kitchen"]}
+
+
+async def test_output_entity_can_be_set_without_control(h: Harness) -> None:
+    agent = await h.agent(outputs=["input_boolean.guest"])
+    result = await h.call(
+        agent,
+        "ha.call_service",
+        {
+            "domain": "input_boolean",
+            "service": "turn_on",
+            "target": {"entity_id": "input_boolean.guest"},
+        },
+    )
+    assert result.ok, result.error
+    assert h.ha.states["input_boolean.guest"]["state"] == "on"
+    entry = (await h.audit.entries(agent.id))[0]
+    assert entry.level == "outputs"
+
+
+async def test_history_reply_is_limited_to_the_checked_entities(h: Harness) -> None:
+    agent = await h.agent(**READ_HALL)
+    h.reset()
+    result = await h.call(
+        agent,
+        "ha.get_history",
+        {"entity_ids": ["light.hall"], "start": "2026-11-01T00:00:00Z"},
+    )
+    assert result.ok, result.error
+    [command] = h.ha.ha_commands()
+    assert command["entity_ids"] == ["light.hall"]
+    # FakeHA replies with every entity. The tool drops the others.
+    assert set(result.data) == {"light.hall"}
+
+
+async def test_find_entities_returns_only_the_read_scope(h: Harness) -> None:
+    agent = await h.agent(tools__ha={"level": "read", "scope": {"areas": ["kitchen"]}})
+    result = await h.call(agent, "ha.find_entities", {})
+    assert result.ok, result.error
+    assert {r["entity_id"] for r in result.data} == {"light.kitchen", "switch.kettle"}
+    result = await h.call(agent, "ha.find_entities", {"area_id": "lounge"})
+    assert result.data == []
+
+
+async def test_get_state_reads_the_cache(h: Harness) -> None:
+    agent = await h.agent(**READ_HALL)
+    result = await h.call(agent, "ha.get_state", {"entity_id": "light.hall"})
+    assert result.ok
+    assert result.data["state"] == "off"
+
+
+async def test_knowledge_search_passes_only_attached_stores(h: Harness) -> None:
+    agent = await h.agent()
+    assert agent.private_store is not None
+    result = await h.call(agent, "knowledge.search", {"query": "boiler"})
+    assert result.ok, result.error
+    assert h.knowledge.calls == [("search", (agent.private_store.id,), "boiler")]
+    result = await h.call(
+        agent,
+        "knowledge.write",
+        {
+            "store_id": agent.private_store.id,
+            "path": "notes.md",
+            "mode": "create",
+            "content": "x",
+        },
+    )
+    assert result.ok
+    assert h.knowledge.calls[-1] == (
+        "write",
+        agent.private_store.id,
+        "notes.md",
+        agent.id,
+    )
+
+
+async def test_memory_and_self_use_the_invocation_agent(h: Harness) -> None:
+    agent = await h.agent(tools__self=True)
+    h.history.owners["r1"] = agent.id
+    h.agent_state.owners["r1"] = agent.id
+    assert (await h.call(agent, "memory.search", {"query": "q"})).ok
+    assert (await h.call(agent, "memory.rule_stats", {"rule_id": "r1"})).ok
+    assert (await h.call(agent, "self.delete", {"kind": "rule", "item_id": "r1"})).ok
+    agent_ids = {call[1] for call in h.store_calls()}
+    assert agent_ids == {agent.id}
+
+
+async def test_store_tools_report_a_missing_store(tmp_path: Path) -> None:
+    async with harness(tmp_path) as h:
+        object.__setattr__(h.executor._env, "knowledge", None)
+        agent = await h.agent()
+        result = await h.call(agent, "knowledge.list", {})
+        assert not result.ok
+        assert result.error_code == "unavailable"
+
+
+# ------------------------------------------------------------ admin
+
+
+async def test_admin_change_keeps_the_previous_version(h: Harness) -> None:
+    old = {"id": "guest", "name": "Guest mode", "icon": None}
+    h.ha.handlers["input_boolean/list"] = lambda _ha, _msg: [old]
+    h.ha.handlers["input_boolean/update"] = lambda _ha, msg: {
+        **old,
+        "name": msg["name"],
+    }
+    agent = await h.agent(tools__ha={"level": "admin"})
+    result = await h.call(
+        agent,
+        "ha.admin_change",
+        {
+            "command": {
+                "type": "input_boolean/update",
+                "input_boolean_id": "guest",
+                "name": "Guests",
+            }
+        },
+    )
+    assert result.ok, result.error
+    entry = (await h.audit.entries(agent.id))[0]
+    assert entry.previous == old
+    assert entry.status == "ok"
+    assert entry.level == "admin"
+
+
+async def test_admin_change_fails_closed_without_previous_version(h: Harness) -> None:
+    agent = await h.agent(tools__ha={"level": "admin"})
+    # FakeHA has no handler for input_number/list, so the reader fails.
+    h.reset()
+    result = await h.call(
+        agent,
+        "ha.admin_change",
+        {"command": {"type": "input_number/delete", "input_number_id": "x"}},
+    )
+    assert result.error_code == "previous_unavailable"
+    assert h.ha.commands_of("input_number/delete") == []
+
+
+async def test_admin_service_call_keeps_previous_states(h: Harness) -> None:
+    agent = await h.agent(tools__ha={"level": "admin"})
+    result = await h.call(
+        agent,
+        "ha.call_service",
+        {"domain": "light", "service": "turn_on", "target": {"area_id": "kitchen"}},
+    )
+    assert result.ok, result.error
+    entry = (await h.audit.entries(agent.id))[0]
+    assert set(entry.previous["states"]) == {"light.kitchen", "switch.kettle"}
+    assert entry.previous["states"]["light.kitchen"]["state"] == "off"
+    # Admin is blanket: the call goes to HA unchanged.
+    [command] = h.ha.commands_of("call_service")
+    assert command["target"] == {"area_id": "kitchen"}
+
+
+async def test_admin_read_returns_the_reply(h: Harness) -> None:
+    agent = await h.agent(tools__ha={"level": "admin"})
+    result = await h.call(
+        agent, "ha.admin_read", {"command": {"type": "config/floor_registry/list"}}
+    )
+    assert result.ok
+    assert {f["floor_id"] for f in result.data} == {"ground", "upstairs"}
+
+
+# ------------------------------------------- audit, dry run, approval
+
+
+async def test_no_ha_call_when_the_audit_write_fails(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def broken(*_args: Any, **_kwargs: Any) -> int:
+        raise OSError(28, "disk full")
+
+    monkeypatch.setattr(h.audit, "begin", broken)
+    agent = await h.agent(**CONTROL_KITCHEN)
+    h.reset()
+    result = await h.call(
+        agent,
+        "ha.call_service",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.kitchen"},
+        },
+    )
+    assert result.error_code == "audit_failed"
+    assert h.ha.ha_commands() == []
+
+
+async def test_failed_ha_call_is_recorded(h: Harness) -> None:
+    from helpers.fake_ha import FakeCommandError  # noqa: PLC0415
+
+    def fail(_ha: FakeHA, _msg: dict[str, Any]) -> None:
+        raise FakeCommandError("home_assistant_error", "device offline")
+
+    h.ha.handlers["call_service"] = fail
+    agent = await h.agent(**CONTROL_KITCHEN)
+    result = await h.call(
+        agent,
+        "ha.call_service",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.kitchen"},
+        },
+    )
+    assert result.error_code == "ha_error"
+    entry = (await h.audit.entries(agent.id))[0]
+    assert entry.status == "error"
+    assert "device offline" in (entry.error or "")
+
+
+async def test_dry_run_checks_and_records_but_does_not_call(h: Harness) -> None:
+    agent = await h.agent(**CONTROL_KITCHEN)
+    h.reset()
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.kitchen"},
+    }
+    result = await h.call(agent, "ha.call_service", args, dry_run=True)
+    assert result.ok
+    assert result.data["dry_run"] is True
+    assert h.ha.ha_commands() == []
+    assert (await h.audit.entries(agent.id))[0].status == "dry_run"
+    # A dry run still denies an out-of-scope call.
+    args["target"] = {"entity_id": "light.hall"}
+    result = await h.call(agent, "ha.call_service", args, dry_run=True)
+    assert result.error_code == "out_of_scope"
+
+
+APPROVE = {
+    **CONTROL_KITCHEN,
+    "approval__services": ["light.turn_on"],
+}
+CALL = {
+    "domain": "light",
+    "service": "turn_on",
+    "target": {"entity_id": "light.kitchen"},
+}
+
+
+async def test_approval_without_a_gate_is_denied(h: Harness) -> None:
+    agent = await h.agent(**APPROVE)
+    h.reset()
+    result = await h.call(agent, "ha.call_service", CALL)
+    assert result.error_code == "approval_unavailable"
+    assert h.ha.ha_commands() == []
+    # A call that needs no approval still works.
+    result = await h.call(
+        agent,
+        "ha.call_service",
+        {**CALL, "service": "turn_off"},
+    )
+    assert result.ok
+
+
+@pytest.mark.parametrize("answer", [True, False])
+async def test_approval_gate_decides(tmp_path: Path, answer: bool) -> None:
+    gate = RecordingGate(answer)
+    async with harness(tmp_path, approval=gate) as h:
+        agent = await h.agent(
+            **{**CONTROL_KITCHEN, "approval__entities": ["light.kitchen"]}
+        )
+        h.reset()
+        result = await h.call(agent, "ha.call_service", CALL)
+        assert gate.requests == ["ha.call_service"]
+        assert result.ok is answer
+        assert bool(h.ha.commands_of("call_service")) is answer
+        if not answer:
+            assert result.error_code == "approval_rejected"
+
+
+async def test_approval_of_a_tool_group(h: Harness) -> None:
+    agent = await h.agent(tools__self=True, approval__tools=["self.*"])
+    result = await h.call(agent, "self.list", {"kind": "rule"})
+    assert result.error_code == "approval_unavailable"
+    assert h.store_calls() == []
+
+
+# --------------------------------------------------------- registry
+
+
+async def test_stale_registry_denies_and_reload_resolves_again(h: Harness) -> None:
+    agent = await h.agent(**CONTROL_KITCHEN)
+    hall = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.hall"},
+    }
+    assert (await h.call(agent, "ha.call_service", hall)).error_code == "out_of_scope"
+
+    # The user moves light.hall into the kitchen.
+    for entry in h.ha.registry["entity"]:
+        if entry["entity_id"] == "light.hall":
+            entry["area_id"] = "kitchen"
+    count = h.registry.reload_count
+    await h.ha.registry_updated("entity")
+    await wait_until(lambda: h.registry.reload_count > count)
+    h.reset()
+    result = await h.call(agent, "ha.call_service", hall)
+    assert result.ok, result.error
+
+    # HA goes away: the registry is stale and the check fails closed.
+    await h.ha.restart()
+    await wait_until(lambda: h.registry.stale)
+    h.reset()
+    result = await h.call(agent, "ha.call_service", hall)
+    assert result.error_code == "registry_unavailable"
+    assert h.ha.ha_commands() == []
+
+
+async def test_registry_stays_stale_until_the_reload_ends(h: Harness) -> None:
+    """An update event marks the snapshot stale at once, before the reload."""
+    release = __import__("asyncio").Event()
+
+    async def slow_list(_ha: FakeHA, _msg: dict[str, Any]) -> list[Any]:
+        await release.wait()
+        return list(h.ha.registry["entity"])
+
+    h.ha.handlers["config/entity_registry/list"] = slow_list
+    agent = await h.agent(**CONTROL_KITCHEN)
+    await h.ha.registry_updated("entity")
+    await wait_until(lambda: h.registry.stale)
+    h.reset()
+    result = await h.call(agent, "ha.call_service", CALL)
+    assert result.error_code == "registry_unavailable"
+    assert h.ha.commands_of("call_service") == []
+    release.set()
+    await wait_until(lambda: not h.registry.stale)
+    assert (await h.call(agent, "ha.call_service", CALL)).ok
