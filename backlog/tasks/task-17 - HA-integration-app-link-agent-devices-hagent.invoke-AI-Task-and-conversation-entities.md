@@ -3,9 +3,11 @@ id: TASK-17
 title: >-
   HA integration: app link, agent devices, hagent.invoke, AI Task and
   conversation entities
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-14 23:04'
+updated_date: '2026-11-15 01:42'
 labels:
   - integration
 dependencies:
@@ -28,11 +30,54 @@ Design: docs/design.md sections 6, 9.2, 9.3 and 15.
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The link authenticates with the app's shared secret and recovers from disconnects
-- [ ] #2 Agent devices and entities appear, update and disappear as agents change in the app
-- [ ] #3 hagent.invoke supports data, wait, timeout and on_timeout, and returns the response data in section 9.2
-- [ ] #4 The AI Task entity supports GENERATE_DATA, SUPPORT_ATTACHMENTS and EVALUATE
-- [ ] #5 The conversation entity exists only for agents that allow Assist
-- [ ] #6 When the app is unreachable, calls fail with an error and the connectivity sensor turns off
-- [ ] #7 The link protocol is documented
+- [x] #1 The link authenticates with the app's shared secret and recovers from disconnects
+- [x] #2 Agent devices and entities appear, update and disappear as agents change in the app
+- [x] #3 hagent.invoke supports data, wait, timeout and on_timeout, and returns the response data in section 9.2
+- [x] #4 The AI Task entity supports GENERATE_DATA, SUPPORT_ATTACHMENTS and EVALUATE
+- [x] #5 The conversation entity exists only for agents that allow Assist
+- [x] #6 When the app is unreachable, calls fail with an error and the connectivity sensor turns off
+- [x] #7 The link protocol is documented
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Tooling: integration/ becomes its own uv project (pytest-homeassistant-custom-component 0.13.375, HA 2026.10.4, Python >=3.14.2) with its own lock, because HA pins conflict with the app's pydantic. Root workspace excludes it. mise tasks test-integration and typecheck-integration join check.
+2. App: new package hagent_app/link/ (LinkComponent). WebSocket at /api/link/ws. Bearer secret checked with hmac.compare_digest before upgrade. Secret generated with secrets.token_urlsafe into the data dir (mode 0600). IngressGuard exempts only /api/link/ws. Guarded route GET /api/integration shows host/port/secret for setup. Optional Supervisor discovery post when SUPERVISOR_TOKEN exists.
+3. Link protocol v1 (JSON): hello + full agent snapshot on connect; agent deltas from change events; invoke (wait/timeout/on_timeout handled in the app, router.cancel on cancel); set_enabled; result events for hagent_result. Shared example messages in a fixture used by app and integration tests. Document in docs/link.md and docs/api.md.
+4. Integration: config flow (manual host/port/secret, hassio discovery step), link client with reconnect and backoff, fail in-flight calls on drop, connectivity binary sensor on a hagent device, one device per agent with status, last-result, cost-today sensors, enabled switch, AI Task entity (GENERATE_DATA; structure via probatio.to_openapi), conversation entity only when assist.enabled, hagent.invoke service with response data.
+5. Tests: app link tests (auth, exemption scope, invoke, timeout, snapshot), phcc integration tests against a fake link server. Leave EVALUATE open (not in HA 2026.10.4). Attachments and status 'running' depend on the lead's answer.
+6. mise run check, notes, summary.
+
+Revision: the integration project has two uv dependency groups kept apart: 'dev' (phcc 0.13.375, HA 2026.10.4) for tests/, and 'ha2611' (HA 2026.11.1) for mypy and tests_ha2611/ (EVALUATE), because no phcc release supports HA 2026.11. The guard got an additive exact-path option (exempt_paths) so that no subpath of the link path is exempt.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Tooling: integration/ is its own uv project with its own lock, because HA Core pins pydantic 2.13.5 and the app needs pydantic >=2.14.3. The root workspace excludes it. It has two dependency groups that uv keeps apart: 'dev' (pytest-homeassistant-custom-component 0.13.375 with HA Core 2026.10.4, its pin) and 'ha2611' (HA Core 2026.11.1, in integration/.venv-ha2611). No released pytest-homeassistant-custom-component supports HA Core 2026.11: an override to 2026.11.1 fails (respx imports httpx before HA aliases it to httpx2, and phcc common.py imports a logger helper that 2026.11 removed). So the phcc suite (tests/) runs on 2026.10.4; mypy and tests_ha2611/ run on 2026.11.1. mise tasks typecheck-integration and test-integration are part of mise run check.
+HA API check: AITaskEntityFeature.EVALUATE (value 8), EvaluationTask, NoulAnswer, ChoiceAnswer and ScoreAnswer exist in HA Core 2026.11.1 and not in 2026.10.4. The entity sets EVALUATE only when the flag exists (getattr), so it degrades on 2026.10. GENERATE_DATA and SUPPORT_ATTACHMENTS exist in both. HA 2026.10+ uses probatio for schemas; the AI Task structure becomes JSON schema with probatio.to_openapi and llm.selector_serializer.
+App: new package hagent_app/link (LinkComponent). WebSocket /api/link/ws with a Bearer shared secret (secrets.token_urlsafe, file link_secret, mode 0600, hmac.compare_digest), 401 before the upgrade. IngressGuard got an additive exempt_paths option (exact match); the link uses it, so subpaths such as /api/link/ws/x and /api/link/ws/../agents still get 403. Guarded route GET api/integration shows host/port/secret. Supervisor discovery (POST /discovery, service hagent) runs inside the container; task-21 must add discovery: [hagent] to the app config and the link options to the schema.
+Lead-approved additive edits: router add_activity_listener/running_count (status 'running'); InvocationRequest.attachments and TurnInput.attachments (MIME allowlist images/PDF/text, 8 MiB total), passed to the model as BinaryContent (images, PDF) or as text marked as data. The queue row keeps attachments as base64 in invocations.request, so a resumed invocation keeps them; this can make rows large.
+Protocol: docs/link.md. Example messages in docs/link-messages.json; the app tests check the app messages against it and parse the fixture invoke; the integration tests replay it and fail on command fields that the doc lacks.
+Approval notifier seam: not built. docs/link.md describes a later app-to-integration notify command; version 1 has none.
+Evidence: mise run check passes (app 672 tests, integration 36 phcc tests on HA 2026.10.4, 8 tests on HA 2026.11.1, mypy strict on both, frontend 20).
+
+AC evidence. #1: app test_link_refuses_a_bad_secret, test_link_refuses_a_missing_header, test_link_accepts_the_secret_and_sends_hello; integration test_bad_secret_keeps_the_link_off, test_link_recovers_after_a_drop, test_hello_after_reconnect_removes_agents_deleted_meanwhile. #2: test_agents_appear_update_and_disappear, test_device_follows_name_and_version_changes, test_hello_after_reconnect_removes_agents_deleted_meanwhile, app test_agent_changes_reach_the_integration and test_reconnect_gets_a_full_snapshot. #3: app test_invoke_waits_and_returns_the_response_data, test_invoke_without_wait_..., test_timeout_continue_..., test_timeout_cancel_..., test_default_on_timeout_depends_on_outputs; integration test_invoke_returns_the_response_data, test_invoke_by_entity_target_and_defaults, test_invoke_without_wait, test_invoke_error_status_raises, test_result_event_fires_only_for_undelivered_results. 'writes' is always [] because the router has no output writes yet (task-12 limit). #4: GENERATE_DATA through ai_task.async_generate_data on HA 2026.10.4 (test_ai_task_generate_data_with_structure, test_ai_task_text_result); SUPPORT_ATTACHMENTS end to end: integration test_ai_task_attachments_go_through_the_link, app test_ai_task_structure_and_attachments_reach_the_turn and test_attachments_go_to_the_model_as_parts; EVALUATE at entity level on real HA 2026.11.1 classes (tests_ha2611/test_evaluate.py), not through ai_task.async_evaluate in a running HA, because no phcc release supports 2026.11; degradation on 2026.10.4 in test_ai_task_features. #5: test_agents_appear_update_and_disappear (no entity without Assist; removed when Assist turns off; added when it turns on), test_conversation_sends_assist_invocations. #6: test_calls_fail_while_the_app_is_unreachable, test_invoke_fails_at_once_when_the_link_drops, test_conversation_reports_an_unreachable_app, test_app_down_at_start_loads_the_entry_with_the_link_off. #7: docs/link.md, plus docs/api.md (Integration link) and docs/link-messages.json, which both test suites load.
+<!-- SECTION:NOTES:END -->
+
+## Comments
+
+<!-- COMMENTS:BEGIN -->
+author: @claude
+created: 2026-11-15 01:42
+---
+Proposed follow-ups (not created): (1) task-21: add discovery: [hagent] and the link options to the app config schema. (2) Reauth flow in the integration and secret rotation in the app. (3) App-to-integration notify command for approval notifications by HA user (seam in docs/link.md). (4) Move the phcc suite to HA 2026.11 when pytest-homeassistant-custom-component releases a version for it; then test EVALUATE through ai_task.async_evaluate. (5) Retention or size policy for invocation rows that keep base64 attachments. (6) Output writes in the response data once the router applies them.
+---
+<!-- COMMENTS:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Built the HA integration and the app link. App: hagent_app/link serves /api/link/ws with a shared secret (401 before upgrade; only the exact path is exempt from the Ingress guard), sends a full agent snapshot on connect and deltas after, maps invoke to the router with wait/timeout/on_timeout, and offers Supervisor discovery and GET api/integration. Additive, lead-approved edits: router activity hook; AI Task attachments through InvocationRequest/TurnInput to the model. Integration: config flow (manual and hassio discovery), link client with reconnect and fail-fast, connectivity sensor, one device per agent (status, last result, cost today, enabled switch, AI Task entity, conversation entity only with Assist), hagent.invoke with response data and hagent_result events. EVALUATE is implemented for HA 2026.11 and degrades on 2026.10. Protocol in docs/link.md. Verified with mise run check: 672 app tests, 36 phcc integration tests (HA 2026.10.4), 8 entity tests on HA 2026.11.1, strict mypy on both, frontend checks.
+<!-- SECTION:FINAL_SUMMARY:END -->
