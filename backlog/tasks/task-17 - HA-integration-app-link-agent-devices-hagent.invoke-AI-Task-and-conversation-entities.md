@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:03'
+updated_date: '2026-11-15 02:07'
 labels:
   - integration
 dependencies:
@@ -75,6 +75,8 @@ L3: async_step_hassio aborts with already_configured and does not update an exis
 L4: read_attachments stats the file before open (open on a FIFO blocks), refuses non-regular files and files above the remaining limit, then reads at most limit+1 bytes.
 Evidence: mise run check passes (app 991 tests, integration 43 phcc tests on HA 2026.10.4, 10 tests on HA 2026.11.1, strict mypy on both, frontend 43). Each new regression test fails on the old code (checked by reverting the source files): test_invoke/ai_task/conversation_refuses_a_non_admin_user, test_hassio_discovery_never_changes_a_configured_app, test_attachment_size_is_checked_before_the_read, test_attachment_must_be_a_regular_file (hangs on the old code), test_exemption_covers_only_the_link_path (encoded cases), test_guard_exempt_prefix, test_assist_is_refused_for_an_agent_without_assist.
 Not changed (info findings I1-I5): repr(err) in internal_error, ws:// link, no per-connection command limit, encode cost on the HA loop, discovery secret visibility.
+
+Follow-up commit a03afbc: data.text (the AI Task instructions or the Assist message) was inside the marked caller data, so the marker told the model not to follow its own request. The prompt now shows 'Request text: ...' on its own line and marks only the other caller data (test_invocation_keeps_the_request_apart_from_the_marked_data). Checked against HA 2026.11.1: the satellite pipeline uses 'context or Context()' (no user unless one is passed); script actions pass the script context to service calls. mise run check passes (app 992 tests, integration 43 + 10).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -91,4 +93,6 @@ Proposed follow-ups (not created): (1) task-21: add discovery: [hagent] and the 
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Built the HA integration and the app link. App: hagent_app/link serves /api/link/ws with a shared secret (401 before upgrade; only the exact path is exempt from the Ingress guard), sends a full agent snapshot on connect and deltas after, maps invoke to the router with wait/timeout/on_timeout, and offers Supervisor discovery and GET api/integration. Additive, lead-approved edits: router activity hook; AI Task attachments through InvocationRequest/TurnInput to the model. Integration: config flow (manual and hassio discovery), link client with reconnect and fail-fast, connectivity sensor, one device per agent (status, last result, cost today, enabled switch, AI Task entity, conversation entity only with Assist), hagent.invoke with response data and hagent_result events. EVALUATE is implemented for HA 2026.11 and degrades on 2026.10. Protocol in docs/link.md. Verified with mise run check: 672 app tests, 36 phcc integration tests (HA 2026.10.4), 8 entity tests on HA 2026.11.1, strict mypy on both, frontend checks.
+
+Security review fixes (commits 7fa2065, a03afbc): hagent.invoke is an admin action, and the AI Task and conversation entities apply the same rule (no user or admin: allowed; other users: Unauthorized). The prompt keeps the request text apart and marks the other caller data as data. The Ingress guard matches the raw path and never exempts encoded separators. The router refuses assist for agents without Assist (assist_off). Discovery never changes an existing entry. Attachments must be regular files, and the integration checks their size before a bounded read. Verified with regression tests that fail on the old code, and mise run check.
 <!-- SECTION:FINAL_SUMMARY:END -->
