@@ -1,11 +1,11 @@
 ---
 id: TASK-10
 title: 'Agent turn: Pydantic AI loop, prompt order, compaction and limits'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-15 00:36'
+updated_date: '2026-11-15 00:37'
 labels:
   - app
 dependencies:
@@ -68,6 +68,8 @@ Open points: (1) cost: provider_calls has no invocation or turn link, so TurnRes
 Validation: mise run check passed (ruff, mypy strict, 404 pytest tests, frontend checks). app/tests/test_turns.py has 25 tests with FunctionModel and the tool harness; no provider or HA calls.
 
 AC evidence (app/tests/test_turns.py, all pass): AC1 test_prompt_follows_section_9_5_and_prefix_is_stable, test_recall_goes_after_history_and_before_the_invocation, test_rule_state_changes_do_not_break_the_stable_prefix. AC2 test_large_tool_result_is_cut_and_kept_in_full, test_in_turn_compaction_clears_old_tool_results. AC3 test_summary_model_writes_running_summary_per_source, test_each_assist_conversation_has_its_own_summary. AC4 test_main_file_near_limit_asks_the_agent_to_shorten_it (85 and 79 of 100 chars). AC5 test_structured_result_gets_one_correction, test_structured_result_fails_after_one_correction. AC6 test_turn_stops_at_its_tool_call_limit, test_turn_stops_at_its_token_limit (TurnResult.status=stopped with stop_reason is the report to the router).
+
+Lead: merged. Open items (1) invocation link for per-turn cost and (2) chat retry with backoff (design 18) are passed to task-12. (3) per-store main-file limit goes to task-11/20. (4) rule stubs go to task-13.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
