@@ -144,6 +144,7 @@ async def test_default_components_serve_the_api(
         "agents",
         "tools",
         "turns",
+        "router",
         "ha_catalog",
         "ui",
         "http",

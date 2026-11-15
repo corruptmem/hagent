@@ -38,7 +38,8 @@ def test_reader_exposes_only_read_methods() -> None:
     public = {
         name for name, _ in inspect.getmembers(AgentReader) if not name.startswith("_")
     }
-    assert public == {"get", "get_version", "list_agents"}
+    # check_draft validates a draft for a test invocation. It writes nothing.
+    assert public == {"check_draft", "get", "get_version", "list_agents"}
     # Slots stop a caller from adding a write method to an instance.
     assert AgentReader.__slots__ == ("_db",)
 

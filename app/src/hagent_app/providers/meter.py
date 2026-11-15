@@ -35,6 +35,7 @@ import logging
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -51,6 +52,14 @@ from hagent_app.providers.prices import (
 from hagent_app.storage import Database, transaction
 
 _LOG = logging.getLogger(__name__)
+
+# The invocation that causes the current provider calls (task-12). The
+# router sets it inside each invocation task. ``Meter`` records it in
+# ``provider_calls.invocation_id``, so that the router can report the cost
+# of an invocation. Tasks that an invocation starts inherit the value.
+current_invocation: ContextVar[str | None] = ContextVar(
+    "hagent_current_invocation", default=None
+)
 
 Clock = Callable[[], datetime]
 
@@ -111,6 +120,7 @@ class MeteredCall:
     usage: TokenUsage | None = None
     provider_cost_usd: Decimal | None = None
     charge_reservation: bool = False
+    invocation_id: str | None = None
 
     def complete(
         self, usage: TokenUsage, provider_cost_usd: Decimal | float | None = None
@@ -247,7 +257,9 @@ class Meter:
         """Reserve, run the block, then record the call. See the module docstring."""
         amount, priced = self.estimate(spec, estimate)
         reservation = await self.reserve(spec, amount, priced)
-        call = MeteredCall(spec, reservation, self._clock())
+        call = MeteredCall(
+            spec, reservation, self._clock(), invocation_id=current_invocation.get()
+        )
         try:
             yield call
         except BaseException as err:
@@ -317,6 +329,7 @@ class Meter:
             None if computed is None else computed.source,
             None if computed is None else computed.version,
             call.reservation.amount_pusd,
+            call.invocation_id,
         )
         reservation_id = call.reservation.id
 
@@ -335,8 +348,8 @@ _INSERT_CALL = (
     " provider, call_type, model, status, error, input_tokens, cache_read_tokens,"
     " cache_write_tokens, output_tokens, cost_pusd, cost_source,"
     " computed_cost_pusd, provider_cost_pusd, drift, price_source, price_version,"
-    " reserved_pusd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-    " ?, ?, ?, ?)"
+    " reserved_pusd, invocation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+    " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 

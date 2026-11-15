@@ -219,6 +219,18 @@ def _check_stores(
         raise DefinitionInvalidError(msg, errors)
 
 
+def check_draft(
+    conn: sqlite3.Connection, agent_id: str, definition: AgentDefinition
+) -> Agent:
+    """Check a draft definition of a live agent as an edit would, without
+    a write. Return the agent. Raise ``AgentNotFoundError`` or
+    ``DefinitionInvalidError``."""
+    current = get_agent(conn, agent_id)
+    if current.private_store is not None:
+        _check_stores(conn, definition, current.private_store.id)
+    return current
+
+
 def _with_private_store(
     definition: AgentDefinition, store_id: str, replace: str | None = None
 ) -> AgentDefinition:

@@ -48,6 +48,15 @@ class AgentReader:
         """
         return await self._db.run(lambda c: store.find_version(c, agent_id, version))
 
+    async def check_draft(self, agent_id: str, definition: AgentDefinition) -> Agent:
+        """Check a draft definition as an edit would, but save nothing.
+
+        Return the live agent. Raise ``AgentNotFoundError`` or
+        ``DefinitionInvalidError``. A test invocation of an unsaved
+        definition uses this.
+        """
+        return await self._db.run(lambda c: store.check_draft(c, agent_id, definition))
+
 
 class AgentService:
     """Create, change and delete agents. For the management API only."""

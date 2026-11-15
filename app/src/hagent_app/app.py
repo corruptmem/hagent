@@ -66,6 +66,10 @@ def default_components() -> list[Component]:
     does not start with ``api/``.
     """
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.router import (  # noqa: PLC0415 - import cycle
+        RetryingChatModels,
+        RouterComponent,
+    )
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -75,13 +79,21 @@ def default_components() -> list[Component]:
     http.add_routes(agents.routes())
     providers = ProvidersComponent()
     tools = ToolsComponent(http.events)
+    # Chat models retry a failed request with backoff (design section 18).
+    models = RetryingChatModels(
+        lambda ref, agent_id: providers.chat_model(
+            ref.provider, ref.model, agent_id=agent_id
+        )
+    )
     # TurnsComponent plugs its history into tools.history.
-    turns = TurnsComponent(providers, tools)
+    turns = TurnsComponent(providers, tools, model_for=models)
+    router = RouterComponent(turns, tools=tools, models=models)
+    http.add_routes(router.routes())
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
     http.add_routes(ui.routes())
-    return [providers, guard, agents, tools, turns, catalog, ui, http]
+    return [providers, guard, agents, tools, turns, router, catalog, ui, http]
 
 
 class App:

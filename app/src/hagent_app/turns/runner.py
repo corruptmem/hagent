@@ -58,7 +58,7 @@ from pydantic_ai_harness.warn_on_cache_busts import WarnOnCacheBusts
 
 from hagent_app.agents.models import Agent
 from hagent_app.providers.errors import BudgetExceededError, ProviderError
-from hagent_app.tools import ToolContext, ToolExecutor
+from hagent_app.tools import StateView, ToolContext, ToolExecutor
 from hagent_app.tools.base import ToolSpec
 from hagent_app.turns.config import TurnsConfig
 from hagent_app.turns.history import TurnHistory
@@ -110,9 +110,17 @@ class TurnRunner:
         self.summaries = SummaryWriter(history, model_for, self.config)
         self._background: set[asyncio.Task[None]] = set()
 
-    async def run_turn(self, agent: Agent, turn: TurnInput) -> TurnResult:
-        """Run one agent turn for the agent snapshot and the invocation."""
+    async def run_turn(
+        self, agent: Agent, turn: TurnInput, *, states: StateView | None = None
+    ) -> TurnResult:
+        """Run one agent turn for the agent snapshot and the invocation.
+
+        ``states`` replaces the state cache for the tools of this turn. A
+        test invocation gives its sample states here.
+        """
         executor = self._executor()
+        if states is not None:
+            executor = executor.with_states(states)
         state = _TurnState(turn_id=uuid.uuid4().hex)
         ctx = ToolContext(
             agent,

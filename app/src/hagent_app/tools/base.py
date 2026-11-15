@@ -13,9 +13,9 @@ before ``run``. A tool reaches HA or a store only in ``run``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -23,7 +23,7 @@ from hagent_app.agents.models import Agent
 
 if TYPE_CHECKING:
     from hagent_app.agents.definition import AgentDefinition
-    from hagent_app.ha import HAClient, StateCache
+    from hagent_app.ha import HAClient, State
     from hagent_app.tools.registry import HARegistry
     from hagent_app.tools.stores import AgentStateStore, HistoryStore, KnowledgeStore
 
@@ -55,12 +55,26 @@ class ToolContext:
         return self.agent.definition
 
 
+class StateView(Protocol):
+    """The read interface of the state cache that tools use.
+
+    ``StateCache`` implements it. A test invocation gives the executor an
+    overlay with sample states (``ToolExecutor.with_states``).
+    """
+
+    def get(self, entity_id: str) -> State | None:
+        """The state of one entity, or ``None``."""
+
+    def __iter__(self) -> Iterator[State]:
+        """Every state."""
+
+
 @dataclass(frozen=True, slots=True)
 class ToolEnv:
     """The services that tools can use. It holds no definition writer."""
 
     ha: HAClient
-    states: StateCache
+    states: StateView
     registry: HARegistry
     knowledge: KnowledgeStore | None = None
     history: HistoryStore | None = None
