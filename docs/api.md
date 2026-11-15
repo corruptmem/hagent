@@ -1152,8 +1152,10 @@ Replay rules:
   it sends the request if `live` is true, else it skips the case. Each live
   request counts towards the budget of the agent. When the budget is spent,
   the backtest stops with the status `budget`.
-- Writes: the backtest checks each write against the scope and records it
-  in the case. It never sends a write to HA, and writes no audit row.
+- Writes: the backtest checks each rendered write against the scope and
+  the approval rules, and records it in the case. A write that fails the
+  check makes the case `error`. The backtest never sends a write to HA, and
+  writes no audit row.
 
 Response (status 200): a backtest object with its cases.
 

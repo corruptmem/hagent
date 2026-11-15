@@ -953,8 +953,10 @@ steps and the replay rules. Points for maintainers:
   `test_the_dry_run_matches_the_live_rule` compares the two.
 - The evaluator uses `ToolExecutor.without_approval()` and a tool context
   with `dry_run` set. It calls the executor only for reads
-  (`ha.get_statistics`, `knowledge.read`). It records writes in the case and
-  never sends them, so a backtest adds no audit row.
+  (`ha.get_statistics`, `knowledge.read`). For each write, it runs the
+  `authorize` step of `ha.call_service` on the rendered data and the
+  approval check, as the executor does for a live write. It records the
+  write in the case and never sends it, so a backtest adds no audit row.
 - It never calls `RuleStore.record` and never uses the live result cache.
 - It never calls an `action_response` action again. It takes the response
   from `turn_tool_calls` of the turn, or skips the case.

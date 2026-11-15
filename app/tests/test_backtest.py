@@ -1163,3 +1163,77 @@ async def test_the_rule_routes_answer_503_before_start(tmp_path: Path) -> None:
             resp = await client.get(f"/api/agents/{'a' * 32}/rules")
             assert resp.status == 503
             assert (await resp.json())["error"]["code"] == "not_ready"
+
+
+async def test_a_trial_counts_towards_the_budget_of_the_agent(env: Env) -> None:
+    agent = await env.agent()
+    env.backtest.sample = lambda: 0.0
+    rule_id = await env.rule(agent, activate=True, trial={"enabled": True})
+    seen: list[str | None] = []
+
+    async def billed(
+        agent: Agent, turn: TurnInput, *, states: StateView | None = None
+    ) -> TurnResult:
+        # The meter writes this row for each chat request of a turn.
+        invocation = current_invocation.get()
+        seen.append(invocation)
+        now = datetime.now(UTC).isoformat()
+        await env.h.db.run(
+            lambda c: c.execute(
+                "INSERT INTO provider_calls (started_at, finished_at, budget_day,"
+                " agent_id, provider, call_type, model, status, cost_pusd,"
+                " cost_source, invocation_id) VALUES (?, ?, ?, ?, 'openai',"
+                " 'chat', 'gpt-5-mini', 'ok', 3000000, 'provider', ?)",
+                (now, now, now[:10], agent.id, invocation),
+            )
+        )
+        return TurnResult(f"t-{turn.invocation_id}", "ok", result="on")
+
+    env.turns.run_turn = billed  # type: ignore[method-assign]
+    live = await env.invoke(agent)
+    await wait_until(lambda: not env.backtest.trials.tasks)
+    [trial] = await env.h.db.run(
+        lambda c: [dict(r) for r in c.execute("SELECT * FROM rule_trials")]
+    )
+    # The cost carries the trial ID, not the live invocation.
+    assert seen == [trial["id"]]
+    assert trial["cost_pusd"] == 3_000_000
+    stats = await env.rule_stats(agent, rule_id)
+    assert stats["versions"][0]["trial"]["cost_usd"] == pytest.approx(3e-6)
+    assert stats["versions"][0]["cost_usd"] == 0
+    row = await env.router.get(live.invocation_id)
+    assert row is not None
+    assert row["cost_pusd"] == 0
+    # The budget of the agent sums its provider calls: the trial counts.
+    spent = await env.h.db.run(
+        lambda c: c.execute(
+            "SELECT SUM(cost_pusd) FROM provider_calls WHERE agent_id = ?",
+            (agent.id,),
+        ).fetchone()[0]
+    )
+    assert spent == 3_000_000
+
+
+async def test_a_rendered_write_gets_the_service_call_check(env: Env) -> None:
+    agent = await env.agent()
+    await _history(env, agent, [("18", "on")])
+    # The create check sees placeholder data only. The rendered value is
+    # template text, which the service call check denies, as it does for a
+    # live write.
+    rule_id = await env.rule(
+        agent,
+        writes=[
+            {
+                "service": "input_number.set_value",
+                "entity_id": FLOW,
+                "data": {"value": "{{ '{' ~ '{ 1 }' ~ '}' }}"},
+            }
+        ],
+    )
+    env.h.ha.commands.clear()
+    result = await env.backtest.backtester.run(agent, rule_id)
+    [case] = result["cases"]
+    assert case["outcome"] == "error", case
+    assert case["detail"].startswith("template:")
+    assert case["writes"] == []
+    assert env.h.ha.commands_of("call_service") == []

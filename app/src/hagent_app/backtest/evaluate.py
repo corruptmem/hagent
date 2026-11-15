@@ -13,8 +13,9 @@ live rule stage (``rules/stage.py``), with these differences:
 - **Decisions**: the evaluator replays the recorded answers of the same
   request. Without a recorded answer, it sends the request only if the
   caller permits live requests. The case says ``replayed`` or ``live``.
-- **Writes**: the evaluator runs the write checks, renders the data, and
-  records each write in the case. It never calls the tool executor for a
+- **Writes**: the evaluator runs the write checks, renders the data,
+  checks the rendered call as the executor does, and records each write in
+  the case. It never calls the tool executor for a
   write, so a write never reaches HA.
 - **Statistics**: the evaluator does not touch the live rule statistics or
   the live result cache.
@@ -33,6 +34,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from pydantic import ValidationError
 
 from hagent_app.agents import Agent
 from hagent_app.backtest.records import item_key, request_key
@@ -74,8 +77,8 @@ from hagent_app.rules.templates import (
 )
 from hagent_app.storage import Database
 from hagent_app.tools.base import ToolContext
-from hagent_app.tools.executor import ToolExecutor
-from hagent_app.tools.ha_tools import scope_of
+from hagent_app.tools.executor import ToolExecutor, needs_approval
+from hagent_app.tools.ha_tools import CallService, CallServiceArgs, scope_of
 from hagent_app.tools.scope import ScopeDeniedError, check_read
 
 
@@ -341,6 +344,40 @@ def _json_value(value: Any) -> Any:
     return json.loads(json.dumps(value, default=str))
 
 
+_CALL_SERVICE = CallService()
+
+
+async def _check_write(
+    ctx: ToolContext,
+    executor: ToolExecutor,
+    service: str,
+    entity_id: str,
+    data: Mapping[str, Any],
+) -> None:
+    """The scope and approval check of one rendered write.
+
+    It runs the ``authorize`` step of ``ha.call_service``, as the executor
+    does for a live write. It never runs the call and writes no audit row.
+    """
+    domain, name = service.split(".", 1)
+    try:
+        args = CallServiceArgs.model_validate(
+            {
+                "domain": domain,
+                "service": name,
+                "target": {"entity_id": [entity_id]},
+                "data": dict(data),
+            }
+        )
+    except ValidationError as err:
+        msg = f"write to {entity_id}: invalid_arguments: {err.error_count()} errors"
+        raise RuleFailure(msg) from err
+    prepared = await _CALL_SERVICE.authorize(ctx, executor.env, args)
+    if needs_approval(ctx.definition, _CALL_SERVICE, prepared):
+        msg = f"the write to {entity_id} needs approval"
+        raise ScopeDeniedError("approval_required", msg)
+
+
 class DryRunEvaluator:
     """Runs one rule version against past invocations. It writes nothing.
 
@@ -477,6 +514,7 @@ class DryRunEvaluator:
                 k: _json_value(await engine.render_value(v, variables))
                 for k, v in write.data.items()
             }
+            await _check_write(ctx, executor, write.service, write.entity_id, data)
             case.writes.append(
                 {"service": write.service, "entity_id": write.entity_id, "data": data}
             )
