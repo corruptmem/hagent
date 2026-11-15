@@ -1049,7 +1049,8 @@ The `link` section of the app options has these keys:
 
 A **rule** is a fast path that an agent writes with the `self` tools
 (design section 10). The agent owns its rules. The user can read them, roll
-them back, and run backtests in the management UI. Rule IDs, like other IDs,
+them back, turn them off, delete them and run backtests in the management
+UI. Rule IDs, like other IDs,
 are 32 hexadecimal characters.
 
 Terms:
@@ -1078,6 +1079,7 @@ Errors of the rule routes:
 | 404 | `version_not_found` | The rule has no version with this number. |
 | 404 | `backtest_not_found` | The rule has no backtest with this ID. |
 | 409 | `backtest_running` | A backtest of this rule runs already. |
+| 409 | `rule_is_draft` | The user tried to activate a draft rule. |
 | 422 | `invalid_rule` | The stored spec of the version is not valid any more. |
 | 503 | `not_ready` | The rule engine is not running. |
 
@@ -1144,6 +1146,32 @@ of each version (design section 10.4):
 The version becomes the current version. Its statistics continue. The state
 of the rule does not change. The response is
 `{"id": "<rule ID>", "version": 1, "state": "active"}`.
+
+### Turn a rule off or on
+
+`POST api/agents/{id}/rules/{rule_id}/state`
+
+```json
+{"state": "off"}
+```
+
+`state` is `off` or `active`. `off` stops the rule: the router does not
+test it, so the agent turn answers. `active` turns an `off` rule on again.
+The user cannot activate a `draft` rule. The agent activates a draft after
+its backtest (design section 10.7). The current version does not change.
+The response is `{"id": "<rule ID>", "version": 2, "state": "off"}`.
+
+Errors: 400 `invalid_body` for another `state`, 404 `rule_not_found` for
+a rule of another agent or a deleted rule, and 409 `rule_is_draft` for
+`active` on a draft rule.
+
+### Delete a rule
+
+`DELETE api/agents/{id}/rules/{rule_id}`
+
+The rule stops at once and leaves the rule list. Its versions and their
+statistics stay for history. The response is `{"deleted": "<rule ID>"}`.
+A deleted rule gives 404 `rule_not_found` for a later change.
 
 ### Run a backtest
 
@@ -1289,7 +1317,8 @@ Each later message has this form:
 | `knowledge` | `file_changed`, `file_deleted`, `item_deleted`, `document_changed` | `path`. `id` is the store ID. |
 | `knowledge` | `settings_changed` | none. `id` is `settings`. |
 | `settings` | `updated` | none. `id` is `settings`. The app sends it after each change of the settings or of an API key. |
-| `rules` | `updated` | `agent_id`, `version`. The app sends it after a rollback through the API. `id` is the rule ID. |
+| `rules` | `updated` | `agent_id`, `version`. The app sends it after a rollback or a state change through the API. `id` is the rule ID. |
+| `rules` | `deleted` | `agent_id`. The app sends it after a delete through the API. `id` is the rule ID. |
 | `rules` | `backtest_finished` | `agent_id`, `backtest_id`. `id` is the rule ID. |
 | `tools` | `scope_grown` | `version`, `added_read`, `added_control`: lists of entity IDs. The app sends it when an HA registry change makes the scope of an agent grow. `id` is the agent ID. |
 

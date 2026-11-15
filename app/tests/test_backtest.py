@@ -1127,6 +1127,89 @@ async def test_the_rule_routes_keep_agents_apart(
     assert (status, body["error"]["code"]) == (404, "agent_not_found")
 
 
+async def test_the_user_turns_a_rule_off_and_on(
+    env: Env, api: TestClient[Any, Any]
+) -> None:
+    agent = await env.agent()
+    rule_id = await env.rule(agent, activate=True)
+    await env.temp("18")
+    assert (await env.invoke(agent)).path == "rule"
+    base = f"/api/agents/{agent.id}/rules/{rule_id}"
+
+    status, body = await _json(await api.post(f"{base}/state", json={"state": "off"}))
+    assert (status, body) == (200, {"id": rule_id, "version": 1, "state": "off"})
+    assert (await env.rule_stats(agent, rule_id))["state"] == "off"
+    # An off rule never answers: the agent turn answers.
+    assert (await env.invoke(agent)).path == "agent_turn"
+
+    status, body = await _json(
+        await api.post(f"{base}/state", json={"state": "active"})
+    )
+    assert (status, body["state"]) == (200, "active")
+    assert (await env.invoke(agent)).path == "rule"
+
+    for bad in ({}, {"state": "draft"}, {"state": True}):
+        status, body = await _json(await api.post(f"{base}/state", json=bad))
+        assert (status, body["error"]["code"]) == (400, "invalid_body")
+
+
+async def test_the_user_cannot_activate_a_draft_rule(
+    env: Env, api: TestClient[Any, Any]
+) -> None:
+    agent = await env.agent()
+    rule_id = await env.rule(agent)
+    base = f"/api/agents/{agent.id}/rules/{rule_id}"
+    status, body = await _json(
+        await api.post(f"{base}/state", json={"state": "active"})
+    )
+    assert (status, body["error"]["code"]) == (409, "rule_is_draft")
+    status, body = await _json(await api.post(f"{base}/state", json={"state": "off"}))
+    assert (status, body["state"]) == (200, "off")
+
+
+async def test_the_user_deletes_a_rule(env: Env, api: TestClient[Any, Any]) -> None:
+    agent = await env.agent()
+    rule_id = await env.rule(agent, activate=True)
+    await env.temp("18")
+    assert (await env.invoke(agent)).path == "rule"
+    base = f"/api/agents/{agent.id}/rules/{rule_id}"
+
+    status, body = await _json(await api.delete(base))
+    assert (status, body) == (200, {"deleted": rule_id})
+    assert (await env.invoke(agent)).path == "agent_turn"
+    status, body = await _json(await api.get(f"/api/agents/{agent.id}/rules"))
+    assert body == {"rules": []}
+    # The versions and statistics stay for history.
+    stats = await env.rule_stats(agent, rule_id)
+    assert stats["deleted"] is True
+    assert stats["versions"][0]["answered"] == 1
+    # A deleted rule cannot change again.
+    for resp in (
+        await api.delete(base),
+        await api.post(f"{base}/state", json={"state": "active"}),
+        await api.post(f"{base}/state", json={"state": "off"}),
+    ):
+        status, body = await _json(resp)
+        assert (status, body["error"]["code"]) == (404, "rule_not_found")
+
+
+async def test_state_and_delete_act_only_on_the_agents_own_rules(
+    env: Env, api: TestClient[Any, Any]
+) -> None:
+    owner = await env.agent()
+    other = await env.agent(name="Other")
+    rule_id = await env.rule(owner, activate=True)
+    base = f"/api/agents/{other.id}/rules/{rule_id}"
+    for resp in (
+        await api.post(f"{base}/state", json={"state": "off"}),
+        await api.delete(base),
+    ):
+        status, body = await _json(resp)
+        assert (status, body["error"]["code"]) == (404, "rule_not_found")
+    stats = await env.rule_stats(owner, rule_id)
+    assert (stats["state"], stats["deleted"]) == ("active", False)
+
+
 async def test_backtest_route_checks_the_body(
     env: Env, api: TestClient[Any, Any]
 ) -> None:

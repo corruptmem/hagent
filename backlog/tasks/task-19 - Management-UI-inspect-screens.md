@@ -1,9 +1,11 @@
 ---
 id: TASK-19
 title: 'Management UI: inspect screens'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-14 23:04'
+updated_date: '2026-11-15 02:12'
 labels:
   - ui
 dependencies:
@@ -34,3 +36,14 @@ Design: docs/design.md section 7.2 (Inspect).
 - [ ] #4 Cost shows totals by agent, day and path, including cached tokens and embeddings
 - [ ] #5 Lists update live when new invocations arrive
 <!-- AC:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Back end: new read-only package app/src/hagent_app/inspect/ (InspectComponent + InspectApi), wired in default_components() before http. Routes under api/inspect/: invocations list (filters agent, source, path, status; q = history search over request, result and turn input/result), invocation trace (invocation, turn with messages, tool calls joined with audit decision, compactions, provider calls, trials; rule_id and rule_version only - the UI reads the spec through the rules API), audit log (Changes to HA, with previous versions), agent permissions (agent_scope resolved to entity IDs with the state cache, tools_for list, knowledge attachments, denied calls), schedules and subscriptions (items with last run/event), cost (totals by agent, day and path; cache tokens; embeddings). Every agent route filters by agent ID. Payloads pass redact() for approval action IDs. Never touch rules tables.
+2. Live updates: register router result and activity listeners; publish topic invocations. Document in docs/api.md.
+3. Rule routes (approved by lead): POST api/agents/{id}/rules/{rule_id}/state and DELETE api/agents/{id}/rules/{rule_id} in backtest/api.py, using RuleStore.set_enabled/delete; events rules/updated and rules/deleted; tests for own-rule isolation, deleted rule 404, and an off rule no longer answers.
+4. pytest tests: each route, agent isolation, secret test (API key and link secret never appear), doc test.
+5. Front end: Inspect area with screens Invocations (+ search), Trace, Rules, Schedules, Permissions, Changes, Cost, Approvals. events.ts invalidates invocations, rules, approvals, tools. vitest test per screen, including a live-update test. Update frontend/README.md.
+6. mise run check; notes, summary, report to t3.
+<!-- SECTION:PLAN:END -->
