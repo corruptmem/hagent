@@ -25,6 +25,7 @@ SIGINT.
 | `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/router/` | The router, the persistent invocation queue, the fallback, chat retries and the test invocation route (task-12). See "How to invoke an agent" below. |
+| `src/hagent_app/scheduler/` | `SchedulerComponent`: timers, cron schedules, reviews, event subscriptions and own-write filtering (task-15). See "Schedules and subscriptions" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
@@ -358,9 +359,9 @@ Rules of the HA check (`tools/scope.py`):
 
 Rules of the `self` tools: each spec kind has a strict model, and unknown
 keys fail (`invalid_spec`). A state subscription must name entities in the
-read scope. Rule and schedule specs fail with `not_supported` until task-13
-and task-15 add their models and checks to `SPEC_CHECKS`
-(`tools/store_tools.py`).
+read scope. A schedule spec is a timer or a cron schedule (see "Schedules
+and subscriptions"). Rule specs fail with `not_supported` until task-13 adds
+its model and checks to `SPEC_CHECKS` (`tools/store_tools.py`).
 
 The admin tools accept only the WebSocket commands in `tools/admin.py`.
 Each change command has a reader for the previous version, which the audit
@@ -732,6 +733,133 @@ it (see `docs/api.md`). The sample states go to the turn through
 
 The `router` section of `options.json` holds the keys in `RouterConfig`
 (`src/hagent_app/router/config.py`).
+
+## Schedules and subscriptions
+
+The `scheduler` package runs the invocations that agents schedule for
+themselves, and the review schedule of each definition (design sections 12
+and 14). `SchedulerComponent` starts after the router. It submits each
+invocation through `RouterComponent.submit`.
+
+Terms:
+
+- **Schedule**: a timer or a cron schedule that an agent creates with
+  `self.create`. It invokes the agent with the source `schedule`, or
+  `review` if the spec sets `review: true`.
+- **Review schedule**: the `review.cron` of the definition. It invokes the
+  agent with the source `review`.
+- **Subscription**: a filter on HA state changes or events. A match invokes
+  the agent with the source `event`.
+- **Job**: one APScheduler entry: `item:<item ID>` for a schedule,
+  `review:<agent ID>` for a review schedule.
+- **Own write**: a state change that a service call of the subscriber
+  caused.
+
+### Schedule specs
+
+```json
+{"type": "timer", "delay_seconds": 900, "note": "check the boiler"}
+{"type": "timer", "at": "2026-12-01T06:30:00+00:00", "review": true}
+{"type": "cron", "cron": "30 6 * * 1-5", "data": {"room": "office"}}
+```
+
+- A timer takes exactly one of `delay_seconds` and `at`. `at` needs a UTC
+  offset. A timer runs once. The app then deletes it.
+- A cron schedule uses the standard 5-field form, in the time zone of the
+  app. Day of week `0` and `7` are Sunday. A spec cannot set both the day
+  of the month and the day of the week. The definition review cron can; it
+  then fires only when both match.
+- `note` and `data` go to the invocation in `data.schedule.note` and
+  `data.data`. `data.schedule` also holds the item ID, the due time and
+  `missed_count`.
+
+### Library choice
+
+APScheduler 3.11.3 runs the jobs. APScheduler 4 is still a pre-release
+(4.0.0a6, April 2025) with an unstable interface. The SQLAlchemy job store
+keeps the jobs in a separate SQLite file (`scheduler.job_store`). A
+separate file keeps the job store out of the migrated schema and away from
+the write lock of the app database. The table `scheduler_items` (migration
+`0800`) is the source of truth. On each start, the component makes the job
+store match it and the definitions.
+
+APScheduler 3 calls the job store on the event-loop thread. The job store
+is small, so these calls are short. Each job refers to
+`scheduler.component:fire_job` by name, with the installation ID and the
+job ID as arguments. APScheduler ships no type information, so mypy
+ignores its imports.
+
+### Limits
+
+The definition sets the limits (`scheduling`):
+
+- `max_schedules` counts schedules and subscriptions together. The count
+  and the insert run in one transaction.
+- `min_interval_seconds`: a timer must be at least this far ahead. The
+  smallest gap between the fire times of a cron schedule must be at least
+  this. At fire time, a schedule of the agent that comes less than this
+  after its last submitted schedule run is skipped
+  (`skipped_min_interval`). The definition review schedule does not count.
+- `debounce_seconds` is a floor for the debounce of each subscription.
+  The first match starts the debounce period. The app delivers all
+  matches of the period in one invocation (`count`, and the last
+  `max_changes_per_delivery` changes).
+
+### Missed runs
+
+`APScheduler` reads the wall clock directly. The component therefore
+applies the missed-run policy itself, before APScheduler starts. It takes
+a `clock` argument for tests. For each job that was due while the app was
+stopped, it takes the last missed due time:
+
+- Less than `missed_run_grace_seconds` (600) late: one invocation, with
+  `missed_count` set to the number of missed due times.
+- Otherwise: no invocation, and a `skipped_missed` row in
+  `scheduler_runs`.
+
+Then the job moves to its next future due time. `scheduler_runs` also
+records each submitted run and its result.
+
+### Subscriptions and own writes
+
+- The component holds one HA event subscription for each event type in use.
+  It never subscribes to `call_service`, also not for a row that bypassed
+  the tools.
+- `ToolsComponent.calls` is the `ServiceCallObserver` of the tool executor.
+  `ha.call_service` calls `call_started` before it sends the call, and
+  `call_finished` after it, also when the call fails. `OwnWriteTracker`
+  then links each state change to the agent whose call caused it.
+- A change counts as an own write only for the agent that made the call.
+  By default, a subscription ignores own writes. With
+  `include_own_writes: true`, it receives them.
+- Before each delivery, the component reads the agent again. It drops the
+  delivery if the agent is deleted or off. It runs the subscription spec
+  check again against the current scope, so a narrowed scope stops the
+  delivery (`denied`).
+- Each delivered change has `origin` (`agent` or `external`) and `own`.
+  The table `scheduler_events` records each matched event with its origin,
+  the agent that caused it, and the outcome (`delivered`, `own_write`,
+  `denied`, `dropped`).
+- Before delivery, `redact` replaces approval action IDs
+  (`HAGENT_ACCEPT_<id>`, `HAGENT_REJECT_<id>`) and approval tags in keys
+  and values, at every depth.
+
+### Agent state store
+
+`SchedulerStateStore` is `ToolsComponent.agent_state`. It handles the kinds
+`schedule` and `subscription`. Task-13 sets `scheduler.state_store.rules`
+to its rule store. Until then, rule calls fail with `not_supported`.
+
+The component follows `agents` change events. A change of the review
+schedule moves the review job. A deleted agent loses its jobs, schedules
+and subscriptions.
+
+### Options
+
+The `scheduler` section of `options.json` holds the keys in
+`SchedulerConfig` (`src/hagent_app/scheduler/config.py`). Rows of
+`scheduler_runs` and `scheduler_events` older than `retention_days` are
+deleted on start and each hour.
 
 ## How to use the HA client and the state cache
 
