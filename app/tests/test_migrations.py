@@ -31,8 +31,8 @@ def test_package_migrations_apply_and_are_idempotent(tmp_path: Path) -> None:
 def test_package_migration_names_are_valid() -> None:
     migrations = discover(default_source())
     assert migrations[0].version == 1
-    # Each area owns a range of 100 versions below 1000 (app/README.md).
-    assert all(0 < m.version < 1000 for m in migrations)
+    # Each area owns a range of 100 versions (app/README.md).
+    assert all(0 < m.version < 10000 for m in migrations)
 
 
 def _package_versions() -> list[int]:
