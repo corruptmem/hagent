@@ -120,7 +120,7 @@ class ToolExecutor:
             if tool.available(definition)
         ]
 
-    async def execute(  # noqa: PLR0911, PLR0912 - one linear pipeline
+    async def execute(  # noqa: PLR0911, PLR0912, PLR0915 - one linear pipeline
         self, ctx: ToolContext, name: str, arguments: Mapping[str, Any]
     ) -> ToolResult:
         """Run one tool call. Never raise for a denial or a tool error."""
