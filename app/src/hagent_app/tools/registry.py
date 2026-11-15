@@ -93,6 +93,28 @@ class AreaEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class ServiceInfo:
+    """What the ``get_services`` reply declares for one service.
+
+    - ``target_domains``: the entity domains that the declared entity target
+      accepts. ``None`` means that the service declares no entity target.
+    - ``any_domain``: an entity target filter has no domain, so the target
+      accepts entities of every domain.
+    - ``fields``: the declared data fields. Sections are flattened.
+    """
+
+    target_domains: frozenset[str] | None = None
+    any_domain: bool = False
+    fields: frozenset[str] = frozenset()
+
+    def accepts_target(self, entity_domain: str) -> bool:
+        """True if the declared entity target accepts the domain."""
+        if self.target_domains is None:
+            return False
+        return self.any_domain or entity_domain in self.target_domains
+
+
+@dataclass(frozen=True, slots=True)
 class RegistrySnapshot:
     """One consistent copy of the HA registries and services."""
 
@@ -108,10 +130,17 @@ class RegistrySnapshot:
     services: Mapping[str, frozenset[str]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    service_info: Mapping[str, ServiceInfo] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     def has_service(self, domain: str, service: str) -> bool:
         """True if HA has the service."""
         return service in self.services.get(domain, frozenset())
+
+    def info(self, domain: str, service: str) -> ServiceInfo | None:
+        """The declared metadata of the service, or ``None`` if it is missing."""
+        return self.service_info.get(f"{domain}.{service}")
 
     # Resolution. These follow HA's target resolution (helpers/target.py).
 
@@ -182,6 +211,75 @@ def _opt(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _field_names(fields: Any) -> frozenset[str] | None:
+    """The declared field names. A section adds its child fields."""
+    if not isinstance(fields, Mapping):
+        return None
+    names: set[str] = set()
+    for name, spec in fields.items():
+        if not isinstance(name, str):
+            return None
+        if (
+            isinstance(spec, Mapping)
+            and "selector" not in spec
+            and isinstance(spec.get("fields"), Mapping)
+        ):
+            children = _field_names(spec["fields"])
+            if children is None:
+                return None
+            names |= children
+        else:
+            names.add(name)
+    return frozenset(names)
+
+
+def _target(target: Any) -> tuple[frozenset[str] | None, bool]:
+    """The entity domains of a declared target, and the any-domain flag.
+
+    An unknown shape returns ``(None, False)``: no entity target.
+    """
+    if not isinstance(target, Mapping) or "entity" not in target:
+        return None, False
+    filters = target["entity"]
+    if filters is None:
+        filters = [{}]
+    elif isinstance(filters, Mapping):
+        filters = [filters]
+    if not isinstance(filters, list):
+        return None, False
+    domains: set[str] = set()
+    any_domain = False
+    for raw in filters:
+        item = {} if raw is None else raw
+        if not isinstance(item, Mapping):
+            return None, False
+        domain = item.get("domain")
+        if domain is None:
+            # No domain filter (for example only an integration filter).
+            any_domain = True
+        elif isinstance(domain, str):
+            domains.add(domain)
+        elif isinstance(domain, list) and all(isinstance(d, str) for d in domain):
+            domains |= set(domain)
+        else:
+            return None, False
+    return frozenset(domains), any_domain
+
+
+def parse_service_info(description: Any) -> ServiceInfo | None:
+    """Parse one service description. Return ``None`` if the shape is unknown."""
+    # HA always sends "fields" (helpers/service.py), so a description
+    # without it is not a description that the check can trust.
+    if not isinstance(description, Mapping) or "fields" not in description:
+        return None
+    raw = description["fields"]
+    fields = _field_names({} if raw is None else raw)
+    if fields is None:
+        return None
+    target_domains, any_domain = _target(description.get("target"))
+    return ServiceInfo(target_domains, any_domain, fields)
+
+
 def parse_snapshot(  # noqa: PLR0913
     *,
     entities: Iterable[Mapping[str, Any]],
@@ -231,6 +329,14 @@ def parse_snapshot(  # noqa: PLR0913
         for domain, names in services.items()
         if isinstance(names, Mapping)
     }
+    info_map = {}
+    for domain, names in services.items():
+        if not isinstance(names, Mapping):
+            continue
+        for name, description in names.items():
+            info = parse_service_info(description)
+            if info is not None:
+                info_map[f"{domain}.{name}"] = info
     return RegistrySnapshot(
         entities=MappingProxyType(entity_map),
         devices=MappingProxyType(device_map),
@@ -242,6 +348,7 @@ def parse_snapshot(  # noqa: PLR0913
             str(lb["label_id"]) for lb in labels if isinstance(lb.get("label_id"), str)
         ),
         services=MappingProxyType(service_map),
+        service_info=MappingProxyType(info_map),
     )
 
 

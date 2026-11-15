@@ -30,11 +30,24 @@ Rules for ``read`` and ``control``. The check denies a call when:
 - the scope lists services and the service is not one of them;
 - the call resolves to no entity, unless the scope names the service
   exactly. Services such as ``mqtt.publish`` or ``recorder.purge`` have no
-  target, so this rule stops them.
+  target, so this rule stops them;
+- HA declares no metadata for the service (``get_services``);
+- the call has target entities, and the service declares no entity target
+  that accepts the domain of each one;
+- an explicit target entity has a domain other than the service domain,
+  unless the scope names the service exactly (``domain.service``, not
+  ``domain.*``);
+- the service data has a key that the service does not declare as a field.
+  Some services take fields that select other things (domains, globs,
+  broadcast flags). The field check stops undeclared keys, and the indirect
+  list stops the services with such declared fields.
+
+``group.set`` and ``group.remove`` name a group by ``object_id``. The check
+treats it as the entity ``group.<object_id>``.
 
 An output is a short form of ``control`` for one entity. A call whose
 entities are all outputs passes without a ``control`` level, unless the
-service is indirect.
+service is indirect or its domain differs from the domain of an output.
 
 ``admin`` is a blanket scope with no narrower form. The check passes every
 ``admin`` call unchanged.
@@ -50,8 +63,9 @@ from typing import Any, Literal
 from hagent_app.agents.definition import INDIRECT_DOMAINS, AgentDefinition, HAScope
 from hagent_app.tools.registry import RegistrySnapshot, RegistryUnavailableError
 
-ENTITY_ID = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
-_NAME = re.compile(r"^[a-z0-9_]+$")
+# Use fullmatch: "$" in Python also matches before a final newline.
+ENTITY_ID = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+_NAME = re.compile(r"[a-z0-9_]+")
 TARGET_KEYS = ("entity_id", "device_id", "area_id", "floor_id", "label_id")
 _TEMPLATE_MARKS = ("{{", "{%", "{#")
 _SPECIAL = frozenset({"all", "none"})
@@ -186,7 +200,7 @@ def check_read(scope: AgentScope, entity_ids: Iterable[str]) -> None:
         raise ScopeDeniedError("level", "the agent has no HA read access")
     ids = list(entity_ids)
     for entity_id in ids:
-        if not isinstance(entity_id, str) or not ENTITY_ID.match(entity_id):
+        if not isinstance(entity_id, str) or not ENTITY_ID.fullmatch(entity_id):
             raise ScopeDeniedError("invalid_target", f"not an entity ID: {entity_id!r}")
     outside = [e for e in ids if not scope.read.contains(e)]
     if outside:
@@ -271,7 +285,7 @@ def _scan_text(
     # (cv.entity_ids), so the check does the same.
     for piece in value.split(","):
         name = piece.strip().lower()
-        if ENTITY_ID.match(name) and (name in known or name in reg.entities):
+        if ENTITY_ID.fullmatch(name) and (name in known or name in reg.entities):
             refs.entities.add(name)
         if name in reg.devices:
             refs.devices.add(name)
@@ -319,7 +333,7 @@ def _walk_data(  # noqa: PLR0912
                 for name in _as_list(key, item):
                     if name in _SPECIAL:
                         refs.special = True
-                    elif not ENTITY_ID.match(name):
+                    elif not ENTITY_ID.fullmatch(name):
                         raise ScopeDeniedError(
                             "invalid_target", f"not an entity ID: {name!r}"
                         )
@@ -343,9 +357,52 @@ def _walk_data(  # noqa: PLR0912
 
 
 def _check_names(domain: str, service: str) -> None:
-    if not (_NAME.match(domain) and _NAME.match(service)):
+    if not (_NAME.fullmatch(domain) and _NAME.fullmatch(service)):
         raise ScopeDeniedError(
             "invalid_service", f"not a valid service name: {domain}.{service}"
+        )
+
+
+def _check_declared(  # noqa: PLR0913
+    reg: RegistrySnapshot,
+    domain: str,
+    service: str,
+    data: Mapping[str, Any],
+    entities: Collection[str],
+    *,
+    cross_domain_ok: bool,
+) -> None:
+    """Check the call against what HA declares for the service.
+
+    ``entities`` are the target entities (on the outputs path, every entity
+    that the call names). ``data`` is the service data without the target
+    keys. Fail closed when the metadata is missing.
+    """
+    info = reg.info(domain, service)
+    if info is None:
+        raise ScopeDeniedError(
+            "service_metadata",
+            f"HA declares no metadata for {domain}.{service}; the call is denied",
+        )
+    for entity_id in sorted(entities):
+        entity_domain = entity_id.split(".", 1)[0]
+        if entity_domain != domain and not cross_domain_ok:
+            raise ScopeDeniedError(
+                "cross_domain",
+                f"{domain}.{service} cannot act on {entity_id}: the domains differ. "
+                "Only a control scope that names the service exactly permits this",
+            )
+        if not info.accepts_target(entity_domain):
+            raise ScopeDeniedError(
+                "target_not_declared",
+                f"{domain}.{service} declares no entity target for "
+                f"{entity_domain} entities",
+            )
+    unknown = sorted(set(data) - info.fields)
+    if unknown:
+        raise ScopeDeniedError(
+            "unknown_field",
+            f"{domain}.{service} does not declare the fields: {', '.join(unknown)}",
         )
 
 
@@ -407,7 +464,7 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
     special = [e for e in refs["entity_id"] if e in _SPECIAL]
     explicit = {e for e in refs["entity_id"] if e not in _SPECIAL}
     for entity_id in explicit:
-        if not ENTITY_ID.match(entity_id):
+        if not ENTITY_ID.fullmatch(entity_id):
             raise ScopeDeniedError("invalid_target", f"not an entity ID: {entity_id!r}")
     for key, known, what in (
         ("device_id", reg.devices, "device"),
@@ -453,13 +510,20 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
             "out_of_scope", "'all' and 'none' need a scope with all=true"
         )
 
+    if domain == "group" and "object_id" in data:
+        object_id = data["object_id"]
+        if not isinstance(object_id, str) or not _NAME.fullmatch(object_id):
+            raise ScopeDeniedError("invalid_data", "object_id must be a slug")
+        data_entities.add(f"group.{object_id}")
+        data_refs.entities.add(f"group.{object_id}")  # named in a denial
+
     refs_all = _expand_groups(entities | data_entities, group_members or {})
     indirect_service = domain in INDIRECT_DOMAINS
     in_control = scope.level == "control" and scope.control.covers(refs_all)
     permitted = service_permitted(scope.services, domain, service)
 
+    named = f"{domain}.{service}" in scope.services
     if in_control and permitted:
-        named = f"{domain}.{service}" in scope.services
         if not entities and not special and not named:
             raise ScopeDeniedError(
                 "no_target",
@@ -506,6 +570,15 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
             )
         raise ScopeDeniedError("out_of_scope", f"outside the scope: {detail}")
 
+    _check_declared(
+        reg,
+        domain,
+        service,
+        data,
+        entities if path == "control" else refs_all,
+        cross_domain_ok=named and path == "control",
+    )
+
     if special:
         new_target: dict[str, Any] | None = {"entity_id": special[0]}
     elif entities:
@@ -524,30 +597,47 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
     )
 
 
-def admin_entities(
-    reg: RegistrySnapshot | None,
-    data: Mapping[str, Any] | None,
-    target: Mapping[str, Any] | None,
-) -> frozenset[str]:
+@dataclass(frozen=True, slots=True)
+class AdminEntities:
     """The entities that an ``admin`` call names, as far as known.
 
-    This is best effort, for the previous version in the audit log. It never
-    raises. Without a registry it returns the explicit entity IDs only.
+    ``complete`` is false when the scan could not finish, for example with
+    no current registry, with a template in the data, or with groups that
+    are nested too deep. The approval check then fails closed.
+    """
+
+    entities: frozenset[str]
+    complete: bool
+
+
+def admin_entities(  # noqa: PLR0912
+    reg: RegistrySnapshot | None,
+    known_entities: Collection[str],
+    data: Mapping[str, Any] | None,
+    target: Mapping[str, Any] | None,
+    group_members: Mapping[str, Collection[str]] | None = None,
+) -> AdminEntities:
+    """The entities that an ``admin`` call names, for approval and the audit log.
+
+    This is best effort and never raises. It resolves the target keys,
+    scans the service data for entity and device IDs and expands groups.
     """
     found: set[str] = set()
-    sources = [
-        target or {},
-        {k: v for k, v in (data or {}).items() if k in TARGET_KEYS},
-    ]
+    complete = reg is not None
+    data = dict(data or {})
+    sources = [target or {}, {k: v for k, v in data.items() if k in TARGET_KEYS}]
     for source in sources:
         for key in TARGET_KEYS:
             value = source.get(key)
             values = [value] if isinstance(value, str) else value
+            if values is None:
+                continue
             if not isinstance(values, (list, tuple)):
+                complete = False
                 continue
             names = [v for v in values if isinstance(v, str)]
             if key == "entity_id":
-                found |= {n for n in names if ENTITY_ID.match(n)}
+                found |= {n for n in names if ENTITY_ID.fullmatch(n)}
             elif reg is not None:
                 if key == "device_id":
                     found |= reg.entities_of_devices(names)
@@ -557,4 +647,18 @@ def admin_entities(
                     found |= reg.entities_of_areas(reg.areas_of_floors(names))
                 else:
                     found |= reg.entities_of_labels(names)
-    return frozenset(found)
+    if reg is not None:
+        refs = _DataRefs()
+        rest = {k: v for k, v in data.items() if k not in TARGET_KEYS}
+        try:
+            _walk_data(rest, reg, known_entities, refs)
+        except ScopeDeniedError:
+            complete = False
+        found |= refs.entities
+        for device_id in refs.devices:
+            found |= reg.all_entities_of_device(device_id)
+    try:
+        found = set(_expand_groups(found, group_members or {}))
+    except ScopeDeniedError:
+        complete = False
+    return AdminEntities(frozenset(found), complete)

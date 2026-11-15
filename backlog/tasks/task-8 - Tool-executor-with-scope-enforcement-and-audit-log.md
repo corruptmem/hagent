@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-15 00:16'
+updated_date: '2026-11-15 00:35'
 labels:
   - app
   - security
@@ -52,6 +52,16 @@ Design: docs/design.md sections 8 and 19.
 9. Wire ToolsComponent into default_components; document in app/README.md and docs/api.md.
 
 10. After review: check group members, entity IDs in data keys, safe knowledge paths, no approval request in dry runs, final audit status on cancel.
+
+11. Review-8 fixes. Registry: keep the get_services target filters and the declared fields (sections flattened). Scope check: a call with target entities needs a declared entity target that includes each entity domain. An explicit entity of another domain needs the exact service name in services. Outputs never permit a cross-domain service. A data key outside the declared fields is denied. Missing metadata denies. INDIRECT_DOMAINS gets recorder, zwave_js, zha, matter, knx, mqtt, group, logger, system_log, backup and hagent.
+
+12. group.set and group.remove: object_id maps to group.<object_id>, which must be in the control scope.
+
+13. A state cache that is not ready or is stale denies call_service and the read tools that use the cache (states_unavailable).
+
+14. self.create and self.update: strict subscription model (extra=forbid), entities checked against the read scope. Rule and schedule kinds return not_supported until task-13 and task-15 add validated models.
+
+15. Scope monitor stores a grown baseline only after the notification succeeds. admin_entities expands groups and scans data; a failed scan marks the call for approval when approval.entities is set. Executor catch-all denies with check_failed. ENTITY_ID and _NAME use fullmatch.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes

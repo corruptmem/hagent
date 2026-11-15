@@ -321,7 +321,18 @@ A narrowed `admin` would therefore be a false limit.
   scope permits each one by name: `script.*`, `automation.*`, `scene.*`,
   `homeassistant.*` (the generic services), `shell_command.*`,
   `rest_command.*`, `python_script.*`, `pyscript.*`, `hassio.*` and
-  `notify.*`.
+  `notify.*`. The same rule applies to services that select other things
+  through their data or that change the system: `recorder.*`,
+  `zwave_js.*`, `zha.*`, `matter.*`, `knx.*`, `mqtt.*`, `group.*`,
+  `logger.*`, `system_log.*`, `backup.*` and `hagent.*`.
+- **Declared services.** HA declares a target and data fields for each
+  service. The runtime uses this metadata as an allowlist. A call on an
+  entity needs a declared entity target that accepts the entity domain. A
+  data key that the service does not declare fails. Without metadata, the
+  call fails.
+- **Other domains.** A service can act on an entity of another domain, for
+  example a recorder service on a light. The scope must name such a service
+  exactly. An output never permits it.
 - **Scope changes.** A scope that uses areas, labels or devices changes when
   the user moves an entity. The runtime resolves each scope again when the HA
   registries change. If a scope grows, the runtime sends an HA notification

@@ -158,7 +158,9 @@ The design gives no default for `budget.max_tokens` and
 - Indirect services must be named one by one. A wildcard such as `script.*`
   is not permitted. The indirect domains are `script`, `automation`,
   `scene`, `homeassistant`, `shell_command`, `rest_command`,
-  `python_script`, `pyscript`, `hassio` and `notify`.
+  `python_script`, `pyscript`, `hassio`, `notify`, `recorder`, `zwave_js`,
+  `zha`, `matter`, `knx`, `mqtt`, `group`, `logger`, `system_log`, `backup`
+  and `hagent`.
 
 The app does not check that HA entities, devices, areas or labels exist. HA
 can be offline, and entities change. The tool executor resolves the scope
