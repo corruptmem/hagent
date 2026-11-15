@@ -8,3 +8,6 @@ __pycache__/
 dist/
 build/
 node_modules/
+*.tsbuildinfo
+# The UI build. Task-21 builds it in the app image (see frontend/README.md).
+frontend/dist/

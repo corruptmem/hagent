@@ -21,7 +21,9 @@ from typing import Protocol
 from hagent_app.agents import AgentsComponent
 from hagent_app.config import Config
 from hagent_app.ha import HAClient, StateCache
+from hagent_app.ha_catalog import CatalogComponent
 from hagent_app.http import HttpServer
+from hagent_app.ingress import IngressGuard, UiComponent
 from hagent_app.storage import Database, transaction
 
 _LOG = logging.getLogger(__name__)
@@ -57,13 +59,23 @@ def default_components() -> list[Component]:
     before the server starts. Keep ``http`` last in the list: ``App`` then
     starts it after the components that serve its routes, and stops it
     before them.
+
+    ``IngressGuard`` checks the source address of every request (design
+    section 6.1). ``UiComponent`` serves the UI files on every path that
+    does not start with ``api/``.
     """
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
+    guard = IngressGuard()
+    http.add_middleware(guard.middleware)
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
-    return [ProvidersComponent(), agents, http]
+    catalog = CatalogComponent()
+    http.add_routes(catalog.routes())
+    ui = UiComponent()
+    http.add_routes(ui.routes())
+    return [ProvidersComponent(), guard, agents, catalog, ui, http]
 
 
 class App:

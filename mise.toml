@@ -3,13 +3,20 @@
 
 [tools]
 uv = "0.13.0"
+# The front-end package manager. package.json names the same version.
+# It comes before node, so that it takes precedence over the npm of node.
+"npm:npm" = "11.17.0"
 node = "24"
 "npm:backlog.md" = "1.49.3"
 "pipx:pre-commit" = "4.7.0"
 
 [tasks.setup]
 description = "Install dependencies and git hooks"
-run = ["uv sync --all-packages", "pre-commit install"]
+run = [
+  "uv sync --all-packages",
+  "npm ci --prefix frontend",
+  "pre-commit install",
+]
 
 [tasks.lint]
 description = "Lint and check formatting"
@@ -27,6 +34,16 @@ run = "uv run mypy"
 description = "Run tests"
 run = "uv run pytest"
 
+[tasks.frontend]
+description = "Front end: eslint, prettier, tsc and vitest"
+dir = "frontend"
+run = "npm run check"
+
+[tasks.frontend-build]
+description = "Build the management UI into frontend/dist"
+dir = "frontend"
+run = "npm run build"
+
 [tasks.check]
 description = "Run every check that CI and pre-commit run"
-depends = ["lint", "typecheck", "test"]
+depends = ["lint", "typecheck", "test", "frontend"]

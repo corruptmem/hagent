@@ -12,9 +12,10 @@ Status: design stage. See [the design](docs/design.md).
 Requirements: [mise](https://mise.jdx.dev/).
 
 ```bash
-mise install      # uv, Node, Backlog.md, pre-commit
-mise run setup    # sync Python dependencies, install git hooks
-mise run check    # lint, type check, test
+mise install      # uv, Node, npm, Backlog.md, pre-commit
+mise run setup    # sync Python and front-end dependencies, install git hooks
+mise run check    # lint, type check, test (Python and front end)
+mise run frontend-build   # build the management UI into frontend/dist
 ```
 
 Work is tracked with [Backlog.md](https://github.com/MrLesk/Backlog.md) in
