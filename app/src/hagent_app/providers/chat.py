@@ -10,6 +10,10 @@ the request, it records the tokens and the cost. One agent run makes several
 model requests, so the meter works per request, not per run. The agent turn
 (task-10) gives a ``MeteredModel`` to its Pydantic AI agent.
 
+The SDK clients do not retry (``max_retries=0``). The runtime retries a
+failed request around ``MeteredModel`` (``router/retry.py``), so that the
+meter records each attempt.
+
 The reservation assumes an uncached prompt and the full output limit:
 ``max_tokens`` from the model settings, or ``chat_max_output_tokens``.
 """
@@ -61,11 +65,16 @@ def build_chat_model(
         return OpenAIResponsesModel(
             model,
             provider=OpenAIProvider(
-                base_url=base_url, api_key=key.reveal(), http_client=http_client
+                openai_client=AsyncOpenAI(
+                    base_url=base_url,
+                    api_key=key.reveal(),
+                    http_client=http_client,
+                    max_retries=0,
+                )
             ),
         )
     client = AsyncOpenAI(
-        base_url=base_url, api_key=key.reveal(), http_client=http_client
+        base_url=base_url, api_key=key.reveal(), http_client=http_client, max_retries=0
     )
     return OpenRouterModel(model, provider=OpenRouterProvider(openai_client=client))
 

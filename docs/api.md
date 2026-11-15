@@ -344,17 +344,15 @@ current definition, the app adds no version. `base_version` works as in
 - `GET api/agents/defaults` returns `{"definition": <definition>}` with
   every default value, for a new-agent form.
 
-### Test invocation (planned)
+### Test invocation
 
 `POST api/agents/{id}/test`
 
-The agent runtime (task-10 and task-12) does not exist yet. Until it
-exists, the app does not serve this path and returns 404 `not_found`. The UI
-shows the test panel and reports that the runtime is not available. This
-section is the contract for the runtime task.
-
 A **test invocation** runs one agent turn with sample data. It makes no
-change to HA, to knowledge stores or to agent state.
+change to HA, to knowledge stores or to agent state. The router (task-12)
+runs it outside the queue of the agent. A test therefore never waits for
+real work, and never cancels real work in `restart` mode. The app also
+tests an agent that is turned off.
 
 Body:
 
@@ -368,29 +366,37 @@ Body:
 
 | Field | Content |
 |---|---|
-| `definition` | Optional. A definition to test before the user saves it. Without it, the app uses the current version. The app validates it as in "Edit an agent". |
-| `input.text` | Optional text for the agent, as in `hagent.invoke`. |
+| `definition` | Optional. A definition to test before the user saves it. Without it, the app uses the current version. The app validates it as in "Edit an agent", with the knowledge-store checks. It does not save it. |
+| `input.text` | Optional text for the agent. The agent receives it as `text` in the caller data. |
 | `input.data` | Optional JSON object for the agent, as in `hagent.invoke`. |
-| `states` | Optional sample states. Each key is an entity ID. The value has `state` and `attributes`. The agent reads these values in place of the state cache. |
+| `states` | Optional sample states. Each key is an entity ID. The value has `state` (text) and `attributes` (object). The agent reads these values in place of the state cache: in its inputs and in its HA read tools. Each sample entity also goes into the inputs. |
 
 Rules for the runtime:
 
 - The tool executor checks the scope of each call as usual.
-- The executor does not send a service call to HA. It records the call and
-  returns a success result to the agent.
-- Writes to stores, memory, rules and schedules go to a copy that the app
-  discards after the turn.
+- The executor does not send a service call to HA. It records the call in
+  the audit log with status `dry_run` and returns a success result to the
+  agent.
+- Tools that write to stores, memory, rules and schedules check their
+  arguments, but do not write.
 - The turn counts against the budget of the agent. The response shows the
   cost.
+- Rules do not answer a test invocation.
+- The invocation history keeps the test with `dry_run` set. A test result
+  is never a `last_result` fallback.
 
 Response (status 200):
 
 ```json
 {
+  "invocation_id": "<32 hex>",
+  "status": "ok",
+  "path": "agent_turn",
   "result": "The room is warm enough.",
   "planned_calls": [
     {"domain": "climate", "service": "set_temperature",
-     "target": {"entity_id": ["climate.<room>"]}, "data": {"temperature": 20}}
+     "target": {"entity_id": ["climate.<room>"]}, "data": {"temperature": 20},
+     "return_response": false, "needs_approval": false}
   ],
   "denied_calls": [],
   "tool_calls": 3,
@@ -400,12 +406,19 @@ Response (status 200):
 ```
 
 - `result` matches `result.type` of the definition.
-- `planned_calls` lists the service calls that a real turn would send.
-- `denied_calls` lists the calls that the scope check refused, each with
-  the fields of a planned call and a `reason`.
+- `status` and `path` are as in the invocation result (design section
+  9.2): `ok` with `agent_turn`, or `fallback` or `error` with `fallback`.
+  For `fallback` and `error`, `fallback_reason` says why. For `error`,
+  `error` has `code` and `message`.
+- `planned_calls` lists the service calls that a real turn would send,
+  after the scope check. `needs_approval` is true if a real call would
+  wait for approval. A planned admin command has a `tool` field.
+- `denied_calls` lists the tool calls that failed, each with the tool
+  arguments, `tool`, `code` (the error code of the executor) and
+  `reason`.
 
-Errors: `agent_not_found`, `definition_invalid`, and 503 `not_ready` when
-the runtime is not running.
+Errors: `agent_not_found`, `definition_invalid`, `invalid_body`, and 503
+`not_ready` when the runtime is not running.
 
 ## HA catalogue
 

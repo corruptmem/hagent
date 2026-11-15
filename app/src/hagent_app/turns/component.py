@@ -9,7 +9,7 @@ from pydantic_ai.models import Model
 
 from hagent_app.agents.definition import ModelRef
 from hagent_app.agents.models import Agent
-from hagent_app.tools import ToolsComponent
+from hagent_app.tools import StateView, ToolsComponent
 from hagent_app.turns.config import TurnsConfig
 from hagent_app.turns.history import TurnHistory
 from hagent_app.turns.models import TurnInput, TurnResult
@@ -69,9 +69,11 @@ class TurnsComponent:
             raise TurnsUnavailableError(msg)
         return self._runner
 
-    async def run_turn(self, agent: Agent, turn: TurnInput) -> TurnResult:
+    async def run_turn(
+        self, agent: Agent, turn: TurnInput, *, states: StateView | None = None
+    ) -> TurnResult:
         """Run one agent turn. See ``TurnRunner.run_turn``."""
-        return await self.runner.run_turn(agent, turn)
+        return await self.runner.run_turn(agent, turn, states=states)
 
     async def start(self, ctx: AppContext) -> None:
         """Bind the history to the database and build the runner."""

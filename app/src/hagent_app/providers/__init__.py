@@ -77,4 +77,5 @@ __all__ = [
     "YesNoAnswer",
     "YesNoQuestion",
     "build_chat_model",
+    "current_invocation",
 ]
