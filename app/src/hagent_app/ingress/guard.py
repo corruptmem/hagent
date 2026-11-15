@@ -86,6 +86,16 @@ class IngressGuard:
         self._networks: tuple[Network, ...] | None = None
 
     def _exempt_path(self, path: str) -> bool:
+        """Tell if a raw (still percent-encoded) request path is exempt.
+
+        The router matches the raw path, so the guard must match it too. A
+        decoded path can differ: ``/api%2Flink%2Fws`` decodes to the link
+        path, but the router gives it to another route. A path with an
+        encoded separator (``%2F``, ``%5C``) is never exempt.
+        """
+        lowered = path.lower()
+        if "%2f" in lowered or "%5c" in lowered:
+            return False
         if path in self._exempt_exact:
             return True
         # A prefix matches whole path segments: "/link" exempts "/link" and
@@ -114,7 +124,7 @@ class IngressGuard:
         self, request: web.Request, handler: Handler
     ) -> web.StreamResponse:
         """Refuse the request if the peer address is not allowed."""
-        if self._exempt_path(request.path):
+        if self._exempt_path(request.rel_url.raw_path):
             return await handler(request)
         networks = self._networks
         if networks is None:

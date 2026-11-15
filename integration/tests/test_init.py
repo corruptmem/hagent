@@ -8,6 +8,7 @@ server. No test needs a live HA instance or the real app.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,15 @@ from custom_components.hagent.invoke import (
     HagentInvocationError,
     read_attachments,
 )
+from homeassistant.auth.models import User
 from homeassistant.components import ai_task, conversation
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE
 from homeassistant.core import Context, Event, HomeAssistant
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    Unauthorized,
+)
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
@@ -331,6 +337,138 @@ async def test_invoke_returns_the_response_data(
     assert command["on_timeout"] == "cancel"
 
 
+# ------------------------------------------- admin rule (review M1)
+
+
+async def _non_admin(hass: HomeAssistant) -> User:
+    """A user that is not an admin but may control every entity.
+
+    HA's own entity checks let this user through, so only the hagent admin
+    rule can refuse the call.
+    """
+    return await hass.auth.async_create_user("u", group_ids=["system-users"])
+
+
+def _invokes(app: FakeApp) -> int:
+    return sum(1 for cmd in app.commands if cmd["type"] == "invoke")
+
+
+async def test_invoke_refuses_a_non_admin_user(
+    hass: HomeAssistant, fake_app: FakeApp, hass_admin_user: User
+) -> None:
+    device = await _ready(hass, fake_app)
+    user = await _non_admin(hass)
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            DOMAIN,
+            "invoke",
+            {"device_id": device.id},
+            blocking=True,
+            return_response=True,
+            context=Context(user_id=user.id),
+        )
+    assert _invokes(fake_app) == 0
+    for context in (Context(user_id=hass_admin_user.id), Context()):
+        response = await hass.services.async_call(
+            DOMAIN,
+            "invoke",
+            {"device_id": device.id},
+            blocking=True,
+            return_response=True,
+            context=context,
+        )
+        assert response == messages()["invoke_response"]["data"]
+    assert _invokes(fake_app) == 2
+
+
+async def test_ai_task_refuses_a_non_admin_user(
+    hass: HomeAssistant, fake_app: FakeApp, hass_admin_user: User
+) -> None:
+    await _ready(hass, fake_app)
+    task_entity = entity_id(hass, "ai_task", "ai_task")
+    user = await _non_admin(hass)
+    with pytest.raises(Unauthorized):
+        await ai_task.async_generate_data(
+            hass,
+            task_name="say",
+            entity_id=task_entity,
+            instructions="Say ok",
+            context=Context(user_id=user.id),
+        )
+    assert _invokes(fake_app) == 0
+    for context in (Context(user_id=hass_admin_user.id), None):
+        result = await ai_task.async_generate_data(
+            hass,
+            task_name="say",
+            entity_id=task_entity,
+            instructions="Say ok",
+            context=context,
+        )
+        assert result.data == "ok"
+    assert _invokes(fake_app) == 2
+
+
+async def test_ai_task_checks_each_caller_in_concurrent_calls(
+    hass: HomeAssistant, fake_app: FakeApp, hass_admin_user: User
+) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(cmd: dict[str, Any]) -> dict[str, Any]:
+        started.set()
+        await release.wait()
+        return messages()["invoke_response"]
+
+    fake_app.handlers["invoke"] = slow
+    await _ready(hass, fake_app)
+    task_entity = entity_id(hass, "ai_task", "ai_task")
+    user = await _non_admin(hass)
+
+    def call(context: Context) -> asyncio.Task[Any]:
+        return hass.async_create_task(
+            ai_task.async_generate_data(
+                hass,
+                task_name="say",
+                entity_id=task_entity,
+                instructions="Say ok",
+                context=context,
+            )
+        )
+
+    admin = call(Context(user_id=hass_admin_user.id))
+    other = call(Context(user_id=user.id))
+    # The admin call stays open in the app while the other call runs.
+    # wait_for() cannot be used here: it waits for all HA tasks.
+    async with asyncio.timeout(5):
+        await started.wait()
+        with pytest.raises(Unauthorized):
+            await other
+    assert _invokes(fake_app) == 1
+    release.set()
+    assert (await admin).data == "ok"
+    assert _invokes(fake_app) == 1
+
+
+async def test_conversation_refuses_a_non_admin_user(
+    hass: HomeAssistant, fake_app: FakeApp, hass_admin_user: User
+) -> None:
+    await _ready(hass, fake_app)
+    conv = entity_id(hass, "conversation", "conversation")
+    user = await _non_admin(hass)
+    result = await conversation.async_converse(
+        hass, "hello", None, Context(user_id=user.id), language="en", agent_id=conv
+    )
+    assert result.response.response_type.value == "error"
+    assert "admin" in result.response.speech["plain"]["speech"]
+    assert _invokes(fake_app) == 0
+    for context in (Context(user_id=hass_admin_user.id), Context()):
+        result = await conversation.async_converse(
+            hass, "hello", None, context, language="en", agent_id=conv
+        )
+        assert result.response.response_type.value != "error"
+    assert _invokes(fake_app) == 2
+
+
 async def test_invoke_by_entity_target_and_defaults(
     hass: HomeAssistant, fake_app: FakeApp
 ) -> None:
@@ -602,6 +740,45 @@ def test_attachment_limits(tmp_path: Path) -> None:
         media_content_id="m", mime_type="application/pdf", path=big
     )
     with pytest.raises(HagentInvocationError, match="larger"):
+        read_attachments([item])
+
+
+def test_attachment_size_is_checked_before_the_read(tmp_path: Path) -> None:
+    # A sparse file of 64 GiB: a full read would need 64 GiB of memory.
+    huge = tmp_path / "huge.pdf"
+    with huge.open("wb") as file:
+        file.truncate(64 * 1024**3)
+    item = conversation.Attachment(
+        media_content_id="m", mime_type="application/pdf", path=huge
+    )
+    with pytest.raises(HagentInvocationError, match="larger"):
+        read_attachments([item])
+
+
+def test_attachment_sizes_add_up(tmp_path: Path) -> None:
+    half = const.MAX_ATTACHMENT_BYTES // 2 + 1
+    items = []
+    for name in ("a.pdf", "b.pdf"):
+        path = tmp_path / name
+        path.write_bytes(b"0" * half)
+        items.append(
+            conversation.Attachment(
+                media_content_id="m", mime_type="application/pdf", path=path
+            )
+        )
+    assert len(read_attachments(items[:1])) == 1
+    with pytest.raises(HagentInvocationError, match="larger"):
+        read_attachments(items)
+
+
+def test_attachment_must_be_a_regular_file(tmp_path: Path) -> None:
+    # open() on a FIFO without a writer blocks; the check must refuse it first.
+    fifo = tmp_path / "pipe.txt"
+    os.mkfifo(fifo)
+    item = conversation.Attachment(
+        media_content_id="m", mime_type="text/plain", path=fifo
+    )
+    with pytest.raises(HagentInvocationError, match="regular"):
         read_attachments([item])
 
 

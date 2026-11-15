@@ -265,6 +265,15 @@ async def test_link_accepts_the_secret_and_sends_hello(env: Env) -> None:
         "/api/link/ws/x",
         "/api/link/ws/../agents",
         "/api/link/ws/%2e%2e/agents",
+        # Review L1: these decode to the link path, but the router matches
+        # the raw path and can give them to another route.
+        "/api%2Flink%2Fws",
+        "/api%2flink%2fws",
+        "/api/link%2Fws",
+        "/%61pi%2Flink/ws",
+        "/%61pi/link/ws",
+        "/api/link/w%73",
+        "/api%5Clink%5Cws",
         "/api/events",
         "/",
     ],
@@ -292,6 +301,8 @@ def test_default_components_exempt_only_the_link_path() -> None:
     assert not guard._exempt_path(INFO_PATH)
     assert not guard._exempt_path("/api/link")
     assert not guard._exempt_path("/api/linkx/ws")
+    assert not guard._exempt_path("/api%2Flink%2Fws")
+    assert not guard._exempt_path("/%61pi/link/ws")
 
 
 async def test_info_route_is_served_through_ingress(tmp_path: Path) -> None:
@@ -755,3 +766,24 @@ def test_attachments_survive_the_queue_row() -> None:
     )
     again = InvocationRequest.from_json(request.to_json())
     assert again.attachments == request.attachments
+
+
+async def test_assist_is_refused_for_an_agent_without_assist(env: Env) -> None:
+    """Review L2: the app checks ``assist.enabled``, not only the integration."""
+    agent = await env.agent(assist={"enabled": False})
+    ws = await env.connect()
+    await receive_type(ws, "hello")
+    resp = await command(
+        ws,
+        1,
+        "invoke",
+        agent_id=agent.id,
+        source="assist",
+        text="hi",
+        conversation_id="c1",
+    )
+    assert resp["success"] is True
+    assert resp["data"]["status"] == "error"
+    assert resp["data"]["error"]["code"] == "assist_off"
+    assert env.turns.calls == []
+    await ws.close()

@@ -4,6 +4,7 @@ Two ways lead to an entry:
 
 - Supervisor discovery: the hagent app sends its host, port and secret to
   the Supervisor. HA then offers the set-up, and the user confirms it.
+  A discovery never changes an entry that exists.
 - By hand: the user enters the host, the port and the secret. The app
   shows them in ``GET api/integration`` (see docs/api.md).
 
@@ -99,7 +100,10 @@ class HagentConfigFlow(ConfigFlow, domain=DOMAIN):
         if error is not None:
             return self.async_abort(reason=error)
         await self.async_set_unique_id(installation_id)
-        self._abort_if_unique_id_configured(updates=self._discovery)
+        # Never change an existing entry from a discovery: another app could
+        # send a host and secret of its own. The user changes an entry by
+        # hand (reconfigure or a new manual set-up).
+        self._abort_if_unique_id_configured()
         return await self.async_step_hassio_confirm()
 
     async def async_step_hassio_confirm(
