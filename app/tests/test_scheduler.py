@@ -868,10 +868,11 @@ async def test_rule_calls_without_a_rule_store_never_fail_the_check(
 ) -> None:
     async with scheduler_env(home, tmp_path) as env:
         agent = await env.agent(**READ_HALL)
-        for tool, args in [
+        calls: list[tuple[str, dict[str, Any]]] = [
             ("self.set_enabled", {"kind": "rule", "item_id": "r1", "enabled": False}),
             ("self.delete", {"kind": "rule", "item_id": "r1"}),
-        ]:
+        ]
+        for tool, args in calls:
             result = await env.call(agent, tool, args)
             assert result.error_code == "not_owner"
         listed = await env.call(agent, "self.list", {"kind": "rule"})
