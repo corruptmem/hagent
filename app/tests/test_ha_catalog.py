@@ -59,6 +59,8 @@ READ_COMMANDS = {
     "get_states",
     "subscribe_events",
     "auth/current_user",
+    # The rules component reads HA's time zone for now() (task-13).
+    "get_config",
     *REGISTRY_COMMANDS.values(),
 }
 

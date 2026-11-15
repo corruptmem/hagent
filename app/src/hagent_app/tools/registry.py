@@ -104,11 +104,14 @@ class ServiceInfo:
     - ``any_domain``: an entity target filter has no domain, so the target
       accepts entities of every domain.
     - ``fields``: the declared data fields. Sections are flattened.
+    - ``response_only``: the service only returns data. HA declares this
+      with ``"response": {"optional": false}`` (task-13: rule context).
     """
 
     target_domains: frozenset[str] | None = None
     any_domain: bool = False
     fields: frozenset[str] = frozenset()
+    response_only: bool = False
 
     def accepts_target(self, entity_domain: str) -> bool:
         """True if the declared entity target accepts the domain."""
@@ -287,7 +290,9 @@ def parse_service_info(description: Any) -> ServiceInfo | None:
     if fields is None:
         return None
     target_domains, any_domain = _target(description.get("target"))
-    return ServiceInfo(target_domains, any_domain, fields)
+    response = description.get("response")
+    response_only = isinstance(response, Mapping) and response.get("optional") is False
+    return ServiceInfo(target_domains, any_domain, fields, response_only)
 
 
 def parse_snapshot(  # noqa: PLR0913

@@ -15,6 +15,7 @@ dependencies = [
     # 0.x: the interface can change between minor releases, so pin it.
     "pydantic-ai-harness==0.68.0",
     "jsonschema==4.26.0",
+    "jinja2>=3.1.6",
 ]
 
 [build-system]

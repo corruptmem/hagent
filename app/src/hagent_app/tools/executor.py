@@ -155,6 +155,23 @@ class ToolExecutor:
         copy._tools = self._tools
         return copy
 
+    def without_approval(self) -> ToolExecutor:
+        """A copy of this executor with no approval gate.
+
+        The rule stage (task-13) uses it: rules cannot wait for approval
+        (design section 8), so a call that needs approval is denied with
+        ``approval_unavailable`` and recorded in the audit log.
+        """
+        copy = ToolExecutor(self._env, self._audit, approval=None)
+        copy._tools = self._tools
+        return copy
+
+    @property
+    def env(self) -> ToolEnv:
+        """The services that the tools use. The rule stage reads the state
+        cache and the registry from it for its checks."""
+        return self._env
+
     @property
     def tool_names(self) -> list[str]:
         """The names of every tool that the executor knows."""

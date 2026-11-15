@@ -72,6 +72,7 @@ def default_components() -> list[Component]:
         RetryingChatModels,
         RouterComponent,
     )
+    from hagent_app.rules import RulesComponent  # noqa: PLC0415 - import cycle
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -98,7 +99,10 @@ def default_components() -> list[Component]:
     turns = TurnsComponent(providers, tools, model_for=models)
     turns.history.index = knowledge.history_index
     turns.knowledge_context = knowledge.turn_context
-    router = RouterComponent(turns, tools=tools, models=models)
+    # RulesComponent plugs its store into tools.agent_state (kind "rule").
+    rules = RulesComponent(tools, providers)
+    turns.history.rules = rules.store
+    router = RouterComponent(turns, tools=tools, rules=rules, models=models)
     http.add_routes(router.routes())
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
@@ -112,6 +116,7 @@ def default_components() -> list[Component]:
         tools,
         knowledge,
         turns,
+        rules,
         router,
         catalog,
         ui,

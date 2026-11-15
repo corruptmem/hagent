@@ -142,3 +142,13 @@ class AgentStateStore(Protocol):
     async def delete(self, agent_id: str, kind: StateKind, item_id: str) -> None:
         """Delete an item of the agent."""
         ...
+
+    async def reorder_rules(self, agent_id: str, rule_ids: Sequence[str]) -> list[str]:
+        """Set the order of the agent's rules. Each rule appears once."""
+        ...
+
+    async def rollback_rule(
+        self, agent_id: str, rule_id: str, version: int
+    ) -> dict[str, Any]:
+        """Make an older version of the agent's rule the current version."""
+        ...
