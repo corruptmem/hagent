@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from pydantic_ai.models import Model
@@ -18,6 +19,9 @@ from hagent_app.turns.summaries import ModelFactory
 if TYPE_CHECKING:
     from hagent_app.app import AppContext
     from hagent_app.providers import ProvidersComponent
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class TurnsUnavailableError(RuntimeError):
@@ -70,6 +74,9 @@ class TurnsComponent:
         """Bind the history to the database and build the runner."""
         config = ctx.config.section("turns", TurnsConfig)
         self.history.bind(ctx.db)
+        failed = await self.history.fail_running()
+        if failed:
+            _LOG.info("marked %d turns from the last run as failed", failed)
         self._runner = TurnRunner(
             self._tools.executor,
             self.history,

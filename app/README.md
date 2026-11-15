@@ -299,15 +299,18 @@ Terms:
 The router (task-12) calls one method:
 
 ```python
-result = await turns.run_turn(agent, TurnInput(
-    source="invoke",
-    inputs={"sensor.<name>": "19.5"},  # the router collects the inputs
-    data={"reason": "..."},             # the caller data
-    invocation_id=invocation_id,
-    conversation_id=None,               # set for Assist
-    result_schema=None,                 # an AI Task structure, if any
-    dry_run=False,
-))
+result = await turns.run_turn(
+    agent,
+    TurnInput(
+        source="invoke",
+        inputs={"sensor.<name>": "19.5"},  # the router collects the inputs
+        data={"reason": "..."},  # the caller data
+        invocation_id=invocation_id,
+        conversation_id=None,  # set for Assist
+        result_schema=None,  # an AI Task structure, if any
+        dry_run=False,
+    ),
+)
 ```
 
 `agent` is the `Agent` snapshot from `AgentReader`. `result` is a

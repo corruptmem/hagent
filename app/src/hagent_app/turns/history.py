@@ -261,6 +261,35 @@ class TurnHistory:
             )
         )
 
+    async def fail_running(self) -> int:
+        """Mark the turns that were running when the app stopped as failed.
+
+        A running invocation does not resume after a stop (design section
+        9.6). Return the number of turns.
+        """
+
+        def run(conn: sqlite3.Connection) -> int:
+            cur = conn.execute(
+                "UPDATE turns SET status = 'failed', stop_reason = 'error',"
+                " error = 'the app stopped during the turn', finished_at = ?"
+                " WHERE status = 'running'",
+                (now_iso(),),
+            )
+            return cur.rowcount
+
+        return await self.db.run(run)
+
+    async def earliest_running(self, agent_id: str, source_key: str) -> str | None:
+        """The start time of the earliest running turn of a source, or None."""
+        row = await self.db.run(
+            lambda c: c.execute(
+                "SELECT MIN(started_at) FROM turns WHERE agent_id = ?"
+                " AND source_key = ? AND status = 'running'",
+                (agent_id, source_key),
+            ).fetchone()
+        )
+        return None if row is None or row[0] is None else str(row[0])
+
     async def index_turn(self, record: TurnRecord) -> None:
         """Give a finished turn to the search index, if there is one."""
         if self.index is None or record.dry_run:

@@ -39,6 +39,10 @@ MAIN_FILE = "MAIN.md"
 _STATE_KINDS = ("rule", "schedule", "subscription")
 _STATE_LIST_MAX = 50
 _STATE_LINE_MAX = 200
+# Only these fields of a rule, schedule or subscription go into the
+# instructions. Fields such as the last run time change between
+# invocations, and would stop the provider prompt cache from working.
+_STATE_FIELDS = ("id", "name", "title", "description", "enabled")
 _RECALL_QUERY_MAX = 500
 
 
@@ -198,7 +202,7 @@ class PromptBuilder:
                 )
                 lines.append(f"\n{kind.capitalize()}s ({len(items)}):")
                 lines += [
-                    "- " + clip(dumps(dict(i)), _STATE_LINE_MAX)
+                    "- " + clip(dumps(_identity(i)), _STATE_LINE_MAX)
                     for i in items[:_STATE_LIST_MAX]
                 ]
                 if len(items) > _STATE_LIST_MAX:
@@ -313,6 +317,10 @@ def _scopes(definition: AgentDefinition) -> str:
     result = definition.result
     lines.append(f"Result type: {result.type}.")
     return "\n".join(lines)
+
+
+def _identity(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: item[k] for k in _STATE_FIELDS if k in item}
 
 
 def _entry_name(item: Any) -> str:

@@ -688,3 +688,96 @@ async def test_component_plugs_history_into_the_tools() -> None:
     assert tools.history is turns.history
     with pytest.raises(TurnsUnavailableError):
         turns.runner  # noqa: B018
+
+
+async def test_rule_state_changes_do_not_break_the_stable_prefix(h: Harness) -> None:
+    agent = await make_agent(h, tools__self=True)
+    runs = {"n": 0}
+
+    async def list_items(agent_id: str, kind: str) -> list[dict[str, Any]]:
+        runs["n"] += 1
+        return [
+            {
+                "id": f"{kind}-1",
+                "name": f"a {kind}",
+                "enabled": True,
+                "last_run": f"2026-11-15T08:0{runs['n']}:00",
+                "fires": runs["n"],
+            }
+        ]
+
+    h.agent_state.list_items = list_items  # type: ignore[method-assign]
+    chat = Script(default=text("done"))
+    run = runner(h, Models(chat))
+    await run.run_turn(agent, TurnInput("invoke", now=NOW))
+    await run.run_turn(agent, TurnInput("invoke", now=NOW))
+    one, two = chat.calls
+    assert one.info.instructions == two.info.instructions
+    instructions = one.info.instructions or ""
+    assert '"name":"a rule"' in instructions
+    assert "last_run" not in instructions
+
+
+async def test_summary_does_not_skip_a_running_turn(h: Harness) -> None:
+    agent = await make_agent(h, models=TWO_MODELS)
+    models = Models(Script(default=text("ok")), Script(default=text("SUM")))
+    run = runner(h, models, recent_records=1, summary_batch=1)
+    history = TurnHistory(h.db)
+    # An older turn of the same source that still runs.
+    await history.begin(
+        turn_id="old",
+        agent_id=agent.id,
+        agent_version=agent.version,
+        invocation_id=None,
+        source="invoke",
+        source_key="invoke",
+        conversation_id=None,
+        dry_run=False,
+        input_data={},
+        instructions_sha256="x",
+        prompt="",
+    )
+    for _ in range(3):
+        await run.run_turn(agent, TurnInput("invoke"))
+    await run.drain()
+    assert await history.summary(agent.id, "invoke") is None
+    assert models.summary.calls == []
+
+
+async def test_component_start_fails_turns_from_the_last_run(
+    h: Harness, tmp_path: Path
+) -> None:
+    from hagent_app.providers import ProvidersComponent  # noqa: PLC0415
+    from hagent_app.tools import ToolsComponent  # noqa: PLC0415
+    from hagent_app.turns import TurnsComponent  # noqa: PLC0415
+
+    agent = await make_agent(h)
+    history = TurnHistory(h.db)
+    await history.begin(
+        turn_id="stale",
+        agent_id=agent.id,
+        agent_version=agent.version,
+        invocation_id=None,
+        source="invoke",
+        source_key="invoke",
+        conversation_id=None,
+        dry_run=False,
+        input_data={},
+        instructions_sha256="x",
+        prompt="",
+    )
+
+    @dataclass
+    class Ctx:
+        db: Any
+        config: Any
+
+    from hagent_app.config import Config  # noqa: PLC0415
+
+    turns = TurnsComponent(ProvidersComponent(), ToolsComponent())
+    config = Config(ha_url="ws://unused", ha_token="", data_dir=tmp_path)
+    await turns.start(Ctx(h.db, config))  # type: ignore[arg-type]
+    record = await history.get("stale")
+    assert record is not None
+    assert record.status == "failed"
+    await turns.stop()

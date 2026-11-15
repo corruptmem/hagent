@@ -63,6 +63,12 @@ class SummaryWriter:
             records = await self._history.unsummarized(
                 agent.id, source_key, current.covers_until if current else None
             )
+            # A turn that still runs (parallel mode) finishes with an earlier
+            # start time. Fold only turns before it, so that the summary
+            # never skips it.
+            running = await self._history.earliest_running(agent.id, source_key)
+            if running is not None:
+                records = [r for r in records if r.started_at < running]
             keep = self._config.recent_records
             if len(records) <= keep + self._config.summary_batch:
                 return False
