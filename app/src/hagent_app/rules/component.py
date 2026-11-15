@@ -28,9 +28,9 @@ class RulesUnavailableError(RuntimeError):
 class RulesComponent:
     """Owns the rule store and the rule engine (design section 10).
 
-    The constructor plugs the store into ``tools.agent_state`` (kind
-    ``rule``). ``default_components`` also sets ``router.rules`` to this
-    component and ``turns.history.rules`` to ``store``. List it after
+    ``default_components`` sets ``scheduler.state_store.rules`` to
+    ``agent_state`` (the kind ``rule`` of the self tools), ``router.rules``
+    to this component and ``turns.history.rules`` to ``store``. List it after
     ``tools`` and before ``router``: the router runs queued invocations as
     soon as it starts.
     """
@@ -42,7 +42,6 @@ class RulesComponent:
         self._providers = providers
         self.store = RuleStore()
         self.agent_state = AgentStateStores({"rule": self.store})
-        tools.agent_state = self.agent_state
         self._engine: RuleEngine | None = None
         self._clock = TemplateClock()
         self._ctx: AppContext | None = None

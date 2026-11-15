@@ -196,11 +196,53 @@ REVIEW_8_CASES = [
         "invalid_spec",
         SELF_READ_HALL,
     ),
+    # Schedule specs (task-15): strict model, limits from the definition.
     Case(
         "self.create",
         {"kind": "schedule", "spec": {"cron": "* * * * *"}},
-        "not_supported",
+        "invalid_spec",
         SELF_READ_HALL,
+    ),
+    Case(
+        "self.create",
+        {
+            "kind": "schedule",
+            "spec": {"type": "cron", "cron": "0 4 * * *", "entity_id": "lock.front"},
+        },
+        "invalid_spec",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.create",
+        {"kind": "schedule", "spec": {"type": "timer", "delay_seconds": 5}},
+        "min_interval",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.create",
+        {
+            "kind": "schedule",
+            "spec": {"type": "timer", "at": "2030-01-01T00:00:00"},
+        },
+        "invalid_spec",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.create",
+        {"kind": "schedule", "spec": {"type": "cron", "cron": "0 4 1 * 1"}},
+        "invalid_spec",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.update",
+        {
+            "kind": "schedule",
+            "item_id": "r1",
+            "spec": {"type": "cron", "cron": "0 4 * * *"},
+        },
+        "not_owner",
+        SELF_READ_HALL,
+        setup="other_owner",
     ),
     Case(
         "self.update",

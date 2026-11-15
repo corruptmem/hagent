@@ -73,6 +73,7 @@ def default_components() -> list[Component]:
         RouterComponent,
     )
     from hagent_app.rules import RulesComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.scheduler import SchedulerComponent  # noqa: PLC0415 - import cycle
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -99,11 +100,17 @@ def default_components() -> list[Component]:
     turns = TurnsComponent(providers, tools, model_for=models)
     turns.history.index = knowledge.history_index
     turns.knowledge_context = knowledge.turn_context
-    # RulesComponent plugs its store into tools.agent_state (kind "rule").
+    # The rule store serves the rule kind of the scheduler's state store.
     rules = RulesComponent(tools, providers)
     turns.history.rules = rules.store
     router = RouterComponent(turns, tools=tools, rules=rules, models=models)
     http.add_routes(router.routes())
+    # The scheduler holds the agent state of the self tools and sees each
+    # agent service call, to find own writes (design section 12).
+    scheduler = SchedulerComponent(router, tools, http.events)
+    tools.agent_state = scheduler.state_store
+    scheduler.state_store.rules = rules.agent_state
+    tools.calls = scheduler.calls
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
@@ -118,6 +125,7 @@ def default_components() -> list[Component]:
         turns,
         rules,
         router,
+        scheduler,
         catalog,
         ui,
         http,

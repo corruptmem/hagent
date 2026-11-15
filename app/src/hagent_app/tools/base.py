@@ -82,6 +82,24 @@ class StateView(Protocol):
         """True while the states may not match HA."""
 
 
+class ServiceCallObserver(Protocol):
+    """Sees each service call that an agent makes (design section 12).
+
+    The scheduler (task-15) uses it to link state changes to the agent that
+    caused them. ``call_started`` runs before the call goes to HA.
+    ``call_finished`` runs after it, with the context ID of the result, or
+    ``None`` if the call failed.
+    """
+
+    def call_started(self, agent_id: str) -> int:
+        """Record a call that starts. Return a token for the call."""
+        ...
+
+    def call_finished(self, token: int, context_id: str | None) -> None:
+        """Record the end of the call with ``token``."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class ToolEnv:
     """The services that tools can use. It holds no definition writer."""
@@ -93,6 +111,7 @@ class ToolEnv:
     history: HistoryStore | None = None
     agent_state: AgentStateStore | None = None
     entities: EntitySearch | None = None
+    calls: ServiceCallObserver | None = None
 
 
 @dataclass(frozen=True, slots=True)

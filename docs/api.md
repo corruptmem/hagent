@@ -592,8 +592,9 @@ Errors: 409 `version_conflict` (`details.version` is the current version),
 
 `DELETE api/knowledge/stores/{store_id}/items/{path}` deletes a file or a
 document. The optional query `base_version` checks the version. The
-response has the version of the delete. The history keeps the earlier
-versions, so the user can restore a deleted file.
+response has the version of the delete. The history keeps earlier
+versions, so the user can restore a deleted file. The retention limits in
+"Change history and restore" apply.
 
 ### Change history and restore
 
@@ -611,6 +612,12 @@ versions, so the user can restore a deleted file.
   of version 3 as a new version. `base_version` is optional. It returns
   the same object as "Write a file". Only file versions with text can be
   restored: other versions fail with 409 `not_restorable`.
+
+Retention: the app deletes old versions after each change. It keeps the
+newest version of each path, and at most 50 versions of one path. The text
+of the earlier versions of a store stays in total at or below the store
+size limit. The app deletes the oldest versions first. A version number is
+never used twice.
 
 ### Upload a document
 
@@ -671,10 +678,15 @@ model is set, or the embedding provider failed.
 {"search_mode": "hybrid", "fallback_reason": null, "sqlite_vec": true,
  "embedding": {"provider": "openai", "model": "text-embedding-3-small",
                "dimensions": null},
- "pending_embeddings": 0, "last_error": null, "entity_catalog": 214}
+ "pending_embeddings": 0, "last_error": null,
+ "budget_skipped_agents": [], "entity_catalog": 214}
 ```
 
 `pending_embeddings` is the number of texts that wait for a vector.
+`budget_skipped_agents` lists the agents whose budget refused the
+embeddings of their text. The app embeds the text of other agents, the
+documents and the entity catalogue first, and tries these agents again
+later. This does not change `search_mode`.
 `entity_catalog` is the number of HA entities in the search index.
 
 ### Settings

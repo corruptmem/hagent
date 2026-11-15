@@ -846,3 +846,40 @@ async def test_writes_fail_closed_while_ha_restarts(env: Env) -> None:
     outcome = await env.invoke(agent)
     assert outcome.reason == "rule_error"
     env.h.ha.up()
+
+
+class RecordingObserver:
+    """A ``ServiceCallObserver`` that records each call."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, Any]] = []
+
+    def call_started(self, agent_id: str) -> int:
+        self.events.append(("started", agent_id))
+        return len(self.events)
+
+    def call_finished(self, token: int, context_id: str | None) -> None:
+        self.events.append(("finished", context_id))
+
+
+async def test_rule_writes_reach_the_own_write_observer(env: Env) -> None:
+    """Rule writes use the same path as agent calls: ToolEnv.calls sees them,
+    so the scheduler can filter the agent's own writes (task-15)."""
+    observer = RecordingObserver()
+    env.executor = ToolExecutor(replace(env.executor.env, calls=observer), env.h.audit)
+    engine = RuleEngine(
+        env.store, env.h.db, lambda: env.executor, lambda: env.decisions
+    )
+    agent = await env.agent(**CONTROL_KITCHEN)
+    await env.rule(
+        agent, writes=[{"service": "light.turn_on", "entity_id": "light.kitchen"}]
+    )
+    request = InvocationRequest(agent.id, "invoke")
+    await env.h.db.run(
+        lambda c: router_store.insert(c, "inv-obs", request, status="running")
+    )
+    outcome = await engine.try_rules(RuleRequest("inv-obs", agent, request, {}))
+    assert outcome.answered, outcome
+    assert [e[0] for e in observer.events] == ["started", "finished"]
+    assert observer.events[0] == ("started", agent.id)
+    assert observer.events[1][1] is not None
