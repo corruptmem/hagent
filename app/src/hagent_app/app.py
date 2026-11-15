@@ -55,7 +55,7 @@ class Component(Protocol):
         """Stop the component and release its resources."""
 
 
-def default_components() -> list[Component]:
+def default_components() -> list[Component]:  # noqa: PLR0915 - one wiring list
     """The components that a normal app start runs, in start order.
 
     Build ``HttpServer`` first, so that each component can add its routes
@@ -68,6 +68,7 @@ def default_components() -> list[Component]:
     serves the UI files on every path that does not start with ``api/``.
     """
     from hagent_app.backtest import BacktestComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.inspection import InspectComponent  # noqa: PLC0415 - import cycle
     from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
     from hagent_app.link import LinkComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
@@ -130,6 +131,11 @@ def default_components() -> list[Component]:
     scheduler.state_store.rules = rules.agent_state
     tools.calls = scheduler.calls
 
+    # The inspect area reads the tables of other areas and publishes the
+    # invocations change events from the router listeners.
+    inspect_area = InspectComponent(http.events, tools=tools, router=router)
+    http.add_routes(inspect_area.routes())
+
     async def agent_cost(agent_id: str) -> tuple[Decimal, Decimal]:
         state = await providers.meter.budget_state(agent_id)
         return state.spent_usd, state.remaining_usd
@@ -153,6 +159,7 @@ def default_components() -> list[Component]:
         backtest,
         router,
         scheduler,
+        inspect_area,
         link,
         catalog,
         ui,
