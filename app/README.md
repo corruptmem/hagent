@@ -20,6 +20,7 @@ SIGINT.
 | `src/hagent_app/providers/` | Provider adapters, the price table, cost records and budgets (task-9). See "Providers and cost" below. |
 | `src/hagent_app/ingress/` | `IngressGuard`, the source-address check, and `UiComponent`, which serves the UI files (task-18). |
 | `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
+| `src/hagent_app/knowledge/` | Knowledge stores, documents, the search index, the embedding queue and the knowledge management API (task-11). See "Knowledge stores and search". |
 | `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
@@ -27,6 +28,8 @@ SIGINT.
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
 | `tests/helpers/home.py` | A sample home (registries, services and states) for scope tests. |
 | `tests/helpers/tools.py` | `harness`, the tool test harness, with fake knowledge, history and agent-state stores. |
+| `tests/helpers/knowledge.py` | `knowledge_env`, a started knowledge component with a real tool executor, and `FakeEmbeddings`, a fake embedding model. |
+| `tests/helpers/pdf.py` | `make_pdf`, which builds small PDF files with or without a text layer. |
 | `tests/helpers/wait.py` | `wait_until`, a poll helper for async tests. |
 | `tests/helpers/fake_providers.py` | `FakeProviders`, a fake provider API that replays recorded responses from `tests/fixtures/providers/`. |
 | `tests/helpers/providers_env.py` | `ProvidersEnv`, a started providers component on a temporary database. The `providers_env` fixture creates it. |
@@ -175,6 +178,93 @@ Rules that task-7 applies, and that task-11 must keep:
 - The app refuses to delete a private store that other live agents attach.
 - A definition can attach only stores that exist in `knowledge_stores`.
 
+## Knowledge stores and search (task-11)
+
+The `knowledge` package owns knowledge stores, their files and documents,
+and the search index of all collections (design sections 13.3 and 13.4).
+Migration `0500` extends `knowledge_stores` with `size_limit` and
+`updated_at`, and adds the other tables.
+
+Terms:
+
+- **Collection**: one kind of indexed text: `knowledge`, `history`,
+  `conversation` or `entity`.
+- **Passage**: one piece of indexed text, at most 1500 characters. Each
+  passage has a content hash (SHA-256 of its text).
+- **Hybrid search**: an FTS5 keyword search and a sqlite-vec vector search
+  on the same query, merged with reciprocal rank fusion (RRF).
+
+Modules:
+
+| Module | Content |
+|---|---|
+| `service.py` | `KnowledgeService`: stores, files with versions and history, documents, size limits. It implements the `KnowledgeStore` protocol of the tools. |
+| `index.py` | `SearchIndex`: the passage table, the FTS5 query, the RRF merge and the keyword-only fallback. |
+| `vectors.py` | Every sqlite-vec statement. Vectors are float32 BLOBs in `search_embeddings`. A query uses `vec_distance_cosine` over the passages in scope. It does not use `vec0` KNN tables, because KNN applies its limit before the scope filter. |
+| `embedder.py` | The background embedding queue. |
+| `text.py` | Extraction of PDF (text layer, with pypdf), Markdown, plain text and HTML, and the split into passages. |
+| `entities.py` | `EntityCatalog`: the HA entity catalogue in the index. |
+| `history.py` | `HistoryIndex`: the history and conversation index for task-10. |
+| `context.py` | `build_turn_context`: the knowledge part of each agent turn. |
+| `api.py` | The management routes under `/api/knowledge` (see `docs/api.md`). |
+
+Rules:
+
+- The executor checks attachments before it calls the service. The service
+  receives only attached store IDs.
+- Each search applies the scope filter in SQL, before the ranking and the
+  limit.
+- The vector search drops matches with a cosine distance above
+  `knowledge.max_vector_distance` (0.75 by default). Without this cutoff,
+  every passage in scope would rank. The right value depends on the
+  embedding model.
+- The app loads sqlite-vec from the component, through `db.run`. No
+  migration uses it. If it does not load, if no embedding model is set, or
+  if the provider fails, search uses keywords only. `GET
+  api/knowledge/status` gives the reason.
+- The embedder embeds each content hash once per model. It charges text
+  that an agent writes to that agent, and documents and the entity
+  catalogue to the installation. A query embedding of `knowledge.search`
+  or `memory.search` counts towards the invocation agent:
+  `KnowledgeStore.search` receives the agent ID from the executor. A search
+  from the management API counts towards the installation. A query that is
+  in the query cache costs nothing. A model change re-indexes every passage. The embedder deletes vectors of
+  other models and vectors whose text no longer exists.
+- Store errors (`KnowledgeError`) subclass `StoreError` in
+  `tools/stores.py`. The executor returns their code to the model, for
+  example `version_conflict`.
+- Tables that refer to a store use `ON DELETE CASCADE`. Triggers keep the
+  FTS5 index in step, also for cascade deletes.
+
+### Knowledge in agent turns (task-10)
+
+`default_components()` connects the knowledge component to the turns
+component:
+
+- `turns.history.index = knowledge.history_index`. `HistoryIndex`
+  implements the `HistoryIndex` protocol of `turns/history.py`. The turn
+  history indexes each finished turn (`index_history`) or Assist turn
+  (`index_conversation`), but not dry runs. `memory.search` then calls
+  `search_history`, which ranks with hybrid search and sees only the
+  records of the invocation agent. The filters are `source` (the source or
+  the source key), `since` and `until`.
+- `turns.knowledge_context = knowledge.turn_context`. The prompt builder
+  calls it for part 3 of each turn (design section 9.5), with
+  `turns.index_max_entries` as the index size (50 by default). It gives
+  the store list, the name-sorted index and the injected main files. The
+  text holds no time or other value that changes between turns. The
+  builder also uses it for the main file requests (design section 13.1).
+  If the call fails, the builder reads the stores through the executor.
+- Other code can index records with `await knowledge.history.add(...)` and
+  remove them with `remove`, for example when retention deletes a record.
+
+### Hand-off to task-20: knowledge screens
+
+All routes are in `docs/api.md`, "Knowledge stores". A store list with the
+attached agents, the items, the file history with restore, the document
+upload and the embedding model setting are available. Attachments are part
+of the agent definition.
+
 ## How to call tools: the executor and the scope check
 
 Every agent tool call goes through `ToolExecutor` (`tools/executor.py`). The
@@ -291,6 +381,11 @@ The knowledge, memory and self tools use the protocols in
 in `default_components()`, before the app starts. Until then, those tools
 return `unavailable`. The executor passes only
 attached store IDs and the invocation's agent ID to a store.
+
+`ToolsComponent.entities` takes an `EntitySearch` (task-11 sets it).
+`ha.find_entities` first builds the candidates in the read scope. Then it
+asks `EntitySearch` to rank only those candidates. Without it, or when the
+catalogue is empty, the tool uses its word match.
 
 ### How to add a tool
 
@@ -414,9 +509,9 @@ Read interface for the Inspect screens (task-19):
 `TurnHistory` also implements the `HistoryStore` protocol of the tool
 executor. `TurnsComponent` sets `ToolsComponent.history` in its
 constructor. `rule_owner` returns `None` until task-13 adds rules. A
-`HistoryIndex` (task-11) can index the turns and serve `memory.search`:
-set `turns.history.index`. Without an index, search uses a plain text
-match. Dry runs do not go into the index, the search or the summaries.
+`HistoryIndex` (task-11) indexes the turns and serves `memory.search`:
+`default_components()` sets `turns.history.index`. Without an index,
+search uses a plain text match. Dry runs do not go into the index, the search or the summaries.
 
 ### Options
 

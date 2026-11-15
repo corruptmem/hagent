@@ -25,7 +25,12 @@ if TYPE_CHECKING:
     from hagent_app.agents.definition import AgentDefinition
     from hagent_app.ha import HAClient, StateCache
     from hagent_app.tools.registry import HARegistry
-    from hagent_app.tools.stores import AgentStateStore, HistoryStore, KnowledgeStore
+    from hagent_app.tools.stores import (
+        AgentStateStore,
+        EntitySearch,
+        HistoryStore,
+        KnowledgeStore,
+    )
 
 
 class Args(BaseModel):
@@ -65,6 +70,7 @@ class ToolEnv:
     knowledge: KnowledgeStore | None = None
     history: HistoryStore | None = None
     agent_state: AgentStateStore | None = None
+    entities: EntitySearch | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -12,7 +12,12 @@ from hagent_app.tools.base import ToolEnv
 from hagent_app.tools.executor import ApprovalGate, ToolExecutor
 from hagent_app.tools.monitor import ScopeMonitor
 from hagent_app.tools.registry import HARegistry
-from hagent_app.tools.stores import AgentStateStore, HistoryStore, KnowledgeStore
+from hagent_app.tools.stores import (
+    AgentStateStore,
+    EntitySearch,
+    HistoryStore,
+    KnowledgeStore,
+)
 
 if TYPE_CHECKING:
     from hagent_app.app import AppContext
@@ -27,7 +32,8 @@ class ToolsComponent:
 
     Task-10 calls ``executor()`` in each agent turn. Task-11, task-10 and
     task-13 to task-15 set ``knowledge``, ``history`` and ``agent_state``
-    before the app starts. Task-16 sets ``approval``.
+    before the app starts. Task-11 also sets ``entities``, the ranked entity
+    search of ``ha.find_entities``. Task-16 sets ``approval``.
     """
 
     name = "tools"
@@ -37,6 +43,7 @@ class ToolsComponent:
         self.knowledge: KnowledgeStore | None = None
         self.history: HistoryStore | None = None
         self.agent_state: AgentStateStore | None = None
+        self.entities: EntitySearch | None = None
         self.approval: ApprovalGate | None = None
         self.registry: HARegistry | None = None
         self.audit: AuditLog | None = None
@@ -69,6 +76,7 @@ class ToolsComponent:
             knowledge=self.knowledge,
             history=self.history,
             agent_state=self.agent_state,
+            entities=self.entities,
         )
         self._executor = ToolExecutor(env, self.audit, approval=self.approval)
         await self.registry.start()

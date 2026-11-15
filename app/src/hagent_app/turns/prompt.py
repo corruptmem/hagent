@@ -17,23 +17,34 @@ parts:
 Part 1, the tool definitions, comes from ``ToolExecutor.tools_for``. The
 provider puts the tool definitions before the instructions.
 
-The builder reads stores and the agent state only through the tool executor,
-so the same scope check applies as for a model tool call.
+The builder reads the agent state through the tool executor, so the same
+scope check applies as for a model tool call. For part 3, the knowledge
+component (task-11) supplies ``knowledge_context``: it builds the store list,
+the name-sorted index and the injected main files from the attachments of
+the definition. Without it, the builder reads the stores through the
+executor.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+import logging
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 from hagent_app.agents.definition import AgentDefinition
+from hagent_app.knowledge.context import TurnContext
 from hagent_app.tools import ToolContext, ToolExecutor
 from hagent_app.turns.config import TurnsConfig
 from hagent_app.turns.history import TurnHistory
 from hagent_app.turns.models import TurnInput, TurnRecord
+
+_LOG = logging.getLogger(__name__)
+
+# Builds part 3 from a definition and the index size (task-11).
+type KnowledgeContextSource = Callable[[AgentDefinition, int], Awaitable[TurnContext]]
 
 MAIN_FILE = "MAIN.md"
 _STATE_KINDS = ("rule", "schedule", "subscription")
@@ -84,11 +95,16 @@ class PromptBuilder:
     """Build the prompt of a turn."""
 
     def __init__(
-        self, executor: ToolExecutor, history: TurnHistory, config: TurnsConfig
+        self,
+        executor: ToolExecutor,
+        history: TurnHistory,
+        config: TurnsConfig,
+        knowledge_context: KnowledgeContextSource | None = None,
     ) -> None:
         self._executor = executor
         self._history = history
         self._config = config
+        self._knowledge_context = knowledge_context
 
     async def build(self, ctx: ToolContext, turn: TurnInput, now: datetime) -> Prompt:
         """Build the prompt for one invocation."""
@@ -127,6 +143,15 @@ class PromptBuilder:
         definition = ctx.definition
         if not definition.knowledge or not definition.tools.enabled("knowledge"):
             return "", []
+        if self._knowledge_context is not None:
+            try:
+                context = await self._knowledge_context(
+                    definition, self._config.index_max_entries
+                )
+            except Exception:
+                _LOG.exception("cannot build the knowledge context; using the tools")
+            else:
+                return context.text.strip(), self._main_file_requests(context)
         listed = await self._executor.execute(ctx, "knowledge.list", {})
         if not listed.ok or not isinstance(listed.data, list):
             return "", []
@@ -156,6 +181,15 @@ class PromptBuilder:
                             MainFileRequest(attachment.store_id, name, len(text), limit)
                         )
         return "\n".join(lines), requests
+
+    def _main_file_requests(self, context: TurnContext) -> list[MainFileRequest]:
+        limit = self._config.main_file_max_chars
+        return [
+            MainFileRequest(s.store_id, s.name, len(s.main_file), limit)
+            for s in context.stores
+            if s.main_file is not None
+            and len(s.main_file) >= limit * self._config.main_file_warn_fraction
+        ]
 
     async def _index(self, ctx: ToolContext, store_id: str) -> str:
         result = await self._executor.execute(

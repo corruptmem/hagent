@@ -8,6 +8,7 @@ entities in the read scope. ``ha.call_service`` needs ``control``,
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal
@@ -28,6 +29,8 @@ from hagent_app.tools.scope import (
     check_read,
     check_service_call,
 )
+
+_LOG = logging.getLogger(__name__)
 
 EntityIdArg = Annotated[
     str, StringConstraints(pattern=r"^[a-z0-9_]+\.[a-z0-9_]+$", max_length=255)
@@ -149,14 +152,29 @@ class FindEntities(_ReadTool):
             else None
         )
         words = (args.query or "").lower().split()
+        candidates = [
+            entity_id
+            for entity_id in sorted(known)
+            if scope.read.contains(entity_id)
+            and (not args.domain or entity_id.split(".", 1)[0] == args.domain)
+            and (area_entities is None or entity_id in area_entities)
+        ]
+        if words and env.entities is not None:
+            # Hybrid ranking over the scope-filtered candidates only.
+            try:
+                ranked = await env.entities.rank_entities(
+                    args.query or "", candidates, args.limit
+                )
+            except Exception:
+                _LOG.warning("entity search failed; using the word match")
+            else:
+                allowed = set(candidates)
+                return Prepared(
+                    args.model_dump(),
+                    tuple(e for e in ranked if e in allowed)[: args.limit],
+                )
         found = []
-        for entity_id in sorted(known):
-            if not scope.read.contains(entity_id):
-                continue
-            if args.domain and entity_id.split(".", 1)[0] != args.domain:
-                continue
-            if area_entities is not None and entity_id not in area_entities:
-                continue
+        for entity_id in candidates:
             if words:
                 state = env.states.get(entity_id)
                 name = str(state.attributes.get("friendly_name", "")) if state else ""

@@ -258,7 +258,9 @@ async def test_recall_goes_after_history_and_before_the_invocation(
     agent = await make_agent(h, main=True, retrieval={"mode": "all"})
     set_store(h)
 
-    async def search(store_ids: Any, query: str, limit: int) -> list[dict[str, Any]]:
+    async def search(
+        store_ids: Any, query: str, limit: int, *, agent_id: str
+    ) -> list[dict[str, Any]]:
         return [{"path": "a.md", "text": f"about {query}"}]
 
     h.knowledge.search = search  # type: ignore[method-assign]

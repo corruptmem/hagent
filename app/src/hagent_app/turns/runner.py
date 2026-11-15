@@ -69,7 +69,7 @@ from hagent_app.turns.models import (
     TurnStatus,
     TurnUsage,
 )
-from hagent_app.turns.prompt import Prompt, PromptBuilder
+from hagent_app.turns.prompt import KnowledgeContextSource, Prompt, PromptBuilder
 from hagent_app.turns.summaries import ModelFactory, SummaryWriter
 
 _LOG = logging.getLogger(__name__)
@@ -102,10 +102,12 @@ class TurnRunner:
         history: TurnHistory,
         model_for: ModelFactory,
         config: TurnsConfig | None = None,
+        knowledge_context: KnowledgeContextSource | None = None,
     ) -> None:
         self._executor = executor
         self._history = history
         self._model_for = model_for
+        self._knowledge_context = knowledge_context
         self.config = config or TurnsConfig()
         self.summaries = SummaryWriter(history, model_for, self.config)
         self._background: set[asyncio.Task[None]] = set()
@@ -120,9 +122,9 @@ class TurnRunner:
             dry_run=turn.dry_run,
         )
         now = turn.now or datetime.now().astimezone()
-        prompt = await PromptBuilder(executor, self._history, self.config).build(
-            ctx, turn, now
-        )
+        prompt = await PromptBuilder(
+            executor, self._history, self.config, self._knowledge_context
+        ).build(ctx, turn, now)
         await self._history.begin(
             turn_id=state.turn_id,
             agent_id=agent.id,

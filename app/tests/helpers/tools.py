@@ -45,9 +45,9 @@ class FakeKnowledge:
         return {"text": ""}
 
     async def search(
-        self, store_ids: Sequence[str], query: str, limit: int
+        self, store_ids: Sequence[str], query: str, limit: int, *, agent_id: str
     ) -> list[dict[str, Any]]:
-        self.calls.append(("search", tuple(store_ids), query))
+        self.calls.append(("search", tuple(store_ids), query, agent_id))
         return []
 
     async def write(  # noqa: PLR0913

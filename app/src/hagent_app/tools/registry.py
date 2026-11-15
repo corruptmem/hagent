@@ -61,6 +61,8 @@ class EntityEntry:
     disabled: bool = False
     entity_category: str | None = None
     name: str | None = None
+    # Extra names for the entity catalogue search (task-11).
+    aliases: tuple[str, ...] = ()
 
     @property
     def indirect_target(self) -> bool:
@@ -80,6 +82,7 @@ class DeviceEntry:
     id: str
     area_id: str | None = None
     labels: frozenset[str] = frozenset()
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +130,7 @@ class RegistrySnapshot:
     areas: Mapping[str, AreaEntry] = field(default_factory=lambda: MappingProxyType({}))
     floors: frozenset[str] = frozenset()
     labels: frozenset[str] = frozenset()
+    label_names: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     services: Mapping[str, frozenset[str]] = field(
         default_factory=lambda: MappingProxyType({})
     )
@@ -205,6 +209,12 @@ def _labels(value: Any) -> frozenset[str]:
     if not isinstance(value, list):
         return frozenset()
     return frozenset(str(v) for v in value if isinstance(v, str))
+
+
+def _aliases(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple | set | frozenset):
+        return ()
+    return tuple(sorted(str(v) for v in value if isinstance(v, str) and v))
 
 
 def _opt(value: Any) -> str | None:
@@ -304,6 +314,7 @@ def parse_snapshot(  # noqa: PLR0913
             disabled=item.get("disabled_by") is not None,
             entity_category=_opt(item.get("entity_category")),
             name=_opt(item.get("name")) or _opt(item.get("original_name")),
+            aliases=_aliases(item.get("aliases")),
         )
     device_map = {}
     for item in devices:
@@ -313,6 +324,7 @@ def parse_snapshot(  # noqa: PLR0913
                 id=device_id,
                 area_id=_opt(item.get("area_id")),
                 labels=_labels(item.get("labels")),
+                name=_opt(item.get("name_by_user")) or _opt(item.get("name")),
             )
     area_map = {}
     for item in areas:
@@ -324,6 +336,11 @@ def parse_snapshot(  # noqa: PLR0913
                 labels=_labels(item.get("labels")),
                 name=_opt(item.get("name")),
             )
+    label_names = {
+        str(lb["label_id"]): str(lb.get("name") or lb["label_id"])
+        for lb in labels
+        if isinstance(lb.get("label_id"), str)
+    }
     service_map = {
         str(domain): frozenset(str(s) for s in names)
         for domain, names in services.items()
@@ -344,9 +361,8 @@ def parse_snapshot(  # noqa: PLR0913
         floors=frozenset(
             str(f["floor_id"]) for f in floors if isinstance(f.get("floor_id"), str)
         ),
-        labels=frozenset(
-            str(lb["label_id"]) for lb in labels if isinstance(lb.get("label_id"), str)
-        ),
+        labels=frozenset(label_names),
+        label_names=MappingProxyType(label_names),
         services=MappingProxyType(service_map),
         service_info=MappingProxyType(info_map),
     )

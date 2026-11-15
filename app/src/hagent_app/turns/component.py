@@ -13,6 +13,7 @@ from hagent_app.tools import ToolsComponent
 from hagent_app.turns.config import TurnsConfig
 from hagent_app.turns.history import TurnHistory
 from hagent_app.turns.models import TurnInput, TurnResult
+from hagent_app.turns.prompt import KnowledgeContextSource
 from hagent_app.turns.runner import TurnRunner
 from hagent_app.turns.summaries import ModelFactory
 
@@ -36,7 +37,8 @@ class TurnsComponent:
     starts, and list it after ``tools`` in ``default_components``.
 
     The router (task-12) calls ``run_turn``. The Inspect screens (task-19)
-    read ``history``.
+    read ``history``. ``default_components`` sets ``history.index`` and
+    ``knowledge_context`` from the knowledge component (task-11).
     """
 
     name = "turns"
@@ -53,6 +55,7 @@ class TurnsComponent:
         self._model_for = model_for
         self.history = TurnHistory()
         tools.history = self.history
+        self.knowledge_context: KnowledgeContextSource | None = None
         self._runner: TurnRunner | None = None
 
     def _chat_model(self, ref: ModelRef, agent_id: str) -> Model:
@@ -82,6 +85,7 @@ class TurnsComponent:
             self.history,
             self._model_for or self._chat_model,
             config,
+            self.knowledge_context,
         )
 
     async def stop(self) -> None:
