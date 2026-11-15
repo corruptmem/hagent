@@ -17,7 +17,14 @@ from hagent_app.tools.scope import (
     resolve_scope,
 )
 from helpers.agents import definition
-from helpers.home import DEV_BEDROOM, DEV_KITCHEN, ENTITIES, SERVICES, snapshot
+from helpers.home import (
+    DEV_BEDROOM,
+    DEV_KITCHEN,
+    DEV_THERMO,
+    ENTITIES,
+    SERVICES,
+    snapshot,
+)
 
 REG = snapshot()
 KNOWN = frozenset(e["entity_id"] for e in ENTITIES)
@@ -369,6 +376,56 @@ def test_every_indirect_service_is_denied_unless_named(domain: str) -> None:
     # The exact name permits it.
     scope = _control({"all": True}, services=[f"{domain}.{service}"])
     assert _call(scope, f"{domain}.{service}", target=target).path == "control"
+
+
+def test_group_members_must_be_in_the_scope() -> None:
+    scope = _control({"entities": ["light.group", "light.kitchen"]})
+    members = {"light.group": ["light.kitchen", "light.lounge"]}
+    target = {"entity_id": "light.group"}
+    with pytest.raises(ScopeDeniedError) as info:
+        _call(scope, "light.turn_on", target=target, group_members=members)
+    assert info.value.code == "out_of_scope"
+    members = {"light.group": ["light.kitchen"]}
+    call = _call(scope, "light.turn_on", target=target, group_members=members)
+    assert call.data_entities == {"light.kitchen"}
+
+
+def test_nested_groups_are_expanded_and_limited() -> None:
+    scope = _control({"entities": ["light.g0", "light.g1", "light.kitchen"]})
+    members = {"light.g0": ["light.g1"], "light.g1": ["light.hall"]}
+    with pytest.raises(ScopeDeniedError) as info:
+        _call(
+            scope,
+            "light.turn_on",
+            target={"entity_id": "light.g0"},
+            group_members=members,
+        )
+    assert info.value.code == "out_of_scope"
+    deep = {f"light.g{i}": [f"light.g{i + 1}"] for i in range(10)}
+    with pytest.raises(ScopeDeniedError) as info:
+        _call(
+            _control({"all": True}),
+            "light.turn_on",
+            target={"entity_id": "light.g0"},
+            group_members=deep,
+        )
+    assert info.value.code == "invalid_target"
+
+
+def test_entity_ids_in_data_keys_are_checked() -> None:
+    scope = _control({"entities": ["light.kitchen"]}, services=["scene.apply"])
+    data: dict[str, Any] = {"entities": {"lock.front": {"state": "unlocked"}}}
+    assert _denied(scope, "scene.apply", data=data) == "out_of_scope"
+    data = {"entities": {"light.kitchen": {"state": "on"}}}
+    assert _call(scope, "scene.apply", data=data).path == "control"
+    data = {"entities": {"{{ 1 }}": "on"}}
+    assert _denied(scope, "scene.apply", data=data) == "template"
+
+
+def test_registry_target_without_domain_entities_is_denied() -> None:
+    scope = _control({"all": True}, services=["light.turn_on"])
+    code = _denied(scope, "light.turn_on", target={"device_id": DEV_THERMO})
+    assert code == "invalid_target"
 
 
 def test_services_list_limits_the_services() -> None:

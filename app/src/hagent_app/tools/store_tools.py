@@ -17,9 +17,10 @@ Scope rules:
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, JsonValue, StringConstraints
+from pydantic import AfterValidator, Field, JsonValue, StringConstraints
 
 from hagent_app.agents.definition import KnowledgeAttachment
 from hagent_app.tools.base import (
@@ -40,12 +41,22 @@ from hagent_app.tools.stores import (
 )
 
 StoreIdArg = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
-PathArg = Annotated[
-    str,
-    StringConstraints(
-        min_length=1, max_length=255, pattern=r"^[A-Za-z0-9_\-][A-Za-z0-9_\-./ ]*$"
-    ),
-]
+_PATH_CHARS = re.compile(r"^[A-Za-z0-9_\-./ ]{1,255}$")
+
+
+def _safe_path(value: str) -> str:
+    """Reject a path that can leave its store: ``.``, ``..`` or empty parts."""
+    if not _PATH_CHARS.match(value):
+        msg = "a path uses letters, digits, '_', '-', '.', ' ' and '/' only"
+        raise ValueError(msg)
+    parts = value.split("/")
+    if any(part.strip() in {"", ".", ".."} for part in parts):
+        msg = "a path must not have empty, '.' or '..' parts"
+        raise ValueError(msg)
+    return value
+
+
+PathArg = Annotated[str, AfterValidator(_safe_path)]
 ItemId = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 Text = Annotated[str, StringConstraints(max_length=200_000)]
 Query = Annotated[str, StringConstraints(min_length=1, max_length=1000)]

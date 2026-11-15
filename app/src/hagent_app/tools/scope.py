@@ -56,6 +56,7 @@ TARGET_KEYS = ("entity_id", "device_id", "area_id", "floor_id", "label_id")
 _TEMPLATE_MARKS = ("{{", "{%", "{#")
 _SPECIAL = frozenset({"all", "none"})
 MAX_DEPTH = 12
+MAX_GROUP_DEPTH = 5
 
 type Level = Literal["none", "read", "control", "admin"]
 type Path = Literal["control", "outputs", "admin"]
@@ -258,6 +259,43 @@ class _DataRefs:
     special: bool = False
 
 
+def _scan_text(
+    value: str, reg: RegistrySnapshot, known: Collection[str], refs: _DataRefs
+) -> None:
+    """Find templates and entity or device IDs in one text value or key."""
+    if any(mark in value for mark in _TEMPLATE_MARKS):
+        raise ScopeDeniedError(
+            "template", "templates are not permitted in service data"
+        )
+    # HA validators lower-case entity IDs and split text at commas
+    # (cv.entity_ids), so the check does the same.
+    for piece in value.split(","):
+        name = piece.strip().lower()
+        if ENTITY_ID.match(name) and (name in known or name in reg.entities):
+            refs.entities.add(name)
+        if name in reg.devices:
+            refs.devices.add(name)
+
+
+def _expand_groups(
+    entity_ids: Iterable[str], members: Mapping[str, Collection[str]]
+) -> frozenset[str]:
+    """Add the members of group entities, also of nested groups.
+
+    A group entity (for example a light group or a ``group.*`` entity)
+    acts on its members. HA lists them in the ``entity_id`` attribute.
+    """
+    found = set(entity_ids)
+    frontier = set(found)
+    for _ in range(MAX_GROUP_DEPTH):
+        new = {m for e in frontier for m in members.get(e, ())} - found
+        if not new:
+            return frozenset(found)
+        found |= new
+        frontier = new
+    raise ScopeDeniedError("invalid_target", "the groups are nested too deep")
+
+
 def _walk_data(  # noqa: PLR0912
     value: Any,
     reg: RegistrySnapshot,
@@ -271,18 +309,7 @@ def _walk_data(  # noqa: PLR0912
     if value is None or isinstance(value, (bool, int, float)):
         return
     if isinstance(value, str):
-        if any(mark in value for mark in _TEMPLATE_MARKS):
-            raise ScopeDeniedError(
-                "template", "templates are not permitted in service data"
-            )
-        # HA validators lower-case entity IDs and split text at commas
-        # (cv.entity_ids), so the check does the same.
-        for piece in value.split(","):
-            name = piece.strip().lower()
-            if ENTITY_ID.match(name) and (name in known or name in reg.entities):
-                refs.entities.add(name)
-            if name in reg.devices:
-                refs.devices.add(name)
+        _scan_text(value, reg, known, refs)
         return
     if isinstance(value, Mapping):
         for key, item in value.items():
@@ -304,6 +331,8 @@ def _walk_data(  # noqa: PLR0912
                     "invalid_target",
                     f"{key} is permitted only at the top level of the service data",
                 )
+            # Keys can name entities too, for example in scene.apply.
+            _scan_text(key, reg, known, refs)
             _walk_data(item, reg, known, refs, depth + 1)
         return
     if isinstance(value, (list, tuple)):
@@ -330,11 +359,14 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
     data: Mapping[str, Any] | None = None,
     target: Mapping[str, Any] | None = None,
     return_response: bool = False,
+    group_members: Mapping[str, Collection[str]] | None = None,
 ) -> PreparedCall:
     """Check a service call against the scope. Return the prepared call.
 
-    ``known_entities`` is the set of entity IDs in the state cache. Raise
-    ``ScopeDeniedError`` or ``RegistryUnavailableError``.
+    ``known_entities`` is the set of entity IDs in the state cache.
+    ``group_members`` maps each group entity to its members. Every member
+    must be in the scope too. Raise ``ScopeDeniedError`` or
+    ``RegistryUnavailableError``.
     """
     _check_names(domain, service)
     data = dict(data or {})
@@ -397,6 +429,13 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
     indirect |= reg.entities_of_labels(refs["label_id"])
     indirect = {e for e in indirect if e.split(".", 1)[0] == domain}
     entities = frozenset(explicit | indirect)
+    registry_refs = any(refs[k] for k in TARGET_KEYS if k != "entity_id")
+    if registry_refs and not entities and not special:
+        # Do not drop a target in silence: HA would get a call with none.
+        raise ScopeDeniedError(
+            "invalid_target",
+            f"the area, device, floor or label target has no {domain} entity",
+        )
 
     # References inside the service data.
     data_refs = _DataRefs()
@@ -414,7 +453,7 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
             "out_of_scope", "'all' and 'none' need a scope with all=true"
         )
 
-    refs_all = entities | data_entities
+    refs_all = _expand_groups(entities | data_entities, group_members or {})
     indirect_service = domain in INDIRECT_DOMAINS
     in_control = scope.level == "control" and scope.control.covers(refs_all)
     permitted = service_permitted(scope.services, domain, service)
@@ -481,7 +520,7 @@ def check_service_call(  # noqa: PLR0912, PLR0913, PLR0915
         entities,
         path,
         return_response,
-        frozenset(data_entities),
+        refs_all - entities,
     )
 
 

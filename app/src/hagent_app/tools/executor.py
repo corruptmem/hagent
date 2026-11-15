@@ -5,14 +5,16 @@
 1. Find the tool. Check that the definition turns on the tool.
 2. Validate the arguments. Unknown arguments fail.
 3. ``authorize``: the scope check. It returns a prepared request.
-4. The approval check. If the definition marks the call for approval, the
+4. A dry run of a call that writes stops here. It records the call and
+   returns the prepared request, with no approval request.
+5. The approval check. If the definition marks the call for approval, the
    approval gate must accept it. With no gate, the executor denies the call
    (task-16 supplies the gate).
-5. For a call that changes HA: write the audit row with status
+6. For a call that changes HA: write the audit row with status
    ``pending``. If the write fails, stop.
-6. ``run`` on the prepared request. A dry run skips this step for a call
-   that writes.
-7. For a call that changes HA: write the final status.
+7. ``run`` on the prepared request.
+8. For a call that changes HA: write the final status, also when the
+   invocation is cancelled.
 
 The executor writes every denied call to the audit log. It never raises
 for a denial or a tool error: it returns a ``ToolResult`` for the model.
@@ -20,6 +22,7 @@ for a denial or a tool error: it returns a ``ToolResult`` for the model.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterable, Mapping
 from typing import Any, Protocol
@@ -62,6 +65,9 @@ def needs_approval(definition: AgentDefinition, tool: Tool, prepared: Prepared) 
     refs = {tool.group, f"{tool.group}.*", tool.name}
     if refs & set(approval.tools):
         return True
+    if not tool.writes:
+        # Service and entity approval applies to changes only.
+        return False
     for name in prepared.services:
         domain = name.split(".", 1)[0]
         if name in approval.services or f"{domain}.*" in approval.services:
@@ -155,8 +161,15 @@ class ToolExecutor:
             dict(prepared.request),
         )
 
+        approval_needed = needs_approval(ctx.definition, tool, prepared)
+
+        # A dry run stops here for a call that writes. It sends no approval
+        # request, because a test invocation must not reach approvers.
+        if ctx.dry_run and tool.writes:
+            return await self._dry_run(call, tool, prepared, approval_needed)
+
         # The approval hook.
-        if needs_approval(ctx.definition, tool, prepared):
+        if approval_needed:
             if self._approval is None:
                 return await self._deny(
                     call,
@@ -173,7 +186,7 @@ class ToolExecutor:
                     call, "approval_rejected", "the approver did not accept the call"
                 )
 
-        audit_id: int | None = None
+        audit_id = None
         if tool.changes_ha:
             # No HA change without its audit row.
             try:
@@ -188,17 +201,14 @@ class ToolExecutor:
                     False, error_code="audit_failed", error="the audit log failed"
                 )
 
-        if ctx.dry_run and tool.writes:
-            if audit_id is not None:
-                await self._audit.finish(audit_id, "dry_run")
-            return ToolResult(
-                True,
-                {"dry_run": True, "request": dict(prepared.request)},
-                audit_id=audit_id,
-            )
-
         try:
             data = await tool.run(ctx, self._env, prepared)
+        except asyncio.CancelledError:
+            # HA can have acted already. Record the end, then stop.
+            await asyncio.shield(
+                self._finish(audit_id, "error", "the invocation was cancelled")
+            )
+            raise
         except ToolUnavailableError as err:
             await self._finish(audit_id, "error", str(err))
             return ToolResult(False, error_code="unavailable", error=str(err))
@@ -213,6 +223,27 @@ class ToolExecutor:
         await self._finish(
             audit_id, "ok", None, context_id if isinstance(context_id, str) else None
         )
+        return ToolResult(True, data, audit_id=audit_id)
+
+    async def _dry_run(
+        self, call: AuditCall, tool: Tool, prepared: Prepared, approval_needed: bool
+    ) -> ToolResult:
+        audit_id = None
+        if tool.changes_ha:
+            try:
+                audit_id = await self._audit.begin(
+                    call,
+                    previous=prepared.previous,
+                    previous_note=prepared.previous_note,
+                )
+                await self._audit.finish(audit_id, "dry_run")
+            except Exception:
+                _LOG.exception("cannot write the audit log")
+        data = {
+            "dry_run": True,
+            "needs_approval": approval_needed,
+            "request": dict(prepared.request),
+        }
         return ToolResult(True, data, audit_id=audit_id)
 
     async def _finish(

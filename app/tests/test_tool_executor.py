@@ -8,6 +8,7 @@ the call, FakeHA receives no command, and no fake store receives a call.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -53,8 +54,6 @@ CASES = [
     Case("ha.get_state", {"entity_id": "light.kitchen"}, "out_of_scope", READ_HALL),
     Case("ha.get_state", {"entity_id": "light.hall"}, "tool_off"),
     Case("ha.find_entities", {"query": "hall"}, "tool_off"),
-    # find_entities filters its results to the read scope; see
-    # test_find_entities_returns_only_the_read_scope.
     Case("ha.find_entities", {"domain": "Light"}, "invalid_arguments", READ_HALL),
     Case(
         "ha.get_history",
@@ -109,6 +108,13 @@ CASES = [
     ),
     Case(
         "ha.call_service",
+        {"domain": "light", "service": "turn_on", "target": {"area_id": "kitchen"}},
+        "out_of_scope",
+        CONTROL_KITCHEN,
+        setup="group",
+    ),
+    Case(
+        "ha.call_service",
         {"domain": "script", "service": "morning"},
         "indirect_service",
         {"tools__ha": {"level": "control", "scope": {"all": True}}},
@@ -159,6 +165,26 @@ CASES = [
         "knowledge.read",
         {"store_id": OTHER_STORE, "path": "MAIN.md"},
         "store_not_attached",
+    ),
+    Case(
+        "knowledge.read",
+        {"store_id": "<own>", "path": "notes/../../other/MAIN.md"},
+        "invalid_arguments",
+    ),
+    Case(
+        "knowledge.read",
+        {"store_id": "<own>", "path": "a//b.md"},
+        "invalid_arguments",
+    ),
+    Case(
+        "knowledge.write",
+        {"store_id": "<own>", "path": "..\\x.md", "mode": "create", "content": "x"},
+        "invalid_arguments",
+    ),
+    Case(
+        "knowledge.delete",
+        {"store_id": "<own>", "path": "./MAIN.md"},
+        "invalid_arguments",
     ),
     Case(
         "knowledge.search",
@@ -248,10 +274,24 @@ CASES = [
 ]
 
 
+# Tools that cannot get a scope denial, with the test that proves their
+# limit.
+FILTER_TOOLS = {
+    "ha.find_entities": "test_find_entities_returns_only_the_read_scope",
+    # These take no agent or item ID: the executor binds the agent ID, so
+    # the only out-of-scope form is an extra argument (in CASES).
+    "memory.search": "test_memory_and_self_use_the_invocation_agent",
+    "self.list": "test_memory_and_self_use_the_invocation_agent",
+}
+NOT_SCOPE_CODES = {"tool_off", "invalid_arguments", "unknown_tool"}
+
+
 def test_every_tool_has_an_out_of_scope_case() -> None:
     names = {tool.name for tool in ALL_TOOLS}
-    covered = {case.tool for case in CASES if case.code not in {"tool_off"}}
-    assert names - covered == set()
+    covered = {case.tool for case in CASES if case.code not in NOT_SCOPE_CODES}
+    assert names - covered == set(FILTER_TOOLS)
+    for test in FILTER_TOOLS.values():
+        assert test in globals()
 
 
 async def _agent_for(h: Harness, case: Case) -> Agent:
@@ -270,6 +310,24 @@ async def _agent_for(h: Harness, case: Case) -> Agent:
         return await h.agents.update(
             own.id, AgentDefinition.from_json(json.dumps(definition))
         )
+    if case.setup == "group":
+        # A light group in the kitchen with a member in the lounge.
+        h.ha.registry["entity"].append(
+            {"entity_id": "light.kitchen_group", "area_id": "kitchen", "labels": []}
+        )
+        await h.ha.set_state(
+            "light.kitchen_group",
+            "off",
+            {"entity_id": ["light.kitchen", "light.lounge"]},
+        )
+        count = h.registry.reload_count
+        await h.ha.registry_updated("entity")
+        await wait_until(
+            lambda: (
+                h.registry.reload_count > count
+                and h.states.get("light.kitchen_group") is not None
+            )
+        )
     agent = await h.agent(**changes)
     if case.setup == "other_owner":
         h.history.owners["r1"] = "another-agent"
@@ -280,6 +338,9 @@ async def _agent_for(h: Harness, case: Case) -> Agent:
 
 
 def _resolve_args(agent: Agent, args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("store_id") == "<own>":
+        assert agent.private_store is not None
+        return {**args, "store_id": agent.private_store.id}
     if args.get("store_id") == "<other>":
         other = next(
             a.store_id
@@ -599,6 +660,51 @@ async def test_approval_gate_decides(tmp_path: Path, answer: bool) -> None:
             assert result.error_code == "approval_rejected"
 
 
+async def test_dry_run_sends_no_approval_request(tmp_path: Path) -> None:
+    gate = RecordingGate(True)
+    async with harness(tmp_path, approval=gate) as h:
+        agent = await h.agent(**APPROVE)
+        h.reset()
+        result = await h.call(agent, "ha.call_service", CALL, dry_run=True)
+        assert result.ok
+        assert result.data["needs_approval"] is True
+        assert gate.requests == []
+        assert h.ha.ha_commands() == []
+
+
+async def test_entity_approval_does_not_hold_reads(h: Harness) -> None:
+    agent = await h.agent(
+        **{**CONTROL_KITCHEN, "approval__entities": ["light.kitchen"]}
+    )
+    result = await h.call(
+        agent,
+        "ha.get_history",
+        {"entity_ids": ["light.kitchen"], "start": "2026-11-01T00:00:00Z"},
+    )
+    assert result.ok, result.error
+
+
+async def test_cancelled_call_finishes_its_audit_row(h: Harness) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hang(_ha: FakeHA, _msg: dict[str, Any]) -> None:
+        started.set()
+        await release.wait()
+
+    h.ha.handlers["call_service"] = hang
+    agent = await h.agent(**CONTROL_KITCHEN)
+    task = asyncio.create_task(h.call(agent, "ha.call_service", CALL))
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    entry = (await h.audit.entries(agent.id))[0]
+    release.set()
+    assert entry.status == "error"
+    assert entry.error == "the invocation was cancelled"
+
+
 async def test_approval_of_a_tool_group(h: Harness) -> None:
     agent = await h.agent(tools__self=True, approval__tools=["self.*"])
     result = await h.call(agent, "self.list", {"kind": "rule"})
@@ -640,7 +746,7 @@ async def test_stale_registry_denies_and_reload_resolves_again(h: Harness) -> No
 
 async def test_registry_stays_stale_until_the_reload_ends(h: Harness) -> None:
     """An update event marks the snapshot stale at once, before the reload."""
-    release = __import__("asyncio").Event()
+    release = asyncio.Event()
 
     async def slow_list(_ha: FakeHA, _msg: dict[str, Any]) -> list[Any]:
         await release.wait()

@@ -272,6 +272,18 @@ class CallServiceArgs(Args):
     return_response: bool = False
 
 
+def group_members(env: ToolEnv) -> dict[str, tuple[str, ...]]:
+    """The members of every group entity, from the ``entity_id`` attribute."""
+    members = {}
+    for state in env.states:
+        value = state.attributes.get("entity_id")
+        if isinstance(value, (list, tuple)):
+            names = tuple(v.lower() for v in value if isinstance(v, str))
+            if names:
+                members[state.entity_id] = names
+    return members
+
+
 def _snapshot_states(env: ToolEnv, entity_ids: frozenset[str]) -> dict[str, Any]:
     return {e: _state_data(env, e) for e in sorted(entity_ids)}
 
@@ -314,6 +326,7 @@ class CallService(Tool):
                 data=args.data,
                 target=args.target,
                 return_response=args.return_response,
+                group_members=group_members(env),
             )
         except RegistryUnavailableError as err:
             raise ScopeDeniedError("registry_unavailable", str(err)) from err

@@ -74,7 +74,7 @@ SERVICES: dict[str, list[str]] = {
     "media_player": ["join", "play_media"],
     "script": ["turn_on", "morning"],
     "automation": ["trigger", "turn_off"],
-    "scene": ["turn_on"],
+    "scene": ["turn_on", "apply"],
     "homeassistant": ["turn_on", "restart"],
     "shell_command": ["run"],
     "rest_command": ["call"],

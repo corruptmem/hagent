@@ -183,7 +183,7 @@ Use the executor from an agent turn (task-10):
 ```python
 executor = tools_component.executor()
 ctx = ToolContext(agent, invocation_id=invocation_id, dry_run=False)
-specs = executor.tools_for(agent.definition)   # tool names, texts, schemas
+specs = executor.tools_for(agent.definition)  # tool names, texts, schemas
 result = await executor.execute(ctx, "ha.call_service", arguments)
 ```
 
@@ -191,7 +191,8 @@ result = await executor.execute(ctx, "ha.call_service", arguments)
 agent ID and the scope from the snapshot, never from the arguments.
 `execute` never raises for a denial: it returns a `ToolResult` with
 `error_code`. With `dry_run`, the executor checks and records a change but
-does not make it.
+does not make it, and it sends no approval request. The result says
+whether the call would need approval.
 
 Steps of `execute`, in order:
 
@@ -199,17 +200,27 @@ Steps of `execute`, in order:
 2. `authorize` checks the scope and returns a prepared request.
 3. If the definition marks the call for approval, an `ApprovalGate` must
    accept it. With no gate, the executor denies the call. Task-16 sets
-   `ToolsComponent.approval`.
+   `ToolsComponent.approval`. Service and entity approval applies only to
+   tools that write.
 4. For a call that changes HA, the executor writes an audit row with status
    `pending`. If that write fails, it does not call HA.
-5. `run` acts on the prepared request only.
+5. `run` acts on the prepared request only. If the invocation is
+   cancelled, the executor still writes the final audit status.
 
 Rules of the HA check (`tools/scope.py`):
 
 - Area, device, floor and label targets resolve to entity IDs, also inside
   the scope. Top-level target keys in the service data join the target.
-- Known entity and device IDs anywhere in the service data must be in the
-  scope. The check lower-cases text and splits it at commas, as HA does.
+- Known entity and device IDs anywhere in the service data, in values and
+  in keys, must be in the scope. The check lower-cases text and splits it
+  at commas, as HA does.
+- The members of a group entity (the `entity_id` state attribute, also of
+  nested groups) must be in the scope too. Groups that an integration
+  manages without that attribute, and template entities that run actions,
+  are not visible to the check.
+- An area, device, floor or label target with no entity of the service
+  domain causes a denial, so that HA never gets a call whose target the
+  check dropped.
 - Templates in the service data, unknown target keys, and unknown devices,
   areas, floors, labels or services cause a denial.
 - Indirect services need their exact name in `tools.ha.services`.
