@@ -11,6 +11,9 @@ import { AgentsList } from "./screens/AgentsList";
 import { EditAgent, NewAgent } from "./screens/AgentEditor";
 import { TestPanel } from "./screens/TestPanel";
 import { Versions } from "./screens/Versions";
+import { Settings } from "./screens/Settings";
+import { KnowledgeList } from "./screens/knowledge/KnowledgeList";
+import { StoreView } from "./screens/knowledge/StoreView";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -82,6 +85,27 @@ const agentTestRoute = createRoute({
   },
 });
 
+const knowledgeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/knowledge",
+  component: KnowledgeList,
+});
+
+const storeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/knowledge/$storeId",
+  component: function StorePage() {
+    const { storeId } = storeRoute.useParams();
+    return <StoreView key={storeId} storeId={storeId} />;
+  },
+});
+
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: Settings,
+});
+
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   agentsRoute,
@@ -91,6 +115,9 @@ export const routeTree = rootRoute.addChildren([
     agentVersionsRoute,
     agentTestRoute,
   ]),
+  knowledgeRoute,
+  storeRoute,
+  settingsRoute,
 ]);
 
 export function makeRouter(

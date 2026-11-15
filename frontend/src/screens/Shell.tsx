@@ -13,6 +13,12 @@ export function Shell() {
         <Link to="/agents" activeProps={{ className: "active" }}>
           Agents
         </Link>
+        <Link to="/knowledge" activeProps={{ className: "active" }}>
+          Knowledge
+        </Link>
+        <Link to="/settings" activeProps={{ className: "active" }}>
+          Settings
+        </Link>
         <span className={`status ${events}`} title="Change events">
           {events === "open" ? "live" : events}
         </span>

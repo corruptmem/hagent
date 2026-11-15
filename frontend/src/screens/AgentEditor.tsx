@@ -2,8 +2,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { ApiError, api } from "../api/client";
-import { agentQuery, catalogQuery, defaultsQuery, keys } from "../api/queries";
-import type { Agent, AgentDefinition, StoreRef } from "../api/types";
+import {
+  agentQuery,
+  catalogQuery,
+  defaultsQuery,
+  keys,
+  storesQuery,
+} from "../api/queries";
+import type { Agent, AgentDefinition } from "../api/types";
 import { DefinitionForm } from "../components/DefinitionForm";
 import { pickerOptions } from "../components/pickerOptions";
 import { ErrorMessage } from "../components/ErrorMessage";
@@ -40,14 +46,19 @@ interface EditorProps {
   initial: AgentDefinition;
   agent: Agent | null;
   onReload?: () => Promise<void>;
-  /** The knowledge stores that the user can attach (task-11). */
-  stores?: StoreRef[];
 }
 
-function Editor({ initial, agent, onReload, stores }: EditorProps) {
+function Editor({ initial, agent, onReload }: EditorProps) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const catalog = useQuery(catalogQuery());
+  // The store picker. If the list does not load, the knowledge editor
+  // falls back to a store ID field.
+  const storeList = useQuery(storesQuery());
+  const stores = storeList.data?.map((s) => ({
+    id: s.id,
+    name: s.private ? `${s.name} (private)` : s.name,
+  }));
   const [draft, setDraft] = useState(initial);
   const [baseVersion] = useState(agent?.version ?? 0);
   const [badJson, setBadJson] = useState<Set<string>>(new Set());

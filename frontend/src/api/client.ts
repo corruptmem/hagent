@@ -6,11 +6,22 @@ import type {
   Catalog,
   DeleteChoice,
   Diff,
+  EmbeddingModel,
+  Item,
+  ItemContent,
+  ItemVersion,
+  KnowledgeStatus,
+  Provider,
+  SettingValues,
+  SettingsResponse,
+  Store,
   TestRequest,
   TestResponse,
+  UploadResult,
   ValidationIssue,
   Version,
   VersionSummary,
+  WriteResult,
 } from "./types";
 
 /** An error response of the management API (docs/api.md, "Errors"). */
@@ -55,6 +66,21 @@ async function request<T>(
     init.body = JSON.stringify(body);
     headers["Content-Type"] = "application/json";
   }
+  return send<T>(path, init);
+}
+
+/**
+ * Send a file as the raw request body (document upload). The browser sets
+ * the content type from the file; with no type, the app uses the file
+ * extension.
+ */
+async function upload<T>(method: string, path: string, file: Blob): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (file.type) headers["Content-Type"] = file.type;
+  return send<T>(path, { method, headers, body: file });
+}
+
+async function send<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;
   try {
     response = await fetch(appUrl(path), init);
@@ -87,6 +113,19 @@ async function request<T>(
 }
 
 const agentPath = (id: string) => `api/agents/${encodeURIComponent(id)}`;
+const storePath = (id: string) =>
+  `api/knowledge/stores/${encodeURIComponent(id)}`;
+
+/** Encode each part of an item path, and keep the `/` between parts. */
+export function itemPath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
+export interface StoreChange {
+  name?: string;
+  description?: string;
+  size_limit?: number;
+}
 
 export const api = {
   listAgents: () =>
@@ -130,4 +169,95 @@ export const api = {
   testInvocation: (id: string, body: TestRequest) =>
     request<TestResponse>("POST", `${agentPath(id)}/test`, body),
   catalog: () => request<Catalog>("GET", "api/ha/catalog"),
+
+  // Knowledge stores
+  listStores: () =>
+    request<{ stores: Store[] }>("GET", "api/knowledge/stores").then(
+      (r) => r.stores,
+    ),
+  getStore: (id: string) => request<Store>("GET", storePath(id)),
+  createStore: (body: StoreChange & { name: string }) =>
+    request<Store>("POST", "api/knowledge/stores", body),
+  updateStore: (id: string, body: StoreChange) =>
+    request<Store>("PATCH", storePath(id), body),
+  deleteStore: (id: string) =>
+    request<{ deleted: string }>("DELETE", storePath(id)),
+  listItems: (id: string) =>
+    request<{ items: Item[] }>("GET", `${storePath(id)}/items`).then(
+      (r) => r.items,
+    ),
+  readItem: (id: string, path: string, section?: string) =>
+    request<ItemContent>(
+      "GET",
+      `${storePath(id)}/items/${itemPath(path)}${
+        section ? `?section=${encodeURIComponent(section)}` : ""
+      }`,
+    ),
+  putFile: (id: string, path: string, content: string, baseVersion?: number) =>
+    request<WriteResult>("PUT", `${storePath(id)}/files/${itemPath(path)}`, {
+      content,
+      ...(baseVersion === undefined ? {} : { base_version: baseVersion }),
+    }),
+  deleteItem: (id: string, path: string, baseVersion?: number) =>
+    request<{ version: number }>(
+      "DELETE",
+      `${storePath(id)}/items/${itemPath(path)}${
+        baseVersion === undefined ? "" : `?base_version=${baseVersion}`
+      }`,
+    ),
+  history: (id: string, path: string) =>
+    request<{ versions: ItemVersion[] }>(
+      "GET",
+      `${storePath(id)}/history/${itemPath(path)}`,
+    ).then((r) => r.versions),
+  historyVersion: (id: string, path: string, version: number) =>
+    request<ItemVersion>(
+      "GET",
+      `${storePath(id)}/history/${itemPath(path)}?version=${version}`,
+    ),
+  restoreItem: (
+    id: string,
+    path: string,
+    version: number,
+    baseVersion?: number,
+  ) =>
+    request<WriteResult>("POST", `${storePath(id)}/restore`, {
+      path,
+      version,
+      ...(baseVersion === undefined ? {} : { base_version: baseVersion }),
+    }),
+  uploadDocument: (id: string, file: File) =>
+    upload<UploadResult>(
+      "POST",
+      `${storePath(id)}/documents?name=${encodeURIComponent(file.name)}`,
+      file,
+    ),
+  replaceDocument: (id: string, path: string, file: File) =>
+    upload<UploadResult>(
+      "PUT",
+      `${storePath(id)}/documents/${itemPath(path)}`,
+      file,
+    ),
+  knowledgeStatus: () =>
+    request<KnowledgeStatus>("GET", "api/knowledge/status"),
+  knowledgeSettings: () =>
+    request<{ embedding: EmbeddingModel | null }>(
+      "GET",
+      "api/knowledge/settings",
+    ),
+  setEmbedding: (embedding: EmbeddingModel | null) =>
+    request<{ embedding: EmbeddingModel | null }>(
+      "PUT",
+      "api/knowledge/settings",
+      { embedding },
+    ),
+
+  // Settings
+  settings: () => request<SettingsResponse>("GET", "api/settings"),
+  patchSettings: (changes: Partial<SettingValues>) =>
+    request<SettingsResponse>("PATCH", "api/settings", changes),
+  setKey: (provider: Provider, key: string) =>
+    request<SettingsResponse>("PUT", `api/settings/keys/${provider}`, { key }),
+  deleteKey: (provider: Provider) =>
+    request<SettingsResponse>("DELETE", `api/settings/keys/${provider}`),
 };
