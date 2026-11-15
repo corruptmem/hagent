@@ -8,7 +8,8 @@
 #
 # Usage: scripts/package-app.sh [OUTPUT_DIR]
 # The default OUTPUT_DIR is build/app. The result is OUTPUT_DIR/hagent.
-# Copy that folder to the "addons" share of HA (/addons/hagent).
+# Copy that folder into the local apps folder of HA. The Samba share and the
+# SSH app show it as "addons" (/addons/hagent).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

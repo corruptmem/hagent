@@ -1,8 +1,8 @@
 """Run FakeHA as a server for the app image smoke test.
 
 The smoke test starts this script in a container from the app image. The app
-container shares its network namespace, so the app reaches the fake at
-``ws://127.0.0.1:8123/api/websocket``.
+container is on the same Docker network. It reaches the fake at
+``ws://<container name>:8123/api/websocket``.
 
 Signals:
 
@@ -40,7 +40,8 @@ async def main() -> None:
     """Serve FakeHA on a fixed port until a stop signal arrives."""
     fake = FakeHA()
     # FakeHA picks a free port. The smoke test needs a fixed one.
-    fake._server = TestServer(fake._server.app, host="127.0.0.1", port=PORT)
+    host = "0.0.0.0"  # noqa: S104 - the app runs in another container
+    fake._server = TestServer(fake._server.app, host=host, port=PORT)
     await fake.set_state("light.smoke_test", "off", {"friendly_name": "Smoke test"})
     await fake.start()
     _LOG.info("FakeHA listens on %s", fake.url)

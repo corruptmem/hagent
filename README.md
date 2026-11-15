@@ -28,14 +28,16 @@ targets amd64 only.
 
 ### 2. Install the app
 
-The Supervisor builds a local app from a folder in the `addons` share. The
+The Supervisor builds a local app from a folder in its local apps folder. The
 build context is that folder only, so the folder must hold the sources too.
 `scripts/package-app.sh` creates it.
 
 1. On your computer, run `scripts/package-app.sh`. The script writes the
    folder `build/app/hagent`.
-2. Copy `build/app/hagent` to `/addons/hagent` on the HA host (the
-   `addons` share in Samba).
+2. Copy `build/app/hagent` into the local apps folder of the HA host, as
+   the folder `hagent`. The Samba share and the SSH app show the local apps
+   folder as `addons` (`/addons/hagent`). The Dockerfile sets the executable
+   bits again, so a copy over Samba is safe.
 3. In HA, open Settings > Apps > App store. Open the menu (three dots) and
    select **Check for updates**. The section "Local apps" shows hagent.
 4. Open hagent and select **Install**. The Supervisor builds the image.
@@ -43,7 +45,7 @@ build context is that folder only, so the folder must hold the sources too.
 5. Select **Start**. Turn on **Show in sidebar** if you want a side bar
    entry.
 
-To update the app, run the script again, replace `/addons/hagent`, raise
+To update the app, run the script again, replace the `hagent` folder, raise
 `version` in `hagent/config.yaml`, and select **Update** (or **Rebuild**).
 
 ### 3. First configuration
@@ -110,13 +112,12 @@ HA OS installation after the first install.
    `api/ha/users` (as for `api/integration` above): `source` must be
    `auth`. If `source` is `person`, HA refused the command for the
    Supervisor token. The picker then shows only users linked to a person.
-4. **The app user (`auth/current_user`).** The Log tab shows no warning
-   `cannot read the HA user of the app` and no warning `HA returned no
-   user ID`. Then let a test agent change a test helper
-   (`input_boolean.<test>`). In Developer tools > Template, read
-   `{{ states.input_boolean.<test>.context.user_id }}`. It must be the ID
-   of the HA user "Supervisor" (Settings > People > Users, with advanced
-   mode on). The approval gate ignores answers from this user.
+4. **The app user (`auth/current_user`).** The Log tab shows the line
+   `the app acts as HA user <ID>`. Then let a test agent change a test
+   helper (`input_boolean.<test>`). In Developer tools > Template, read
+   `{{ states.input_boolean.<test>.context.user_id }}`. It must be the
+   same ID as in the log line. The approval gate ignores answers from this
+   user, so the two IDs must agree.
 5. **Approvals.** Start a tool call that needs approval. The approver gets
    the notification. Accept it. The call runs.
 6. **The integration (AC #2).** After the configuration step, the

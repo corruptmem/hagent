@@ -1,8 +1,8 @@
 """Check the HTTP surfaces of a running app container.
 
-The smoke test runs this script in the network namespace of the app, so
-the requests come from 127.0.0.1. The options of the smoke test allow that
-address in the Ingress guard.
+The smoke test runs this script in the FakeHA container. ``PROBE_HOST`` is
+the host name of the app container. The options of the smoke test allow
+the smoke network in the Ingress guard.
 
 The script prints one line for each check and never prints the link secret.
 It exits with status 1 if a check fails.
@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
 import aiohttp
 
-BASE = "http://127.0.0.1:8099/"
-LINK = "ws://127.0.0.1:8099/api/link/ws"
+HOST = os.environ.get("PROBE_HOST", "127.0.0.1")
+BASE = f"http://{HOST}:8099/"
+LINK = f"ws://{HOST}:8099/api/link/ws"
 OK = 200
 UNAUTHORIZED = 401
 

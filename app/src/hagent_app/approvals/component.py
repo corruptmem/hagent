@@ -205,5 +205,8 @@ class ApprovalsComponent:
         user_id = user.get("id") if isinstance(user, dict) else None
         if isinstance(user_id, str) and user_id:
             self._app_user = user_id
+            # The installation check compares this ID with the context user
+            # of the app's service calls (README, verification checklist).
+            _LOG.info("the app acts as HA user %s", user_id)
         else:
             _LOG.warning("HA returned no user ID for the app's token")

@@ -58,6 +58,9 @@ RUN uv sync --frozen --no-dev --package hagent-app --python "${PYTHON_VERSION}"
 
 COPY --from=ui /src/frontend/dist frontend/dist
 COPY rootfs /
+# A copy over SMB (the Samba share) can drop the executable bit.
+RUN chmod a+x /etc/s6-overlay/s6-rc.d/hagent/run \
+        /etc/s6-overlay/s6-rc.d/hagent/finish
 
 # s6 runs the service as root. The app stores all data in /data.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=60s --retries=3 \

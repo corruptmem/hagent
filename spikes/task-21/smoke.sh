@@ -4,11 +4,13 @@
 # Steps:
 #  1. Package the app folder (scripts/package-app.sh).
 #  2. Build the image for linux/amd64, as the Supervisor builds it.
-#  3. Start FakeHA in a container from the same image.
-#  4. Start the app with s6 (the normal entry point) in the network namespace
-#     of FakeHA. /data is a Docker volume with an options.json in the shape
-#     that the Supervisor writes.
-#  5. Check the migrations, the UI, the API and the link.
+#  3. Start FakeHA in a container from the same image, on a bridge network.
+#  4. Start the app with s6 (the normal entry point) on the same network.
+#     /data is a Docker volume with an options.json in the shape that the
+#     Supervisor writes.
+#  5. Check the migrations, sqlite-vec, the UI, the API and the link. The
+#     probe runs in the FakeHA container, so each request comes from another
+#     container address, as Ingress and the HA Core link do on a real host.
 #  6. Simulate an HA restart and check that the app connects again.
 #  7. Restart the app container and check that the data stays.
 #  8. Stop the app and check the clean exit.
@@ -22,12 +24,15 @@ image="${IMAGE:-local/hagent:smoke}"
 ha="hagent-smoke-ha"
 app="hagent-smoke-app"
 volume="hagent-smoke-data"
+network="hagent-smoke-net"
+subnet="${SMOKE_SUBNET:-172.29.250.0/24}"
 work="$(mktemp -d)"
 
 cleanup() {
   if [[ "${KEEP:-0}" != "1" ]]; then
     docker rm -f "${app}" "${ha}" >/dev/null 2>&1 || true
     docker volume rm "${volume}" >/dev/null 2>&1 || true
+    docker network rm "${network}" >/dev/null 2>&1 || true
   fi
   rm -rf "${work}"
 }
@@ -54,9 +59,11 @@ docker build --platform linux/amd64 -q -t "${image}" "${work}/hagent"
 
 docker rm -f "${app}" "${ha}" >/dev/null 2>&1 || true
 docker volume rm "${volume}" >/dev/null 2>&1 || true
+docker network rm "${network}" >/dev/null 2>&1 || true
+docker network create --subnet "${subnet}" "${network}" >/dev/null
 
 step "start FakeHA"
-docker run -d --name "${ha}" --platform linux/amd64 \
+docker run -d --name "${ha}" --platform linux/amd64 --network "${network}" \
   -e PYTHONPATH=/smoke \
   -v "${root}/app/tests/helpers:/smoke/helpers:ro" \
   -v "${root}/spikes/task-21:/smoke/bin:ro" \
@@ -65,28 +72,29 @@ docker run -d --name "${ha}" --platform linux/amd64 \
 step "write options.json"
 # The Supervisor writes /data/options.json from config.yaml. "ingress" is not
 # in the app schema: the smoke test adds it, because its requests come from
-# 127.0.0.1 and not from the Supervisor (172.30.32.2).
+# the smoke network and not from the Supervisor (172.30.32.2).
 docker volume create "${volume}" >/dev/null
 docker run --rm -i -v "${volume}:/data" --entrypoint sh "${image}" \
-  -c 'cat > /data/options.json' <<'JSON'
+  -c 'cat > /data/options.json' <<JSON
 {"log_level": "info",
  "providers": {"genai_prices_auto_update": false,
                "refresh_openrouter_prices": false},
  "link": {"discovery": true},
- "ingress": {"allowed_addresses": ["127.0.0.1"]}}
+ "ingress": {"allowed_addresses": ["${subnet}"]}}
 JSON
 
 step "start the app (s6)"
 # SUPERVISOR_TOKEN is the token variable that the Supervisor sets. FakeHA
 # accepts "test-token". HAGENT_HA_URL replaces ws://supervisor/core/websocket.
-docker run -d --name "${app}" --platform linux/amd64 \
-  --network "container:${ha}" \
+docker run -d --name "${app}" --platform linux/amd64 --network "${network}" \
   -e SUPERVISOR_TOKEN=test-token \
-  -e HAGENT_HA_URL=ws://127.0.0.1:8123/api/websocket \
-  -e TZ=Europe/London \
+  -e "HAGENT_HA_URL=ws://${ha}:8123/api/websocket" \
+  -e TZ=UTC \
   -v "${volume}:/data" "${image}" >/dev/null
 wait_log "connected to HA"
 wait_log "started"
+wait_log "the app acts as HA user"
+echo "PASS $(docker logs "${app}" 2>&1 | grep -o 'the app acts as HA user .*' | head -1)"
 
 step "migrations"
 docker exec "${app}" python -c '
@@ -99,8 +107,21 @@ assert n > 0
 ' || fail "migrations"
 docker exec "${app}" ls /data
 
+step "sqlite-vec"
+docker exec "${app}" python -c '
+import sqlite3, sqlite_vec
+db = sqlite3.connect(":memory:")
+db.enable_load_extension(True)
+sqlite_vec.load(db)
+print("PASS sqlite-vec", db.execute("SELECT vec_version()").fetchone()[0])
+' || fail "sqlite-vec"
+if docker logs "${app}" 2>&1 | grep -q "sqlite-vec is not available"; then
+  fail "the app did not load sqlite-vec"
+fi
+echo "PASS the app log has no sqlite-vec warning"
+
 step "UI, API and link"
-docker exec -e PYTHONPATH=/smoke "${ha}" python /smoke/bin/probe.py || fail "probe"
+docker exec -e "PROBE_HOST=${app}" "${ha}" python /smoke/bin/probe.py || fail "probe"
 
 step "HA restart"
 docker kill -s USR1 "${ha}" >/dev/null
@@ -114,7 +135,7 @@ wait_log "hagent installation" 2
 id2="$(docker logs "${app}" 2>&1 | grep -o 'hagent installation [^ ]*' | tail -1)"
 [[ -n "${id1}" && "${id1}" == "${id2}" ]] || fail "installation ID changed"
 echo "PASS same ${id2}"
-docker exec -e PYTHONPATH=/smoke "${ha}" python /smoke/bin/probe.py || fail "probe"
+docker exec -e "PROBE_HOST=${app}" "${ha}" python /smoke/bin/probe.py || fail "probe"
 
 step "clean stop"
 docker stop "${app}" >/dev/null
@@ -122,6 +143,12 @@ code="$(docker inspect -f '{{.State.ExitCode}}' "${app}")"
 docker logs "${app}" 2>&1 | tail -5
 [[ "${code}" == "0" ]] || fail "exit code ${code}"
 echo "PASS exit code 0"
+
+step "app log"
+if docker logs "${app}" 2>&1 | grep -E "ERROR|Traceback"; then
+  fail "the app log holds errors"
+fi
+echo "PASS no ERROR or Traceback lines"
 
 echo
 echo "smoke test passed"
