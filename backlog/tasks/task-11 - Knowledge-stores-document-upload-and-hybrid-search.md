@@ -1,11 +1,11 @@
 ---
 id: TASK-11
 title: 'Knowledge stores, document upload and hybrid search'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 01:07'
+updated_date: '2026-11-15 01:08'
 labels:
   - app
   - knowledge
@@ -109,6 +109,8 @@ Evidence: mise run check passes (ruff, mypy strict, 588 pytest passed, frontend 
 
 Review fix: DATA_NOTE no longer says that only the '# Instructions' section gives instructions. The runtime also instructs the agent in other sections, for example the main file maintenance request. It now says that instructions come only from the runtime sections of the prompt.
 Proposed follow-ups (not created): (1) L2: _next_batch uses MIN(charge_agent_id), which ignores NULL. If a hash is shared by an over-budget agent and installation text, the embedder skips the whole hash until the budget allows it. (2) L1: _prune_history scans the version sizes of the whole store on each write. This is cheap at the 1 MB default limit and slow near the 1 GB maximum. A running total per store would fix it.
+
+Lead: an independent review found 0 high, 2 medium and 3 low issues; task-11-fix fixed all five with regression tests. Minor follow-ups (shared-hash budget skip edge case; version prune scan cost near 1 GB) are listed for the user.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
