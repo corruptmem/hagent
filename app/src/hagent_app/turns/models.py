@@ -23,6 +23,50 @@ type CompactionKind = Literal[
 ]
 
 
+# Attachments (design section 9.3, AI Task ``SUPPORT_ATTACHMENTS``). The
+# model receives images and PDF files as binary parts, and text files as
+# text. Other types are refused before the invocation starts.
+ATTACHMENT_BINARY_TYPES = frozenset(
+    {"image/png", "image/jpeg", "image/gif", "image/webp", "application/pdf"}
+)
+ATTACHMENT_TEXT_TYPES = frozenset(
+    {"text/plain", "text/markdown", "text/csv", "application/json"}
+)
+ATTACHMENT_TYPES = ATTACHMENT_BINARY_TYPES | ATTACHMENT_TEXT_TYPES
+# The sum of the attachment sizes of one invocation.
+ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class Attachment:
+    """One file that goes to the model with the invocation."""
+
+    name: str
+    mime_type: str
+    data: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if self.mime_type not in ATTACHMENT_TYPES:
+            msg = f"attachment type {self.mime_type!r} is not supported"
+            raise ValueError(msg)
+
+    @property
+    def summary(self) -> dict[str, Any]:
+        """The name, type and size, for the caller data and history."""
+        return {"name": self.name, "mime_type": self.mime_type, "size": len(self.data)}
+
+
+def check_attachments(attachments: tuple[Attachment, ...]) -> None:
+    """Raise ``ValueError`` if the attachments are larger than the limit."""
+    total = sum(len(a.data) for a in attachments)
+    if total > ATTACHMENT_MAX_BYTES:
+        msg = (
+            f"the attachments have {total} bytes; the limit is "
+            f"{ATTACHMENT_MAX_BYTES} bytes"
+        )
+        raise ValueError(msg)
+
+
 @dataclass(frozen=True, slots=True)
 class TurnInput:
     """One invocation that the router gives to an agent turn.
@@ -39,6 +83,8 @@ class TurnInput:
       definition for this invocation (an AI Task structure, section 9.3).
     - ``dry_run``: a test invocation. Tools check and record changes but do
       not make them. The turn does not go into the running summaries.
+    - ``attachments``: files for the model (AI Task attachments). The caller
+      data holds their names; the model receives their content.
     """
 
     source: str
@@ -49,6 +95,7 @@ class TurnInput:
     result_schema: Mapping[str, Any] | None = None
     dry_run: bool = False
     now: datetime | None = None
+    attachments: tuple[Attachment, ...] = ()
 
     @property
     def source_key(self) -> str:

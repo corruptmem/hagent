@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Protocol
 
 from hagent_app.agents import AgentsComponent
@@ -63,10 +64,11 @@ def default_components() -> list[Component]:
     before them.
 
     ``IngressGuard`` checks the source address of every request (design
-    section 6.1). ``UiComponent`` serves the UI files on every path that
-    does not start with ``api/``.
+    section 6.1), except on the integration link path. ``UiComponent``
+    serves the UI files on every path that does not start with ``api/``.
     """
     from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.link import LinkComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
     from hagent_app.router import (  # noqa: PLC0415 - import cycle
         RetryingChatModels,
@@ -75,7 +77,9 @@ def default_components() -> list[Component]:
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
-    guard = IngressGuard()
+    # The integration link connects from HA Core, not through Ingress. The
+    # guard exempts only the link path; the link checks the shared secret.
+    guard = IngressGuard(exempt_prefixes=LinkComponent.exempt_prefixes)
     http.add_middleware(guard.middleware)
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
@@ -100,6 +104,13 @@ def default_components() -> list[Component]:
     turns.knowledge_context = knowledge.turn_context
     router = RouterComponent(turns, tools=tools, models=models)
     http.add_routes(router.routes())
+
+    async def agent_cost(agent_id: str) -> tuple[Decimal, Decimal]:
+        state = await providers.meter.budget_state(agent_id)
+        return state.spent_usd, state.remaining_usd
+
+    link = LinkComponent(http.events, router, cost=agent_cost)
+    http.add_routes(link.routes())
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
@@ -113,6 +124,7 @@ def default_components() -> list[Component]:
         knowledge,
         turns,
         router,
+        link,
         catalog,
         ui,
         http,
