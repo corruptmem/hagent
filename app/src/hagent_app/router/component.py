@@ -48,6 +48,7 @@ from hagent_app.router.errors import RouterNotRunningError
 from hagent_app.router.models import (
     AGENT_NOT_FOUND,
     AGENT_OFF,
+    ASSIST_OFF,
     BUSY,
     CANCELLED,
     FALLBACK_ERROR,
@@ -71,6 +72,22 @@ if TYPE_CHECKING:
     from hagent_app.tools import StateView, ToolsComponent
 
 _LOG = logging.getLogger(__name__)
+
+
+def _agent_refusal(agent: Agent, request: InvocationRequest) -> tuple[str, str] | None:
+    """The code and message if the agent cannot take the request now.
+
+    The agent is off, or the source is ``assist`` and the definition does
+    not allow Assist. The integration makes a conversation entity only for
+    agents that allow Assist, but the app owns the definition and checks it
+    too (design section 15).
+    """
+    if not agent.enabled:
+        return AGENT_OFF, "the agent is turned off"
+    if request.source == "assist" and not agent.definition.assist.enabled:
+        return ASSIST_OFF, "the agent does not allow Assist"
+    return None
+
 
 type Mode = Literal["queued", "single", "restart", "parallel"]
 type ResultListener = Callable[[InvocationResult], None]
@@ -328,8 +345,8 @@ class RouterComponent:
                     self._refusal(job, AGENT_NOT_FOUND, "the agent does not exist")
                 )
                 return handle
-            if not agent.enabled:
-                await self._refuse(job, AGENT_OFF, "the agent is turned off")
+            if (refusal := _agent_refusal(agent, request)) is not None:
+                await self._refuse(job, *refusal)
                 return handle
             lane = self._lanes.setdefault(request.queue_key, _Lane(request.queue_key))
             mode, size = self._mode(agent, request)
@@ -500,10 +517,10 @@ class RouterComponent:
             return await self._finish(
                 self._refusal(job, AGENT_NOT_FOUND, "the agent does not exist")
             )
-        if not agent.enabled and not job.dry_run:
-            return await self._finish(
-                self._refusal(job, AGENT_OFF, "the agent is turned off")
-            )
+        # The agent and its definition can change while the job waits.
+        refusal = None if job.dry_run else _agent_refusal(agent, request)
+        if refusal is not None:
+            return await self._finish(self._refusal(job, *refusal))
         job.agent = agent
         await self._db().run(lambda c: store.mark_running(c, job.id, agent.version))
         inputs = await self._inputs(agent, job.samples)

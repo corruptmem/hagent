@@ -141,6 +141,13 @@ async def test_guard_exempt_prefix() -> None:
     with pytest.raises(Exception) as info:
         await guard.middleware(request, _ok)
     assert getattr(info.value, "status", None) == 403
+    # Review L1: the guard matches the raw path; an encoded separator is
+    # never exempt, also below an exempt prefix.
+    for path in ("/link%2Fws", "/link/a%2f..%2fb", "/link%5Cws"):
+        request = make_mocked_request("GET", path, transport=transport)
+        with pytest.raises(Exception) as info:
+            await guard.middleware(request, _ok)
+        assert getattr(info.value, "status", None) == 403, path
 
 
 async def test_default_app_refuses_local_clients(

@@ -35,6 +35,8 @@ NO_RULE_SOURCES = frozenset({"review", "assist", "test"})
 # Stable error codes of a result with status ``error`` or ``cancelled``.
 AGENT_NOT_FOUND = "agent_not_found"
 AGENT_OFF = "agent_off"
+# The source is ``assist`` and the agent definition does not allow Assist.
+ASSIST_OFF = "assist_off"
 BUSY = "busy"
 QUEUE_FULL = "queue_full"
 CANCELLED = "cancelled"

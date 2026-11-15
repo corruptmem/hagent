@@ -33,6 +33,10 @@ default port is 8099.
   from its own address (design section 6.1). The exemption is for the exact
   path only. The guard checks every other path, also `/api/link`,
   `/api/link/ws2` and each subpath such as `/api/link/ws/x`.
+- The guard compares the raw path, before percent-decoding, because the
+  router also matches the raw path. A path with an encoded character, for
+  example `/api%2Flink%2Fws` or `/%61pi/link/ws`, is not exempt. A path
+  with an encoded separator (`%2F` or `%5C`) is never exempt.
 - Each frame holds one JSON object. The largest frame is 16 MiB.
 - Both sides send WebSocket pings every 30 seconds.
 
@@ -43,7 +47,10 @@ secret in one of two ways:
 1. Supervisor discovery. When the app runs in a container, it posts its
    host, port and secret to the Supervisor (`POST /discovery`, service
    `hagent`). HA then offers the set-up, and the user confirms it. The app
-   configuration must list `hagent` under `discovery`.
+   configuration must list `hagent` under `discovery`. A discovery never
+   changes an existing config entry. Another app can send a discovery
+   with its own host and secret, so the integration stops the flow with
+   `already_configured` and keeps the existing values.
 2. By hand. The user reads the values from `GET api/integration` in the
    management API (see `docs/api.md`) and enters them in the config flow.
 
@@ -138,7 +145,7 @@ arrive in another order.
 | `conversation_id` | Required for `assist`. Each conversation has its own queue. |
 | `result_schema` | Optional JSON schema with `"type": "object"`. It replaces the result type of the definition for this invocation. |
 | `attachments` | Optional list of `{"name", "mime_type", "data"}`. `data` is base64. |
-| `caller` | Optional metadata of the caller, for history only. |
+| `caller` | Optional metadata of the caller, for history only. The app does not check it. |
 | `wait` | `true` (default): answer with the result. `false`: answer at once. |
 | `timeout` | The longest wait in seconds, from 0 to 3600. The default is 30. |
 | `on_timeout` | `cancel` or `continue`. The default is `cancel` for agents with outputs and `continue` for other agents. |
@@ -148,7 +155,9 @@ Attachment rules:
 - The app accepts these types: `image/png`, `image/jpeg`, `image/gif`,
   `image/webp`, `application/pdf`, `text/plain`, `text/markdown`,
   `text/csv` and `application/json`.
-- The sum of the sizes of one invocation must not exceed 8 MiB.
+- The sum of the sizes of one invocation must not exceed 8 MiB. The
+  integration reads the file size before it reads a file. It reads only
+  regular files.
 - The model receives images and PDF files as binary parts. It receives
   text files as text, marked as data, not instructions.
 - The caller data gets `attachments`: the name, the type and the size of
@@ -169,9 +178,14 @@ The response data:
   `timeout`. The app cancels the invocation. Its `result` message has
   `delivered` true.
 
+An `invoke` with the source `assist` for an agent whose definition does not
+allow Assist gets the router code `assist_off`. The integration adds a
+conversation entity only for agents that allow Assist. The app checks the
+definition too, because the app owns it.
+
 A response with `success` true can still hold `status` `error`, for
-example with the router codes `agent_not_found`, `agent_off`, `busy` or
-`queue_full`. The integration turns such a result into an HA error.
+example with the router codes `agent_not_found`, `agent_off`,
+`assist_off`, `busy` or `queue_full`. The integration turns such a result into an HA error.
 
 ### cancel
 
@@ -241,6 +255,37 @@ Error codes of the link:
 | AI Task `EVALUATE` | `invoke` with the source `ai_task_evaluate`. `data` holds `task_name`, `questions` and `state`. `result_schema` asks for one answer for each question. HA Core 2026.11 adds this feature. On an older HA Core, the entity does not offer it. |
 | Conversation entity | `invoke` with the source `assist` and the HA conversation ID. |
 | Enabled switch | `set_enabled`. |
+
+## Who can call an agent
+
+An agent can have more rights in HA than the HA user who calls it. An agent
+with the `admin` level or a wide scope can call admin actions such as
+`homeassistant.restart`. So the integration applies the rule of HA admin
+actions to each call that reaches the link:
+
+- A call without an HA user can invoke an agent. Automations and scripts
+  that no user starts make such calls. A voice satellite also makes such
+  calls when its pipeline runs without a user.
+- A call by an admin user can invoke an agent.
+- A call by any other user fails with `Unauthorized`. The integration does
+  not send an `invoke` command to the app.
+
+The rule applies to these HA features:
+
+| HA feature | How the integration applies the rule |
+|---|---|
+| `hagent.invoke` action | HA registers it as an admin action (`async_register_admin_service`). HA itself refuses the call. |
+| AI Task entity | The `ai_task.*` actions belong to HA Core, so the integration cannot make them admin actions. The entity checks the user of the call context before it sends the task. |
+| Conversation entity | The entity checks the user of the message context. For a user who is not an admin, Assist shows an error. |
+
+A script inherits the context of the user who starts it. Thus a script
+that a non-admin user starts also fails when it calls an agent. A
+non-admin user cannot use Assist with a hagent agent.
+
+In the prompt, the app shows `text` on its own line as the request. It
+marks the other caller data as data, not instructions (design section 19).
+This mark does not replace the rule above: a model can still follow text
+in the data.
 
 ## Seam for approval notifications
 

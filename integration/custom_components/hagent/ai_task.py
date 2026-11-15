@@ -12,11 +12,12 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 import probatio
 from homeassistant.components import ai_task, conversation
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -24,6 +25,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .entity import HagentAgentEntity, HagentConfigEntry, setup_agent_platform
 from .invoke import (
     HagentInvocationError,
+    async_check_admin,
     async_read_attachments,
     link_error,
     result_data,
@@ -43,6 +45,10 @@ if TYPE_CHECKING:
 TASK_TIMEOUT = 300.0
 # None on HA Core releases before 2026.11.
 EVALUATE = getattr(ai_task.AITaskEntityFeature, "EVALUATE", None)
+
+# The context of the AI Task call that runs in the current asyncio task. HA
+# passes no context to ``_async_generate_data`` and ``_async_evaluate``.
+_CALLER: ContextVar[Context | None] = ContextVar("hagent_ai_task_caller", default=None)
 
 EVALUATE_TEXT = (
     "Answer each question in data.questions about data.state and the "
@@ -173,6 +179,24 @@ class HagentAITaskEntity(HagentAgentEntity, ai_task.AITaskEntity):
             features |= EVALUATE
         self._attr_supported_features = features
 
+    @callback
+    def async_set_context(self, context: Context) -> None:
+        """Keep the caller context for the admin check of this call.
+
+        HA calls this with the call context at the start of each task, in
+        the task that then runs ``_async_generate_data`` or
+        ``_async_evaluate``. A context variable keeps the value apart from
+        concurrent calls, which run in other asyncio tasks.
+        """
+        super().async_set_context(context)
+        _CALLER.set(context)
+
+    async def _check_caller(self) -> None:
+        """Apply the admin rule to the caller of this task (docs/link.md)."""
+        context = _CALLER.get()
+        _CALLER.set(None)
+        await async_check_admin(self.hass, context)
+
     async def _invoke(self, fields: dict[str, Any]) -> Any:
         try:
             data = await self.runtime.invoke(
@@ -194,6 +218,7 @@ class HagentAITaskEntity(HagentAgentEntity, ai_task.AITaskEntity):
         chat_log: conversation.ChatLog,
     ) -> ai_task.GenDataTaskResult:
         """Run the task as an ``ai_task`` invocation."""
+        await self._check_caller()
         attachments = await async_read_attachments(self.hass, task.attachments)
         fields: dict[str, Any] = {
             "source": "ai_task",
@@ -213,6 +238,7 @@ class HagentAITaskEntity(HagentAgentEntity, ai_task.AITaskEntity):
 
     async def _async_evaluate(self, task: EvaluationTask) -> EvaluationTaskResult:
         """Run the questions as an ``ai_task_evaluate`` invocation."""
+        await self._check_caller()
         questions = {k: dict(v) for k, v in task.questions.items()}
         attachments = await async_read_attachments(self.hass, task.attachments)
         result = await self._invoke(

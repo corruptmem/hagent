@@ -10,13 +10,13 @@ from typing import Literal
 
 from homeassistant.components import conversation
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import intent
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .entity import HagentAgentEntity, HagentConfigEntry, setup_agent_platform
-from .invoke import link_error, result_data
+from .invoke import async_check_admin, link_error, result_data
 from .link import LinkError
 from .runtime import HagentRuntime
 
@@ -63,6 +63,17 @@ class HagentConversationEntity(HagentAgentEntity, conversation.ConversationEntit
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         """Send the message to the app and add the answer to the chat log."""
+        try:
+            await async_check_admin(self.hass, user_input.context)
+        except Unauthorized:
+            response = intent.IntentResponse(language=user_input.language)
+            response.async_set_error(
+                intent.IntentResponseErrorCode.UNKNOWN,
+                "hagent: only an admin user can talk to this agent",
+            )
+            return conversation.ConversationResult(
+                response=response, conversation_id=chat_log.conversation_id
+            )
         try:
             data = await self.runtime.invoke(
                 {
