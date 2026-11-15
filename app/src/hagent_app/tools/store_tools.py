@@ -16,8 +16,7 @@ Scope rules:
   subscribe to ``call_service``: its data holds the action IDs of approval
   notifications. Schedule specs are a timer or a cron schedule; the
   scheduler store also checks the definition limits (task-15). Rule specs
-  are not supported yet: task-13 must add a validated model and scope checks
-  first.
+  have a strict model and scope checks (``rules/checks.py``, task-13).
 """
 
 from __future__ import annotations
@@ -526,14 +525,20 @@ def _spec_message(err: ValidationError) -> str:
     return "; ".join(parts)
 
 
+def _rule_spec(ctx: ToolContext, env: ToolEnv, spec: Spec) -> dict[str, Any]:
+    # Imported here: the rules package imports the tools (import cycle).
+    from hagent_app.rules.checks import check_rule_spec  # noqa: PLC0415
+
+    return check_rule_spec(ctx, env, spec)
+
+
 # The seam for the spec kinds. A kind without an entry is not supported yet.
-# task-13 (rules) adds a strict model here, with a check of trigger entities
-# against the read scope and of actions with check_service_call, at create
-# time and again at fire time. The scheduler runs the subscription check
-# again before each delivery.
+# Rules (task-13): rules/checks.py, checked again before each rule run.
+# The scheduler runs the subscription check again before each delivery.
 SPEC_CHECKS: dict[StateKind, SpecCheck] = {
     "subscription": _subscription_spec,
     "schedule": _schedule_spec,
+    "rule": _rule_spec,
 }
 
 
@@ -698,6 +703,68 @@ class SelfDelete(Tool):
         return {"deleted": args.item_id}
 
 
+class ReorderRulesArgs(Args):
+    """Arguments of ``self.reorder_rules``."""
+
+    rule_ids: Annotated[list[ItemId], Field(min_length=1, max_length=500)]
+
+
+class SelfReorderRules(Tool):
+    """Set the order in which the router tests the agent's rules."""
+
+    name = "self.reorder_rules"
+    group = "self"
+    description = (
+        "Set the order of your rules. Name each of your rules exactly once. "
+        "The router tests rules in this order."
+    )
+    args_model = ReorderRulesArgs
+    writes = True
+
+    async def authorize(
+        self, ctx: ToolContext, env: ToolEnv, args: ReorderRulesArgs
+    ) -> Prepared:
+        for rule_id in dict.fromkeys(args.rule_ids):
+            await _check_owner(ctx, env, "rule", rule_id)
+        return Prepared(args.model_dump(), tuple(args.rule_ids))
+
+    async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
+        order = await _agent_state(env).reorder_rules(ctx.agent.id, prepared.payload)
+        return {"rule_ids": order}
+
+
+class RollbackRuleArgs(Args):
+    """Arguments of ``self.rollback_rule``."""
+
+    rule_id: ItemId
+    version: Annotated[int, Field(ge=1)]
+
+
+class SelfRollbackRule(Tool):
+    """Make an older version of one of the agent's rules the current one."""
+
+    name = "self.rollback_rule"
+    group = "self"
+    description = (
+        "Roll one of your rules back to an older version. The state of the "
+        "rule does not change. Read the versions with memory.rule_stats."
+    )
+    args_model = RollbackRuleArgs
+    writes = True
+
+    async def authorize(
+        self, ctx: ToolContext, env: ToolEnv, args: RollbackRuleArgs
+    ) -> Prepared:
+        await _check_owner(ctx, env, "rule", args.rule_id)
+        return Prepared(args.model_dump(), args)
+
+    async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
+        args: RollbackRuleArgs = prepared.payload
+        return await _agent_state(env).rollback_rule(
+            ctx.agent.id, args.rule_id, args.version
+        )
+
+
 STORE_TOOLS: tuple[Tool, ...] = (
     KnowledgeList(),
     KnowledgeRead(),
@@ -711,4 +778,6 @@ STORE_TOOLS: tuple[Tool, ...] = (
     SelfUpdate(),
     SelfEnable(),
     SelfDelete(),
+    SelfReorderRules(),
+    SelfRollbackRule(),
 )

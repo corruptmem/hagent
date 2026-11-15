@@ -55,6 +55,18 @@ def _load(text: str | None) -> Any:
     return None if text is None else json.loads(text)
 
 
+class RuleStats(Protocol):
+    """The rule store (task-13), as ``memory.rule_stats`` reads it."""
+
+    async def rule_owner(self, rule_id: str) -> str | None:
+        """The agent that owns the rule, or ``None``."""
+        ...
+
+    async def rule_stats(self, agent_id: str, rule_id: str) -> dict[str, Any]:
+        """The rule and the statistics of each version."""
+        ...
+
+
 class HistoryIndex(Protocol):
     """The search index of the knowledge area (task-11), as task-10 uses it.
 
@@ -86,6 +98,8 @@ class TurnHistory:
     def __init__(self, db: Database | None = None) -> None:
         self._db = db
         self.index: HistoryIndex | None = None
+        # The rule store (task-13). ``default_components`` sets it.
+        self.rules: RuleStats | None = None
 
     def bind(self, db: Database | None) -> None:
         """Set the database, or ``None`` on stop."""
@@ -456,12 +470,16 @@ class TurnHistory:
         return await self.db.run(run)
 
     async def rule_owner(self, rule_id: str) -> str | None:
-        """Rules belong to task-13. Until then, no rule has an owner."""
-        return None
+        """The agent that owns the rule, from the rule store (task-13)."""
+        if self.rules is None:
+            return None
+        return await self.rules.rule_owner(rule_id)
 
     async def rule_stats(self, agent_id: str, rule_id: str) -> dict[str, Any]:
-        """Rules belong to task-13. Until then, no statistics exist."""
-        return {}
+        """The statistics of each version of the rule (design section 10.4)."""
+        if self.rules is None:
+            return {}
+        return await self.rules.rule_stats(agent_id, rule_id)
 
 
 def brief(record: TurnRecord) -> dict[str, Any]:

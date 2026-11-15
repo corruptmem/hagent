@@ -193,7 +193,7 @@ REVIEW_8_CASES = [
                 },
             },
         },
-        "not_supported",
+        "invalid_spec",
         SELF_READ_HALL,
     ),
     # Schedule specs (task-15): strict model, limits from the definition.
@@ -247,7 +247,7 @@ REVIEW_8_CASES = [
     Case(
         "self.update",
         {"kind": "rule", "item_id": "r1", "spec": {}},
-        "not_supported",
+        "invalid_spec",
         SELF_READ_HALL,
         setup="own_item_r1",
     ),
@@ -319,6 +319,153 @@ REVIEW_8_CASES = [
     ),
     # Finding 7: an unexpected error in the check.
     Case("memory.rule_stats", {"rule_id": "r1"}, "check_failed", setup="boom"),
+]
+
+
+def _rule(**parts: Any) -> dict[str, Any]:
+    """A rule spec for ``self.create``, with the given parts."""
+    spec: dict[str, Any] = {
+        "name": "probe",
+        "match": "{{ true }}",
+        "action": {"type": "template", "template": "on"},
+    }
+    spec.update(parts)
+    return {"kind": "rule", "spec": spec}
+
+
+SELF_CONTROL_KITCHEN = {"tools__self": True, **CONTROL_KITCHEN}
+
+# Rules (task-13): a rule spec must stay inside the scope at create time.
+RULE_CASES = [
+    # A write outside the control scope and the outputs.
+    Case(
+        "self.create",
+        _rule(writes=[{"service": "lock.unlock", "entity_id": "lock.front"}]),
+        "out_of_scope",
+        SELF_CONTROL_KITCHEN,
+    ),
+    # A write with read access only.
+    Case(
+        "self.create",
+        _rule(writes=[{"service": "light.turn_on", "entity_id": "light.hall"}]),
+        "level",
+        SELF_READ_HALL,
+    ),
+    # A write that needs approval: rules cannot wait for approval.
+    Case(
+        "self.create",
+        _rule(writes=[{"service": "light.turn_on", "entity_id": "light.kitchen"}]),
+        "approval_required",
+        {**SELF_CONTROL_KITCHEN, "approval__services": ["light.turn_on"]},
+    ),
+    # A write to an output entity that needs approval.
+    Case(
+        "self.create",
+        _rule(
+            writes=[
+                {
+                    "service": "input_number.set_value",
+                    "entity_id": "input_number.flow",
+                    "data": {"value": "{{ result }}"},
+                }
+            ]
+        ),
+        "approval_required",
+        {
+            "tools__self": True,
+            "outputs": ["input_number.flow"],
+            "approval__entities": ["input_number.flow"],
+        },
+    ),
+    # Statistics of an entity outside the read scope.
+    Case(
+        "self.create",
+        _rule(context=[{"type": "history", "name": "h", "entity_ids": ["lock.front"]}]),
+        "out_of_scope",
+        SELF_READ_HALL,
+    ),
+    # An action that changes HA cannot be a context item.
+    Case(
+        "self.create",
+        _rule(
+            context=[
+                {
+                    "type": "action_response",
+                    "name": "a",
+                    "service": "light.turn_on",
+                    "target": {"entity_id": "light.kitchen"},
+                }
+            ]
+        ),
+        "not_response_only",
+        SELF_CONTROL_KITCHEN,
+    ),
+    # A data action on an entity outside the scope.
+    Case(
+        "self.create",
+        _rule(
+            context=[
+                {
+                    "type": "action_response",
+                    "name": "a",
+                    "service": "weather.get_forecasts",
+                    "target": {"entity_id": "weather.home"},
+                    "data": {"type": "hourly"},
+                }
+            ]
+        ),
+        "out_of_scope",
+        SELF_CONTROL_KITCHEN,
+    ),
+    # A file of a store that is not attached.
+    Case(
+        "self.create",
+        _rule(
+            context=[
+                {
+                    "type": "store_file",
+                    "name": "f",
+                    "store_id": OTHER_STORE,
+                    "path": "main.md",
+                }
+            ]
+        ),
+        "store_not_attached",
+        SELF_READ_HALL,
+    ),
+    # A template function outside the supported subset.
+    Case(
+        "self.create",
+        _rule(match="{{ area_entities('kitchen') | count > 0 }}"),
+        "invalid_template",
+        SELF_READ_HALL,
+    ),
+    # A decision action needs a decision model.
+    Case(
+        "self.create",
+        _rule(
+            action={
+                "type": "decision",
+                "questions": [{"type": "yes_no", "name": "q", "text": "Cold?"}],
+            }
+        ),
+        "no_decision_model",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.reorder_rules",
+        {"rule_ids": ["r1"]},
+        "not_owner",
+        {"tools__self": True},
+        setup="other_owner",
+    ),
+    Case(
+        "self.rollback_rule",
+        {"rule_id": "r1", "version": 1},
+        "not_owner",
+        {"tools__self": True},
+        setup="other_owner",
+    ),
 ]
 
 CASES = [
@@ -545,6 +692,7 @@ CASES = [
         {"tools__self": True},
         setup="other_owner",
     ),
+    *RULE_CASES,
     # Unknown tool names.
     Case("ha.run_anything", {}, "unknown_tool"),
     *REVIEW_8_CASES,

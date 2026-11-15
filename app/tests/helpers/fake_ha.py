@@ -78,6 +78,8 @@ class FakeHA:
     def __init__(self, token: str = TOKEN, ha_version: str = "2026.11.0") -> None:
         self.token = token
         self.ha_version = ha_version
+        # HA's configured time zone, for get_config (the rule templates).
+        self.time_zone = "UTC"
         self.states: dict[str, Message] = {}
         self.commands: list[Message] = []
         self.handlers: dict[str, Handler] = {}
@@ -309,6 +311,10 @@ class FakeHA:
         commands["config/entity_registry/get"] = self._entity_entry
         commands["get_services"] = lambda _m: self.services
         commands["auth/current_user"] = lambda _m: self.user
+        commands["get_config"] = lambda _m: {
+            "time_zone": self.time_zone,
+            "version": self.ha_version,
+        }
         commands["history/history_during_period"] = lambda _m: {
             e: [{"s": s["state"]}] for e, s in self.states.items()
         }

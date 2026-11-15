@@ -12,8 +12,10 @@ Layout:
   ``climate.lounge`` and ``sensor.lounge_temp``;
 - ``light.lounge`` and ``media_player.lounge`` in ``lounge``, no device;
 - ``switch.kettle`` in ``kitchen``, no device;
-- ``light.hall``, ``lock.front``, ``media_player.other``, ``script.morning``
-  and ``automation.wake`` have no area.
+- ``light.hall``, ``lock.front``, ``media_player.other``, ``script.morning``,
+  ``automation.wake``, ``input_boolean.guest``, ``input_number.flow`` and
+  ``weather.home`` have no area. ``weather.get_forecasts`` only returns
+  data.
 """
 
 from __future__ import annotations
@@ -49,6 +51,8 @@ ENTITIES: list[dict[str, Any]] = [
     {"entity_id": "script.morning"},
     {"entity_id": "automation.wake"},
     {"entity_id": "input_boolean.guest"},
+    {"entity_id": "input_number.flow"},
+    {"entity_id": "weather.home"},
 ]
 
 DEVICES: list[dict[str, Any]] = [
@@ -110,6 +114,14 @@ SERVICES: dict[str, dict[str, dict[str, Any]]] = {
     "media_player": {
         "join": _svc("media_player", ["group_members"]),
         "play_media": _svc("media_player", ["media_content_id", "media_content_type"]),
+    },
+    "input_number": {"set_value": _svc("input_number", ["value"])},
+    # A service that only returns data (HA: "response": {"optional": false}).
+    "weather": {
+        "get_forecasts": {
+            **_svc("weather", ["type"]),
+            "response": {"optional": False},
+        }
     },
     "input_boolean": {
         "turn_on": _svc("input_boolean"),

@@ -127,6 +127,16 @@ class FakeAgentState:
     async def delete(self, agent_id: str, kind: StateKind, item_id: str) -> None:
         self.calls.append(("delete", agent_id, kind, item_id))
 
+    async def reorder_rules(self, agent_id: str, rule_ids: Sequence[str]) -> list[str]:
+        self.calls.append(("reorder_rules", agent_id, tuple(rule_ids)))
+        return list(rule_ids)
+
+    async def rollback_rule(
+        self, agent_id: str, rule_id: str, version: int
+    ) -> dict[str, Any]:
+        self.calls.append(("rollback_rule", agent_id, rule_id, version))
+        return {"id": rule_id, "version": version}
+
 
 class RecordingGate:
     """An approval gate that answers with a fixed value."""

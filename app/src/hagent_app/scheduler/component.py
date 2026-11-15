@@ -28,7 +28,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any, Protocol
@@ -220,6 +220,16 @@ class SchedulerStateStore:
             await self._rules().delete(agent_id, kind, item_id)
             return
         await self._component.delete_item(agent_id, kind, item_id)
+
+    async def reorder_rules(self, agent_id: str, rule_ids: Sequence[str]) -> list[str]:
+        """Set the order of the agent's rules (task-13)."""
+        return await self._rules().reorder_rules(agent_id, rule_ids)
+
+    async def rollback_rule(
+        self, agent_id: str, rule_id: str, version: int
+    ) -> dict[str, Any]:
+        """Roll one of the agent's rules back (task-13)."""
+        return await self._rules().rollback_rule(agent_id, rule_id, version)
 
 
 class SchedulerComponent:
