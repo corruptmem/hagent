@@ -97,6 +97,7 @@ class FakeAgentState:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.owners: dict[str, str] = {}
+        self.specs: list[Mapping[str, Any]] = []
 
     async def owner(self, kind: StateKind, item_id: str) -> str | None:
         return self.owners.get(item_id)
@@ -109,6 +110,7 @@ class FakeAgentState:
         self, agent_id: str, kind: StateKind, spec: Mapping[str, Any]
     ) -> dict[str, Any]:
         self.calls.append(("create", agent_id, kind))
+        self.specs.append(spec)
         return {"id": "new"}
 
     async def update(

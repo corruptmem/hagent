@@ -239,11 +239,36 @@ Rules of the HA check (`tools/scope.py`):
   areas, floors, labels or services cause a denial.
 - Indirect services need their exact name in `tools.ha.services`.
 - A call that resolves to no entity needs its exact name in
-  `tools.ha.services`. This stops `mqtt.publish`, `recorder.purge` and
-  similar services.
-- Outputs are a short form of `control`, but not for indirect services.
-- `admin` passes every call unchanged.
+  `tools.ha.services`. This stops `conversation.process` and similar
+  services.
+- The service metadata from `get_services` is an allowlist. A call with
+  target entities needs a declared entity target that accepts the domain of
+  each entity (`target_not_declared`). Each data key must be a declared
+  field (`unknown_field`). Sections of fields count as fields. Missing
+  metadata causes a denial (`service_metadata`).
+- An explicit target entity of another domain than the service needs the
+  exact service name in `tools.ha.services` (`cross_domain`). A wildcard
+  such as `remote_bridge.*` does not permit it.
+- `group.set` and `group.remove` act on `group.<object_id>`. That entity
+  must be in the scope.
+- Outputs are a short form of `control`, but not for indirect services and
+  not for a service of another domain.
+- `admin` passes every call unchanged. For approval, the executor finds the
+  entities of an `admin` call: targets, entity and device IDs in the data,
+  and group members. If that scan cannot finish (for example a template in
+  the data), and `approval.entities` is set, the call needs approval.
 - While the registry is stale, every check that needs it fails.
+- While the state cache is not loaded or not in sync, `ha.call_service`,
+  `ha.get_state` and `ha.find_entities` fail (`states_unavailable`). The
+  group check and the data scan read the cache.
+- An unexpected error in a check causes a denial (`check_failed`) and an
+  audit row. The log keeps the traceback.
+
+Rules of the `self` tools: each spec kind has a strict model, and unknown
+keys fail (`invalid_spec`). A state subscription must name entities in the
+read scope. Rule and schedule specs fail with `not_supported` until task-13
+and task-15 add their models and checks to `SPEC_CHECKS`
+(`tools/store_tools.py`).
 
 The admin tools accept only the WebSocket commands in `tools/admin.py`.
 Each change command has a reader for the previous version, which the audit
@@ -255,6 +280,8 @@ has no REST client yet.
 scope grew within the same definition version, it creates an HA persistent
 notification and publishes `tools` / `scope_grown`. It stores the last
 result in `tool_scope_snapshots`, so it also finds growth across a restart.
+After growth, it stores the new result only when HA accepts the
+notification. Otherwise the next reload sends it again.
 
 ### How to plug in a store
 

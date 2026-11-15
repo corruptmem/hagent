@@ -7,10 +7,16 @@ from typing import Any
 
 import pytest
 from hagent_app.agents.definition import INDIRECT_DOMAINS, AgentDefinition, HAScope
-from hagent_app.tools.registry import RegistryUnavailableError
+from hagent_app.tools.registry import (
+    RegistryUnavailableError,
+    ServiceInfo,
+    parse_service_info,
+    parse_snapshot,
+)
 from hagent_app.tools.scope import (
     AgentScope,
     ScopeDeniedError,
+    admin_entities,
     agent_scope,
     check_read,
     check_service_call,
@@ -25,6 +31,7 @@ from helpers.home import (
     SERVICES,
     snapshot,
 )
+from helpers.home import services as home_services
 
 REG = snapshot()
 KNOWN = frozenset(e["entity_id"] for e in ENTITIES)
@@ -324,14 +331,15 @@ LOUNGE = {"areas": ["lounge"]}
             {"target": {"entity_id": "light.kitchen"}},
             "unknown_service",
         ),
-        # Services with no target in the scope.
+        # Services with no target in the scope. mqtt and recorder are
+        # indirect domains, so the indirect rule stops them first.
         (
             {"all": True},
             "mqtt.publish",
             {"data": {"topic": "x", "payload": "y"}},
-            "no_target",
+            "indirect_service",
         ),
-        ({"all": True}, "recorder.purge", {}, "no_target"),
+        ({"all": True}, "recorder.purge", {}, "indirect_service"),
         (
             {"all": True},
             "conversation.process",
@@ -362,8 +370,9 @@ def test_out_of_scope_calls_are_denied(
 
 @pytest.mark.parametrize("domain", sorted(INDIRECT_DOMAINS))
 def test_every_indirect_service_is_denied_unless_named(domain: str) -> None:
-    service = SERVICES[domain][0]
-    target = {"entity_id": f"{domain}.x"}
+    service, description = next(iter(SERVICES[domain].items()))
+    # Send a target only if the service declares one.
+    target = {"entity_id": f"{domain}.x"} if "target" in description else None
     assert _denied(_control({"all": True}), f"{domain}.{service}", target=target) == (
         "indirect_service"
     )
@@ -465,3 +474,221 @@ def test_denial_does_not_name_hidden_entities() -> None:
         _call(_control(KITCHEN), "light.turn_on", target={"area_id": "lounge"})
     assert "light.lounge" not in info.value.message
     assert "2 entities" in info.value.message
+
+
+# ------------------------------------------- review-8 regressions (pure)
+
+
+def test_cross_domain_service_needs_the_exact_name() -> None:
+    # remote_bridge.send declares an entity target with no domain filter.
+    target = {"entity_id": "light.hall"}
+    data = {"command": "x"}
+    scope = _control({"all": True})
+    assert _denied(scope, "remote_bridge.send", target=target, data=data) == (
+        "cross_domain"
+    )
+    wildcard = _control({"all": True}, services=["remote_bridge.*"])
+    assert _denied(wildcard, "remote_bridge.send", target=target, data=data) == (
+        "cross_domain"
+    )
+    named = _control({"all": True}, services=["remote_bridge.send"])
+    assert _call(named, "remote_bridge.send", target=target, data=data).path == (
+        "control"
+    )
+
+
+def test_outputs_never_permit_a_cross_domain_service() -> None:
+    scope = _scope(outputs=["light.hall"])
+    target = {"entity_id": "light.hall"}
+    assert _denied(scope, "remote_bridge.send", target=target) == "cross_domain"
+
+
+def test_recorder_purge_entities_cannot_purge_everything() -> None:
+    target = {"entity_id": "light.hall"}
+    data = {"entity_globs": ["*"], "domains": ["lock", "sensor"], "keep_days": 0}
+    # Control on one light: recorder is indirect.
+    scope = _control({"entities": ["light.hall"]})
+    assert _denied(scope, "recorder.purge_entities", target=target, data=data) == (
+        "indirect_service"
+    )
+    # Named exactly: the service declares no entity target.
+    named = _control({"entities": ["light.hall"]}, services=["recorder.purge_entities"])
+    assert _denied(named, "recorder.purge_entities", target=target, data=data) == (
+        "target_not_declared"
+    )
+    # Only an output.
+    outputs = _scope(outputs=["input_boolean.guest"])
+    assert (
+        _denied(
+            outputs,
+            "recorder.purge_entities",
+            target={"entity_id": "input_boolean.guest"},
+            data={"entity_globs": ["*"]},
+        )
+        == "indirect_service"
+    )
+
+
+def test_zwave_broadcast_through_an_output_is_denied() -> None:
+    data = {
+        "broadcast": True,
+        "command_class": 37,
+        "property": "targetValue",
+        "value": True,
+    }
+    scope = _scope(outputs=["light.hall"])
+    code = _denied(
+        scope,
+        "zwave_js.multicast_set_value",
+        target={"entity_id": "light.hall"},
+        data=data,
+    )
+    assert code == "indirect_service"
+
+
+def test_undeclared_data_keys_are_denied() -> None:
+    scope = _control(KITCHEN)
+    target = {"entity_id": "light.kitchen"}
+    assert _denied(
+        scope, "light.turn_on", target=target, data={"domains": ["lock"]}
+    ) == ("unknown_field")
+    # Fields in a section are declared fields.
+    call = _call(scope, "light.turn_on", target=target, data={"flash": "short"})
+    assert call.data == {"flash": "short"}
+
+
+def test_service_without_metadata_is_denied() -> None:
+    services = {d: dict(v) for d, v in home_services().items()}
+    services["light"]["turn_on"] = {"name": "no fields key"}
+    reg = parse_snapshot(
+        entities=[{"entity_id": e["entity_id"]} for e in ENTITIES],
+        devices=[],
+        areas=[],
+        floors=[],
+        labels=[],
+        services=services,
+    )
+    scope = agent_scope(
+        AgentDefinition.from_json(
+            json.dumps(
+                definition(
+                    tools__ha={
+                        "level": "control",
+                        "scope": {"entities": ["light.hall"]},
+                    }
+                )
+            )
+        ),
+        reg,
+    )
+    with pytest.raises(ScopeDeniedError) as info:
+        check_service_call(
+            scope, reg, KNOWN, "light", "turn_on", target={"entity_id": "light.hall"}
+        )
+    assert info.value.code == "service_metadata"
+
+
+def test_target_must_be_declared_for_the_entity_domain() -> None:
+    scope = _control({"domains": ["scene"]}, services=["scene.apply"])
+    code = _denied(scope, "scene.apply", target={"entity_id": "scene.x"})
+    assert code == "target_not_declared"
+
+
+@pytest.mark.parametrize(
+    ("service", "data"),
+    [
+        ("group.set", {"object_id": "everyone", "entities": ["light.hall"]}),
+        ("group.remove", {"object_id": "everyone"}),
+    ],
+)
+def test_group_object_id_must_be_in_the_scope(service: str, data: Any) -> None:
+    scope = _control({"entities": ["light.hall"]}, services=[service])
+    with pytest.raises(ScopeDeniedError) as info:
+        _call(scope, service, data=data)
+    assert info.value.code == "out_of_scope"
+    assert "group.everyone" in info.value.message
+    allowed = _control(
+        {"entities": ["light.hall", "group.everyone"]}, services=[service]
+    )
+    call = _call(allowed, service, data=data)
+    assert "group.everyone" in call.data_entities
+    assert call.data["object_id"] == "everyone"
+
+
+def test_group_object_id_must_be_a_slug() -> None:
+    scope = _control({"all": True}, services=["group.remove"])
+    assert _denied(scope, "group.remove", data={"object_id": "a.b"}) == "invalid_data"
+    assert _denied(scope, "group.remove", data={"object_id": 5}) == "invalid_data"
+
+
+def test_entity_id_with_a_trailing_newline_is_denied() -> None:
+    scope = _control(KITCHEN)
+    code = _denied(scope, "light.turn_on", target={"entity_id": "light.kitchen\n"})
+    assert code == "invalid_target"
+    with pytest.raises(ScopeDeniedError):
+        check_read(scope, ["light.kitchen\n"])
+    with pytest.raises(ScopeDeniedError):
+        _call(scope, "light.turn_on\n", target={"entity_id": "light.kitchen"})
+
+
+def test_admin_entities_expand_groups_and_scan_data() -> None:
+    members = {"group.locks": ("lock.front",)}
+    found = admin_entities(REG, KNOWN, {}, {"entity_id": "group.locks"}, members)
+    assert found.entities == {"group.locks", "lock.front"}
+    assert found.complete
+    found = admin_entities(
+        REG, KNOWN, {"entities": {"lock.front": {"state": "unlocked"}}}, None
+    )
+    assert "lock.front" in found.entities
+    assert found.complete
+
+
+def test_admin_entities_report_an_incomplete_scan() -> None:
+    template = {"entities": {"{{ 'lock.front' }}": "unlocked"}}
+    assert not admin_entities(REG, KNOWN, template, None).complete
+    assert not admin_entities(None, KNOWN, {}, {"entity_id": "lock.front"}).complete
+    deep = {f"group.g{i}": (f"group.g{i + 1}",) for i in range(10)}
+    assert not admin_entities(REG, KNOWN, {}, {"entity_id": "group.g0"}, deep).complete
+
+
+@pytest.mark.parametrize(
+    ("description", "expected"),
+    [
+        (
+            {"fields": {}, "target": {"entity": {"domain": "light"}}},
+            ServiceInfo(frozenset({"light"}), False, frozenset()),
+        ),
+        (
+            {"fields": {}, "target": {"entity": [{"domain": ["light", "switch"]}]}},
+            ServiceInfo(frozenset({"light", "switch"}), False, frozenset()),
+        ),
+        (
+            {"fields": {}, "target": {"entity": [{"integration": "x"}]}},
+            ServiceInfo(frozenset(), True, frozenset()),
+        ),
+        (
+            {"fields": {}, "target": {"device": {}}},
+            ServiceInfo(None, False, frozenset()),
+        ),
+        (
+            {"fields": {}, "target": {"entity": [{"domain": 5}]}},
+            ServiceInfo(None, False, frozenset()),
+        ),
+        (
+            {
+                "fields": {
+                    "a": {"selector": {"text": None}},
+                    "sec": {"collapsed": True, "fields": {"b": {"selector": {}}}},
+                }
+            },
+            ServiceInfo(None, False, frozenset({"a", "b"})),
+        ),
+        ({}, None),
+        ({"fields": []}, None),
+        ("x", None),
+    ],
+)
+def test_service_descriptions_are_parsed(
+    description: Any, expected: ServiceInfo | None
+) -> None:
+    assert parse_service_info(description) == expected

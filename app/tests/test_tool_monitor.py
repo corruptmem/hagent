@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hagent_app.agents import AgentReader
 from hagent_app.agents.definition import AgentDefinition
 from hagent_app.http import ChangeEvent, ChangeEvents
 from hagent_app.tools.monitor import ScopeMonitor
+from helpers.fake_ha import FakeCommandError, FakeHA
 from helpers.tools import Harness, harness
 from helpers.wait import wait_until
 
@@ -130,3 +132,34 @@ async def test_domain_scope_reports_a_new_entity(h: Harness) -> None:
     await wait_until(lambda: h.registry.reload_count > count)
     growth = await monitor.check(h.registry.current())
     assert growth[0].added_read == {"lock.back"}
+
+
+async def test_failed_notification_keeps_the_old_baseline(h: Harness) -> None:
+    # Review-8 finding 5: a lost notification must be sent again.
+    agent = await h.agent(**KITCHEN)
+    monitor = _monitor(h)
+    await monitor.check(h.registry.current())
+    _move_hall_to_kitchen(h)
+    count = h.registry.reload_count
+    await h.ha.registry_updated("entity")
+    await wait_until(lambda: h.registry.reload_count > count)
+
+    def refuse(_ha: FakeHA, _msg: dict[str, Any]) -> None:
+        raise FakeCommandError("timeout", "HA did not answer")
+
+    h.ha.handlers["call_service"] = refuse
+    growth = await monitor.check(h.registry.current())
+    assert [g.agent_id for g in growth] == [agent.id]
+
+    # The next check finds the same growth and sends the notification.
+    del h.ha.handlers["call_service"]
+    h.reset()
+    growth = await monitor.check(h.registry.current())
+    assert growth[0].added_control == {"light.hall"}
+    [command] = h.ha.commands_of("call_service")
+    assert command["service_data"]["notification_id"] == f"hagent_scope_{agent.id}"
+
+    # HA accepted it, so the new baseline is stored.
+    h.reset()
+    assert await monitor.check(h.registry.current()) == []
+    assert h.ha.commands_of("call_service") == []

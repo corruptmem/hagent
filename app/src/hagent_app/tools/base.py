@@ -74,6 +74,8 @@ class Prepared:
     ``request`` is the JSON form for the audit log. ``payload`` is what
     ``run`` uses. ``services`` and ``entities`` are for the approval check.
     ``previous`` is the previous version of an ``admin`` change.
+    ``approval_required`` marks a writing call for approval, for example
+    when the entity scan of an ``admin`` call could not finish.
     """
 
     request: Mapping[str, Any]
@@ -82,6 +84,7 @@ class Prepared:
     entities: frozenset[str] = frozenset()
     previous: Any = None
     previous_note: str | None = None
+    approval_required: bool = False
 
 
 @dataclass(frozen=True, slots=True)

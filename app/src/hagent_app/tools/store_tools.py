@@ -9,18 +9,29 @@ Scope rules:
   the invocation, never from the arguments. Rule statistics need a rule
   that the agent owns.
 - ``self``: the scope is the agent's own rules, schedules and
-  subscriptions. A change needs an item that the agent owns. A state
-  subscription must name entities in the read scope. Other event types
-  need the ``admin`` level, because events such as ``call_service`` carry
-  data about entities outside the scope.
+  subscriptions. A change needs an item that the agent owns. Each spec kind
+  has a strict model: unknown keys fail. A state subscription must name
+  entities in the read scope. Other event types need the ``admin`` level,
+  because events such as ``call_service`` carry data about entities outside
+  the scope. Rule and schedule specs are not supported yet: their consumers
+  (task-13 and task-15) must add validated models and scope checks first.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, Field, JsonValue, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    ValidationError,
+)
 
 from hagent_app.agents.definition import KnowledgeAttachment
 from hagent_app.tools.base import (
@@ -31,7 +42,7 @@ from hagent_app.tools.base import (
     ToolEnv,
     ToolUnavailableError,
 )
-from hagent_app.tools.ha_tools import scope_of
+from hagent_app.tools.ha_tools import EntityIds, scope_of
 from hagent_app.tools.scope import ScopeDeniedError, check_read
 from hagent_app.tools.stores import (
     AgentStateStore,
@@ -41,12 +52,12 @@ from hagent_app.tools.stores import (
 )
 
 StoreIdArg = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{32}$")]
-_PATH_CHARS = re.compile(r"^[A-Za-z0-9_\-./ ]{1,255}$")
+_PATH_CHARS = re.compile(r"[A-Za-z0-9_\-./ ]{1,255}")
 
 
 def _safe_path(value: str) -> str:
     """Reject a path that can leave its store: ``.``, ``..`` or empty parts."""
-    if not _PATH_CHARS.match(value):
+    if not _PATH_CHARS.fullmatch(value):
         msg = "a path uses letters, digits, '_', '-', '.', ' ' and '/' only"
         raise ValueError(msg)
     parts = value.split("/")
@@ -345,28 +356,76 @@ Kind = Literal["rule", "schedule", "subscription"]
 Spec = dict[str, JsonValue]
 
 
-def _check_spec(ctx: ToolContext, env: ToolEnv, kind: StateKind, spec: Spec) -> None:
-    """Check the HA references of a subscription against the read scope."""
-    if kind != "subscription":
-        return
+class _SpecModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+Debounce = Annotated[float, Field(ge=0, le=86400)]
+
+
+class StateSubscriptionSpec(_SpecModel):
+    """A subscription to state changes of entities in the read scope."""
+
+    event_type: Literal["state_changed"] = "state_changed"
+    entity_ids: EntityIds
+    debounce_seconds: Debounce | None = None
+    include_own_writes: bool = False
+
+
+class EventSubscriptionSpec(_SpecModel):
+    """A subscription to another HA event type (``admin`` only)."""
+
+    event_type: Annotated[str, StringConstraints(pattern=r"^[a-z0-9_]{1,64}$")]
+    debounce_seconds: Debounce | None = None
+
+
+type SpecCheck = Callable[[ToolContext, ToolEnv, Spec], dict[str, Any]]
+
+
+def _subscription_spec(ctx: ToolContext, env: ToolEnv, spec: Spec) -> dict[str, Any]:
     event_type = spec.get("event_type", "state_changed")
-    if event_type != "state_changed":
-        if ctx.definition.tools.ha.level != "admin":
-            raise ScopeDeniedError(
-                "event_not_permitted",
-                "only state subscriptions are permitted below the admin level",
-            )
-        return
-    entity_ids = spec.get("entity_ids")
-    if (
-        not isinstance(entity_ids, list)
-        or not entity_ids
-        or not all(isinstance(e, str) for e in entity_ids)
-    ):
+    model: type[_SpecModel]
+    if event_type == "state_changed":
+        model = StateSubscriptionSpec
+    elif ctx.definition.tools.ha.level != "admin":
         raise ScopeDeniedError(
-            "invalid_arguments", "a state subscription needs a list of entity_ids"
+            "event_not_permitted",
+            "only state subscriptions are permitted below the admin level",
         )
-    check_read(scope_of(ctx, env), [str(e) for e in entity_ids])
+    else:
+        model = EventSubscriptionSpec
+    try:
+        checked = model.model_validate(spec)
+    except ValidationError as err:
+        raise ScopeDeniedError("invalid_spec", _spec_message(err)) from err
+    if isinstance(checked, StateSubscriptionSpec):
+        check_read(scope_of(ctx, env), checked.entity_ids)
+    return checked.model_dump(exclude_none=True)
+
+
+def _spec_message(err: ValidationError) -> str:
+    parts = []
+    for item in err.errors(include_url=False, include_context=False)[:5]:
+        loc = ".".join(str(p) for p in item["loc"]) or "spec"
+        parts.append(f"spec.{loc}: {item['msg']}")
+    return "; ".join(parts)
+
+
+# The seam for the spec kinds. A kind without an entry is not supported yet.
+# task-13 (rules) and task-15 (schedules) add strict models here, with a
+# check of trigger entities against the read scope and of actions with
+# check_service_call, at create time and again at fire time.
+SPEC_CHECKS: dict[StateKind, SpecCheck] = {"subscription": _subscription_spec}
+
+
+def _require_supported(kind: StateKind) -> SpecCheck:
+    check = SPEC_CHECKS.get(kind)
+    if check is None:
+        raise ScopeDeniedError(
+            "not_supported",
+            f"{kind} specs are not supported yet; the runtime cannot check them",
+        )
+    return check
 
 
 async def _check_owner(
@@ -419,8 +478,9 @@ class SelfCreate(Tool):
     async def authorize(
         self, ctx: ToolContext, env: ToolEnv, args: SelfCreateArgs
     ) -> Prepared:
-        _check_spec(ctx, env, args.kind, args.spec)
-        return Prepared(args.model_dump(), args)
+        spec = _require_supported(args.kind)(ctx, env, args.spec)
+        checked = args.model_copy(update={"spec": spec})
+        return Prepared(checked.model_dump(), checked)
 
     async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
         args: SelfCreateArgs = prepared.payload
@@ -447,9 +507,11 @@ class SelfUpdate(Tool):
     async def authorize(
         self, ctx: ToolContext, env: ToolEnv, args: SelfUpdateArgs
     ) -> Prepared:
+        check = _require_supported(args.kind)
         await _check_owner(ctx, env, args.kind, args.item_id)
-        _check_spec(ctx, env, args.kind, args.spec)
-        return Prepared(args.model_dump(), args)
+        spec = check(ctx, env, args.spec)
+        checked = args.model_copy(update={"spec": spec})
+        return Prepared(checked.model_dump(), checked)
 
     async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
         args: SelfUpdateArgs = prepared.payload

@@ -13,7 +13,9 @@ monitor then stores a new baseline and sends nothing. A scope with
 cannot grow.
 
 The monitor stores the last result in ``tool_scope_snapshots``. It can
-therefore find growth that happened while the app was stopped.
+therefore find growth that happened while the app was stopped. After growth,
+it stores the new result only when HA accepts the notification. If HA does
+not accept it, the next reload finds the same growth and sends it again.
 """
 
 from __future__ import annotations
@@ -118,7 +120,7 @@ class ScopeMonitor:
     async def check(self, snapshot: RegistrySnapshot) -> list[ScopeGrowth]:
         """Resolve every scope. Notify and return the scopes that grew."""
         known = self._known_ids(snapshot)
-        growth = []
+        growth: list[ScopeGrowth] = []
         for agent in await self._reader.list_agents():
             try:
                 scope = agent_scope(agent.definition, snapshot)
@@ -128,17 +130,16 @@ class ScopeMonitor:
                 continue
             read = scope.read.entity_set(known)
             control = scope.control.entity_set(known) | scope.outputs
-            previous = await self._db.run(partial(_load, agent_id=agent.id))
-            await self._db.run(
-                partial(
-                    _store,
-                    agent_id=agent.id,
-                    version=agent.version,
-                    read=read,
-                    control=control,
-                )
+            store = partial(
+                _store,
+                agent_id=agent.id,
+                version=agent.version,
+                read=read,
+                control=control,
             )
+            previous = await self._db.run(partial(_load, agent_id=agent.id))
             if previous is None or previous[0] != agent.version:
+                await self._db.run(store)
                 continue
             added_read = (
                 frozenset() if scope.read.all else frozenset(read - previous[1])
@@ -146,17 +147,22 @@ class ScopeMonitor:
             added_control = (
                 frozenset() if scope.control.all else frozenset(control - previous[2])
             )
-            if added_read or added_control:
-                growth.append(
-                    ScopeGrowth(
-                        agent.id, agent.name, agent.version, added_read, added_control
-                    )
-                )
-        for item in growth:
-            await self._report(item)
+            if not (added_read or added_control):
+                # No growth. Store the result, so that a shrink is the new base.
+                await self._db.run(store)
+                continue
+            item = ScopeGrowth(
+                agent.id, agent.name, agent.version, added_read, added_control
+            )
+            # Keep the old baseline until HA accepts the notification. A
+            # failed notification is then sent again after the next reload.
+            if await self._report(item):
+                await self._db.run(store)
+            growth.append(item)
         return growth
 
-    async def _report(self, growth: ScopeGrowth) -> None:
+    async def _report(self, growth: ScopeGrowth) -> bool:
+        """Notify about the growth. Return true if HA accepted the notification."""
         added = sorted(growth.added_read | growth.added_control)
         listed = ", ".join(added[:MAX_LISTED])
         if len(added) > MAX_LISTED:
@@ -191,3 +197,8 @@ class ScopeMonitor:
             )
         except (HAError, TimeoutError) as err:
             _LOG.warning("cannot send the scope notification: %s", err)
+            return False
+        except Exception:
+            _LOG.exception("cannot send the scope notification")
+            return False
+        return True

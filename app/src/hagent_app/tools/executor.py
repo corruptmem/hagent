@@ -68,6 +68,8 @@ def needs_approval(definition: AgentDefinition, tool: Tool, prepared: Prepared) 
     if not tool.writes:
         # Service and entity approval applies to changes only.
         return False
+    if prepared.approval_required:
+        return True
     for name in prepared.services:
         domain = name.split(".", 1)[0]
         if name in approval.services or f"{domain}.*" in approval.services:
@@ -152,6 +154,12 @@ class ToolExecutor:
             return await self._deny(call, "unavailable", str(err))
         except (HAError, TimeoutError) as err:
             return await self._deny(call, "ha_error", f"the check failed: {err}")
+        except Exception:
+            # Fail closed, and record the attempt.
+            _LOG.exception("the check of tool %s failed", name)
+            return await self._deny(
+                call, "check_failed", "the check failed because of an internal error"
+            )
         call = AuditCall(
             call.agent_id,
             call.agent_version,

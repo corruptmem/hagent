@@ -49,6 +49,16 @@ def scope_of(ctx: ToolContext, env: ToolEnv) -> AgentScope:
         raise ScopeDeniedError("registry_unavailable", str(err)) from err
 
 
+def require_states(env: ToolEnv) -> None:
+    """Deny while the state cache is not loaded or may not match HA.
+
+    The group check and the data scan read the cache. An empty or old cache
+    would let them miss entities, so the tools fail closed.
+    """
+    if not env.states.ready or env.states.stale:
+        raise ScopeDeniedError("states_unavailable", "the HA state data is not current")
+
+
 def _state_data(env: ToolEnv, entity_id: str) -> dict[str, Any] | None:
     state = env.states.get(entity_id)
     if state is None:
@@ -89,6 +99,7 @@ class GetState(_ReadTool):
         self, ctx: ToolContext, env: ToolEnv, args: GetStateArgs
     ) -> Prepared:
         check_read(scope_of(ctx, env), [args.entity_id])
+        require_states(env)
         return Prepared({"entity_id": args.entity_id}, args.entity_id)
 
     async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
@@ -123,6 +134,7 @@ class FindEntities(_ReadTool):
         scope = scope_of(ctx, env)
         if not scope.can_read:
             raise ScopeDeniedError("level", "the agent has no HA read access")
+        require_states(env)
         reg = snapshot_or_none(env)
         if args.area_id is not None and reg is None:
             raise ScopeDeniedError(
@@ -314,8 +326,10 @@ class CallService(Tool):
         self, ctx: ToolContext, env: ToolEnv, args: CallServiceArgs
     ) -> Prepared:
         scope = scope_of(ctx, env)
+        require_states(env)
         reg = snapshot_or_none(env)
         known = frozenset(s.entity_id for s in env.states)
+        members = group_members(env)
         try:
             call = check_service_call(
                 scope,
@@ -326,19 +340,23 @@ class CallService(Tool):
                 data=args.data,
                 target=args.target,
                 return_response=args.return_response,
-                group_members=group_members(env),
+                group_members=members,
             )
         except RegistryUnavailableError as err:
             raise ScopeDeniedError("registry_unavailable", str(err)) from err
         previous = None
         note = None
+        approval_required = False
         entities = call.entities | call.data_entities
         if call.path == "admin":
-            entities = admin_entities(env.registry.last(), args.data, args.target)
+            found = admin_entities(reg, known, args.data, args.target, members)
+            entities = found.entities
             previous = {"states": _snapshot_states(env, entities)}
             note = "the states of the named entities before the call"
-            if reg is None:
-                note += "; the registry was stale, so only explicit entity IDs"
+            if not found.complete:
+                note += "; the entity scan did not finish, so the list can be short"
+                # Fail closed: the approval check cannot see every entity.
+                approval_required = bool(ctx.definition.approval.entities)
         return Prepared(
             call.request(),
             call,
@@ -346,6 +364,7 @@ class CallService(Tool):
             entities=entities,
             previous=previous,
             previous_note=note,
+            approval_required=approval_required,
         )
 
     async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
