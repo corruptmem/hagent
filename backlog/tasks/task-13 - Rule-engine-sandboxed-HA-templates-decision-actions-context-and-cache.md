@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:09'
+updated_date: '2026-11-15 02:21'
 labels:
   - app
   - rules
@@ -58,6 +58,8 @@ Security review fixes (task-13-fix):
 14. Regression tests from the review probes p1 to p9.
 
 15. M1: one agent uses at most 2 of the 4 workers at a time (parallel mode and Assist lanes run invocations of one agent at the same time). The worker read uses poll, not select.
+
+16. After the merge of task-14: the backtest clock reaches the worker; backtest and trial renders pass the agent as owner; regression tests through a backtest and a trial. check_template never runs template code.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -128,6 +130,18 @@ Residual risks:
 - The lazy rules/__init__.py can conflict with task-14 if task-14 adds exports there.
 
 Validation: mise run check passes (ruff, mypy strict, 1011 app tests, integration tests, frontend checks). In this worktree, integration/.venv-ha2611 had a damaged pytz (no __init__.py). uv sync --reinstall-package pytz fixed it. This was an environment fault, not a code fault.
+
+Merge of impl (task-14, backtests and trials) and follow-up fixes. Commits 64abb41 (merge) and d6384df.
+
+- The merge broke test_backtest.py::test_now_is_the_time_of_the_past_invocation. The worker rebuilt a plain TemplateClock from the time zone, so the fixed time of backtest.evaluate.FixedClock was lost. TemplateClock now has an optional field at (a fixed time). The render pool sends it to the worker. utcnow() follows the clock too. FixedClock becomes the function fixed_clock(tz, at).
+- DryRunEvaluator and the trial runner pass owner=agent.id, so the per-agent worker limit covers them. The dry-run path has no result cache. It runs check_writes before the action, as the live stage does.
+- Tests: test_backtest.py::test_backtest_renders_have_the_worker_limits (a stuck regex is killed in each case, a namespace bomb fails, a * width in the agreement template fails), test_trial_renders_have_the_worker_limits, test_utcnow_is_the_time_of_the_past_invocation.
+
+New finding (not in the review): Jinja's optimizer, and its constant folding of {{ }} output, ran filters and tests with constant arguments at compile time. check_template runs in the app process at self.create. Thus {{ ('aaa...!') is match('(a+)+$') }} blocked the event loop: 32 s for 30 characters, doubling with each character. Fix: the sandbox sets optimized=False, a code generator folds only literal text and constants, check_template uses a name tracker with no optimizer, and the check refuses {% autoescape %} (Jinja computes its argument at compile time). Tests: test_rule_render_pool.py::test_the_check_never_runs_template_code (3 cases), test_autoescape_is_refused, test_constant_output_still_renders.
+
+Residual: the per-agent cap does not separate backtests from live rules. Backtests of several agents can use all 4 workers for a short time. Each render ends within the time limit plus 0.5 s, so this causes a delay, not a stall.
+
+Validation: mise run check passes (1085 app tests, integration tests, frontend checks).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -146,4 +160,6 @@ Proposed follow-ups (not created): (1) management API routes to list rules with 
 Built the rule engine (design 10.1-10.6): package rules/ with a strict RuleSpec, a sandboxed Jinja engine with a documented HA subset (docs/rule-templates.md) that reads a state view filtered to the agent's scope, context items (history, action_response, store_file, invocation_history) with cache times, template and decision actions (one decision request with all questions), result templates with decline, writes through the tool executor (scope check, audit row, own-write observer, no approval gate), a result cache, immutable versions with statistics per version, rollback and reorder (migration 0700). The rule spec check is SPEC_CHECKS['rule']; the engine is the router's rule stage; the store serves the rule kind of the scheduler state store. Verified with mise run check (891 tests): scope tests for templates and every context item and write, approval denial at create and fire time, versions and rollback, cache, decision request shape, HA-restart and offline behaviour at engine and router level, sandbox limit probes, and 71 cases compared with HA 2026.11.1 render_template output.
 
 Security review fixes (H1 to L2): rule templates now render in worker processes with memory, CPU and wall-clock limits, an empty environment and a JSON reply. The app kills and replaces a stuck worker, and one agent uses at most 2 of the 4 workers. In-process checks now also cover a caught deadline, namespaces and dict views, the joined output, * format widths and int * int. The result cache key holds a digest of the visible entity IDs. Verified with mise run check (1011 app tests), including a regression test for each review probe.
+
+After the merge of task-14, the same worker limits cover backtests and trials (fixed backtest clock sent to the worker, per-agent owner). check_template no longer runs template code through Jinja's constant folding, which had let a constant regex block the event loop at create time. Verified with mise run check (1085 app tests), including regression tests through a backtest and a trial.
 <!-- SECTION:FINAL_SUMMARY:END -->
