@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:05'
+updated_date: '2026-11-15 02:06'
 labels:
   - packaging
 dependencies:
@@ -71,6 +71,8 @@ Verification:
 Open (user verifies on HA OS, README checklist): AC 1 (install from the local apps folder and start), AC 2 (integration copy and link), AC 4 (backup holds /data), task-6 AC 1 (Supervisor proxy and reconnect after an HA restart), config/auth/list with SUPERVISOR_TOKEN, auth/current_user matches the context user.
 
 Proposed follow-ups (not created): show the integration set-up values (host, port, secret) on the Settings page, so that a manual set-up does not need the api/integration URL; publish a prebuilt image so that HA does not build the image.
+
+Lead: merged into impl. The lead re-ran mise run smoke-app: passed. Status stays In Progress: the user chose to install by hand and will verify AC #1, #2 and #4 with the README checklist.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
