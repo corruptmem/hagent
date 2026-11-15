@@ -9,6 +9,9 @@ dependencies = [
     "genai-prices>=0.2.3",
     "httpx2>=2.16",
     "pydantic-ai-slim[openai,openrouter]>=2.68",
+    # 0.x: the interface can change between minor releases, so pin it.
+    "pydantic-ai-harness==0.68.0",
+    "jsonschema==4.26.0",
 ]
 
 [build-system]

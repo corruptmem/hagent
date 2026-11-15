@@ -22,7 +22,7 @@ Targets:
 - ``openrouter-anthropic``: OpenRouter chat API, ``anthropic/claude-haiku-5.5``
   (caching needs markers, which ``Caching`` adds).
 
-Run: ``uv run --group spike python spikes/task-5/agent_loop.py [target ...]``
+Run: ``uv run python spikes/task-5/agent_loop.py [target ...]``
 """
 
 from __future__ import annotations
