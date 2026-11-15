@@ -235,7 +235,8 @@ class RouterComponent:
         ``app_stopped``. A queued invocation stays in the table and runs
         after the next start. Its caller receives ``not_running``.
         """
-        self._stopping = True
+        async with self._lock:
+            self._stopping = True
         jobs = [j for lane in self._lanes.values() for j in lane.running]
         jobs += list(self._free)
         for job in jobs:
@@ -281,7 +282,7 @@ class RouterComponent:
 
     async def submit(self, request: InvocationRequest) -> InvocationHandle:
         """Accept one invocation and return its handle at once."""
-        if self._ctx is None or self._stopping:
+        if self._ctx is None:
             msg = "the router is not running"
             raise RouterNotRunningError(msg)
         db = self._ctx.db
@@ -290,6 +291,9 @@ class RouterComponent:
         )
         handle = InvocationHandle(job.id, job.future)
         async with self._lock:
+            if self._stopping:
+                msg = "the router is not running"
+                raise RouterNotRunningError(msg)
             agent = await self._agents().get(request.agent_id)
             if agent is None:
                 job.future.set_result(
@@ -312,6 +316,10 @@ class RouterComponent:
                 await self._refuse(job, QUEUE_FULL, f"{size} invocations run")
                 return handle
             await db.run(lambda c: store.insert(c, job.id, request, status="queued"))
+            # A job of this lane can end during the insert, and its done
+            # callback then removes the empty lane. Only ``submit`` creates
+            # lanes, under the lock, so the same lane object goes back.
+            self._lanes[request.queue_key] = lane
             if mode == "restart":
                 for other in [*lane.running, *lane.waiting]:
                     self._cancel_job(lane, other, "cancelled")
@@ -365,7 +373,12 @@ class RouterComponent:
                 msg = f"no agent with ID {agent_id!r}"
                 raise AgentNotFoundError(msg)
             agent = found
-        request = InvocationRequest(agent_id, "test", text=text, data=data or {})
+        # A draft test ran a definition that no version holds. The marker
+        # tells history readers that agent_version is only the base.
+        caller = {"draft": True} if definition is not None else {}
+        request = InvocationRequest(
+            agent_id, "test", text=text, data=data or {}, caller=caller
+        )
         samples = {
             eid: sample_state(eid, value) for eid, value in (states or {}).items()
         }

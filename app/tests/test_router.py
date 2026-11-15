@@ -299,6 +299,60 @@ async def test_agent_turned_off_while_queued_does_not_run(env: Env) -> None:
     assert len(env.turns.calls) == 1
 
 
+class PausingDb:
+    """A database wrapper that holds the router's queue insert until
+    ``release`` is set. Other calls pass at once."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self.armed = False
+        self.waiting = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def run(self, fn: Callable[[sqlite3.Connection], Any]) -> Any:
+        if self.armed and "insert" in fn.__code__.co_names:
+            self.armed = False
+            self.waiting.set()
+            await self.release.wait()
+        return await self._db.run(fn)
+
+    async def close(self) -> None:
+        await self._db.close()
+
+
+async def test_a_job_that_ends_during_submit_keeps_the_lane(env: Env) -> None:
+    agent = await env.agent(concurrency={"mode": "queued"})
+    await env.router.stop()
+    db = PausingDb(env.h.db)
+    ctx = AppContext(env.ctx.config, db, env.ctx.ha, env.ctx.states, "x")  # type: ignore[arg-type]
+    env.router = RouterComponent(env.turns)
+    await env.router.start(ctx)
+    env.turns.gated = True
+
+    first = await env.router.submit(req(agent, "a"))
+    await started(env.turns, 1)
+    db.armed = True
+    second_task = asyncio.create_task(env.router.submit(req(agent, "b")))
+    await db.waiting.wait()
+    # The first invocation ends while the second one is in its insert.
+    env.turns.calls[0].release.set()
+    assert (await first.result()).result == "a"
+    db.release.set()
+    second = await second_task
+    await started(env.turns, 2)
+    third = await env.router.submit(req(agent, "c"))
+    # The third invocation waits behind the second one in the same lane.
+    lane = env.router._lanes[agent.id]
+    assert [j.id for j in lane.waiting] == [third.invocation_id]
+    assert [j.id for j in lane.running] == [second.invocation_id]
+    env.turns.calls[1].release.set()
+    assert (await second.result()).result == "b"
+    await started(env.turns, 3)
+    env.turns.calls[2].release.set()
+    assert (await third.result()).result == "c"
+    assert env.turns.max_running == 1
+
+
 # ------------------------------------------------------- AC2: Assist lanes
 
 
@@ -348,11 +402,13 @@ class VersionedRules:
     def __init__(self) -> None:
         self.version = 1
         self.seen: list[int] = []
+        self.entered = 0
         self.gate = asyncio.Event()
         self.gate.set()
 
     async def try_rules(self, request: RuleRequest) -> RuleOutcome:
         version = self.version  # the snapshot of this invocation
+        self.entered += 1
         await self.gate.wait()
         self.seen.append(version)
         return RuleOutcome(
@@ -375,7 +431,7 @@ async def test_changes_take_effect_only_between_invocations(env: Env) -> None:
     rules.gate.clear()
     first = await env.router.submit(req(agent, "a"))
     second = await env.router.submit(req(agent, "b"))
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: rules.entered == 1)
     # The first invocation started with definition 1 and rule set 1.
     edited = await env.edit(agent, instructions="New instructions.")
     assert edited.version == 2

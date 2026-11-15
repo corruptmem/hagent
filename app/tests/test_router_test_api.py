@@ -175,6 +175,9 @@ async def test_test_invocation_of_a_draft_definition(env: Env) -> None:
     assert status == 200, body
     assert body["result"] == "draft answer"
     assert "Draft instructions." in str(env.chat.calls[0].info.instructions)
+    row = await env.router.get(body["invocation_id"])
+    assert row is not None
+    assert row["request"]["caller"] == {"draft": True}
     # The draft is not saved.
     current = await env.h.agents.get(agent.id)
     assert current.version == 1
