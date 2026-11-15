@@ -55,10 +55,12 @@ function Editor({ initial, agent, onReload }: EditorProps) {
   // The store picker. If the list does not load, the knowledge editor
   // falls back to a store ID field.
   const storeList = useQuery(storesQuery());
-  const stores = storeList.data?.map((s) => ({
-    id: s.id,
-    name: s.private ? `${s.name} (private)` : s.name,
-  }));
+  const stores = storeList.isError
+    ? undefined
+    : (storeList.data ?? []).map((s) => ({
+        id: s.id,
+        name: s.private ? `${s.name} (private)` : s.name,
+      }));
   const [draft, setDraft] = useState(initial);
   const [baseVersion] = useState(agent?.version ?? 0);
   const [badJson, setBadJson] = useState<Set<string>>(new Set());

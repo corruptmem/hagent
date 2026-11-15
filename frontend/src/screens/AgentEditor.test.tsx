@@ -255,7 +255,7 @@ describe("agent editor", () => {
     renderApp(`/agents/${AGENT_ID}`);
     await screen.findByDisplayValue("Test agent");
     await userEvent.click(
-      screen.getByRole("button", { name: "Attach a store" }),
+      await screen.findByRole("button", { name: "Attach a store" }),
     );
     expect(screen.getByLabelText("Store ID 2")).toBeInTheDocument();
   });
