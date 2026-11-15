@@ -74,6 +74,7 @@ _LOG = logging.getLogger(__name__)
 
 type Mode = Literal["queued", "single", "restart", "parallel"]
 type ResultListener = Callable[[InvocationResult], None]
+type ActivityListener = Callable[[str, int], None]
 
 # Stop reasons of an agent turn -> fallback reasons (design section 9.7).
 _REASONS: dict[str, FallbackReason] = {
@@ -209,6 +210,7 @@ class RouterComponent:
         self._free: set[_Job] = set()
         self._lock = asyncio.Lock()
         self._listeners: list[ResultListener] = []
+        self._activity: list[ActivityListener] = []
         self._stopping = False
 
     # ------------------------------------------------------------ lifecycle
@@ -274,6 +276,32 @@ class RouterComponent:
         caller waits for. ``listener`` is a plain function. It must be fast.
         """
         self._listeners.append(listener)
+
+    def add_activity_listener(self, listener: ActivityListener) -> None:
+        """Call ``listener(agent_id, running)`` when an invocation starts or ends.
+
+        ``running`` is the number of invocations of the agent that run now,
+        in every lane of the agent (also Assist lanes). Test invocations do
+        not count. Task-17 uses it for the status sensor. ``listener`` is a
+        plain function. It must be fast.
+        """
+        self._activity.append(listener)
+
+    def running_count(self, agent_id: str) -> int:
+        """The number of invocations of ``agent_id`` that run now."""
+        return sum(
+            len(lane.running)
+            for key, lane in self._lanes.items()
+            if key == agent_id or key.startswith(f"{agent_id}/")
+        )
+
+    def _notify_activity(self, agent_id: str) -> None:
+        running = self.running_count(agent_id)
+        for listener in list(self._activity):
+            try:
+                listener(agent_id, running)
+            except Exception:
+                _LOG.exception("an activity listener failed")
 
     async def invoke(self, request: InvocationRequest) -> InvocationResult:
         """Submit the invocation and wait for its result."""
@@ -423,14 +451,15 @@ class RouterComponent:
         lane.running.add(job)
         job.task = asyncio.create_task(self._run(job), name=f"invocation-{job.id}")
         job.task.add_done_callback(lambda _t: self._done(lane, job))
+        self._notify_activity(job.request.agent_id)
 
     def _done(self, lane: _Lane, job: _Job) -> None:
         lane.running.discard(job)
-        if self._stopping:
-            return
-        self._pump(lane)
-        if not lane.running and not lane.waiting:
-            self._lanes.pop(lane.key, None)
+        if not self._stopping:
+            self._pump(lane)
+            if not lane.running and not lane.waiting:
+                self._lanes.pop(lane.key, None)
+        self._notify_activity(job.request.agent_id)
 
     def _cancel_job(self, lane: _Lane, job: _Job, reason: str) -> None:
         job.cancel_reason = reason
@@ -513,6 +542,7 @@ class RouterComponent:
                     conversation_id=request.conversation_id,
                     result_schema=request.result_schema,
                     dry_run=job.dry_run,
+                    attachments=request.attachments,
                 ),
                 states=job.states,
             )

@@ -150,6 +150,7 @@ async def test_default_components_serve_the_api(
         "rules",
         "router",
         "scheduler",
+        "link",
         "ha_catalog",
         "ui",
         "http",

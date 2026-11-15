@@ -14,6 +14,8 @@ node = "24"
 description = "Install dependencies and git hooks"
 run = [
   "uv sync --all-packages",
+  "uv sync --project integration",
+  "UV_PROJECT_ENVIRONMENT=.venv-ha2611 uv sync --project integration --no-default-groups --group ha2611",
   "npm ci --prefix frontend",
   "pre-commit install",
 ]
@@ -34,6 +36,24 @@ run = "uv run mypy"
 description = "Run tests"
 run = "uv run pytest"
 
+# The HA integration has its own uv project (integration/pyproject.toml),
+# because HA Core pins conflict with the app. Two environments:
+# integration/.venv (HA Core 2026.10.4 with pytest-homeassistant-custom-
+# component) and integration/.venv-ha2611 (HA Core 2026.11.1, for mypy and
+# the EVALUATE tests).
+[tasks.test-integration]
+description = "Integration tests against HA Core in memory"
+dir = "integration"
+run = [
+  "uv run pytest",
+  "UV_PROJECT_ENVIRONMENT=.venv-ha2611 uv run --no-default-groups --group ha2611 pytest tests_ha2611",
+]
+
+[tasks.typecheck-integration]
+description = "Static type checking of the integration (HA Core 2026.11.1)"
+dir = "integration"
+run = "UV_PROJECT_ENVIRONMENT=.venv-ha2611 uv run --no-default-groups --group ha2611 mypy"
+
 [tasks.frontend]
 description = "Front end: eslint, prettier, tsc and vitest"
 dir = "frontend"
@@ -46,4 +66,11 @@ run = "npm run build"
 
 [tasks.check]
 description = "Run every check that CI and pre-commit run"
-depends = ["lint", "typecheck", "test", "frontend"]
+depends = [
+  "lint",
+  "typecheck",
+  "test",
+  "typecheck-integration",
+  "test-integration",
+  "frontend",
+]

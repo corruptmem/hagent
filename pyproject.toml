@@ -7,6 +7,8 @@
 
 [tool.uv.workspace]
 members = ["app"]
+# integration/ is its own uv project with its own lock (HA Core pins).
+exclude = ["integration"]
 
 [dependency-groups]
 dev = [
@@ -33,6 +35,8 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "**/tests/**" = ["S101", "S105", "PLR2004"]
+"integration/tests/**" = ["S101", "S105", "S106", "PLR2004"]
+"**/tests_ha2611/**" = ["S101", "S105", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.14"

@@ -67,18 +67,27 @@ class IngressGuard:
     starts: ``http.add_middleware(guard.middleware)``.
 
     ``exempt_prefixes`` lists path prefixes that the guard does not check.
-    It is empty. A later connection that does not come through Ingress, for
-    example the integration link, must authenticate itself and can add its
-    path here, or use its own port.
+    ``exempt_paths`` lists exact paths that the guard does not check. A
+    connection that does not come through Ingress must authenticate itself.
+    The integration link uses ``exempt_paths``, so that no subpath of the
+    link path escapes the check.
     """
 
     name = "ingress_guard"
 
-    def __init__(self, *, exempt_prefixes: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        exempt_prefixes: Sequence[str] = (),
+        exempt_paths: Sequence[str] = (),
+    ) -> None:
         self._exempt = tuple(exempt_prefixes)
+        self._exempt_exact = frozenset(exempt_paths)
         self._networks: tuple[Network, ...] | None = None
 
     def _exempt_path(self, path: str) -> bool:
+        if path in self._exempt_exact:
+            return True
         # A prefix matches whole path segments: "/link" exempts "/link" and
         # "/link/ws", not "/linkx".
         return any(

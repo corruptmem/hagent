@@ -30,7 +30,9 @@ sets the UI stack. Design section 7 sets the data that the API manages.
   `172.30.32.2` (design section 6.1). It refuses other addresses with 403
   `forbidden`. It uses the address of the TCP peer, not a header. Before the
   app is ready, it refuses all requests with 503 `not_ready`. See "Ingress
-  options".
+  options". One path is exempt: the integration link, `api/link/ws`. HA
+  Core connects to it directly, and the link checks a shared secret
+  instead (see "Integration link").
 - The API does not ask for a login. HA authenticates the user before
   Ingress forwards a request (design section 6.1).
 - Request and response bodies are JSON objects, with the content type
@@ -1004,6 +1006,44 @@ problem and does not send.
 Limit: a user can link any device tracker to a person. A notification can
 therefore reach the phone of another person. That phone cannot approve,
 because the app checks the HA user that sends each answer.
+
+## Integration link
+
+The HA integration connects to the app over a WebSocket, the **integration
+link**. `docs/link.md` describes the link protocol. The management UI does
+not use the link.
+
+`GET api/link/ws` opens the link. It is the only path that the Ingress
+guard does not check (the exact path, not its subpaths), because HA Core connects from its own address. The
+request must carry `Authorization: Bearer <secret>`. Without the right
+secret, the app answers 401 `unauthorized` and does not open the WebSocket.
+
+### Set-up information
+
+`GET api/integration` returns what the integration set-up needs. The
+Ingress guard checks this route like every other route, so only HA
+administrators can read the secret.
+
+```json
+{"host": "<app host name>", "port": 8099, "path": "/api/link/ws",
+ "secret": "<shared secret>", "protocol": 1, "connections": 1}
+```
+
+- `host`: the host name of the app on the internal network.
+- `secret`: the shared secret. The app creates it on the first start and
+  keeps it in the file `link_secret` in the data directory (mode 0600).
+- `connections`: the number of open link connections.
+
+### Link options
+
+The `link` section of the app options has these keys:
+
+| Key | Default | Content |
+|---|---|---|
+| `discovery` | `true` | Send the host, the port and the secret to the Supervisor. HA then offers to set up the integration. It applies only inside an app container. |
+| `supervisor_url` | `"http://supervisor"` | The Supervisor API. |
+| `host` | `""` | The host name for the integration. An empty value selects the host name of the container. |
+| `refresh_seconds` | `300` | The interval of the full agent refresh on the link (cost today and budget state). |
 
 ## Change events
 

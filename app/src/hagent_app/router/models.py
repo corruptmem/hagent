@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal
+
+from hagent_app.turns.models import Attachment, check_attachments
 
 type InvocationStatus = Literal[
     "queued", "running", "ok", "fallback", "error", "cancelled"
@@ -68,6 +71,9 @@ class InvocationRequest:
       definition for this invocation (an AI Task structure).
     - ``caller``: metadata of the source, for history only. For example the
       automation, the schedule or the event that started the invocation.
+    - ``attachments``: files for the model (AI Task attachments). The
+      request refuses unsupported types and a total size above the limit
+      (``ValueError``). The caller data gets their names, types and sizes.
     """
 
     agent_id: str
@@ -77,8 +83,10 @@ class InvocationRequest:
     conversation_id: str | None = None
     result_schema: Mapping[str, Any] | None = None
     caller: Mapping[str, Any] = field(default_factory=dict)
+    attachments: tuple[Attachment, ...] = ()
 
     def __post_init__(self) -> None:
+        check_attachments(self.attachments)
         if self.source not in SOURCES:
             msg = f"unknown invocation source {self.source!r}"
             raise ValueError(msg)
@@ -109,6 +117,8 @@ class InvocationRequest:
         data = dict(self.data)
         if self.text is not None:
             data["text"] = self.text
+        if self.attachments:
+            data["attachments"] = [a.summary for a in self.attachments]
         return data
 
     def to_json(self) -> str:
@@ -124,6 +134,14 @@ class InvocationRequest:
                     None if self.result_schema is None else dict(self.result_schema)
                 ),
                 "caller": dict(self.caller),
+                "attachments": [
+                    {
+                        "name": a.name,
+                        "mime_type": a.mime_type,
+                        "data": base64.b64encode(a.data).decode("ascii"),
+                    }
+                    for a in self.attachments
+                ],
             },
             ensure_ascii=False,
             default=str,
@@ -141,6 +159,10 @@ class InvocationRequest:
             conversation_id=raw.get("conversation_id"),
             result_schema=raw.get("result_schema"),
             caller=raw.get("caller") or {},
+            attachments=tuple(
+                Attachment(a["name"], a["mime_type"], base64.b64decode(a["data"]))
+                for a in raw.get("attachments") or ()
+            ),
         )
 
 
