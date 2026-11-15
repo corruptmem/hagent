@@ -10,6 +10,7 @@ To add a component, add it to ``default_components``. See ``app/README.md``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 import uuid
@@ -72,6 +73,7 @@ def default_components() -> list[Component]:  # noqa: PLR0915 - one wiring list
     from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
     from hagent_app.link import LinkComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.providers.config import PROVIDERS  # noqa: PLC0415 - import cycle
     from hagent_app.router import (  # noqa: PLC0415 - import cycle
         RetryingChatModels,
         RouterComponent,
@@ -79,6 +81,9 @@ def default_components() -> list[Component]:  # noqa: PLR0915 - one wiring list
     from hagent_app.rules import RulesComponent  # noqa: PLC0415 - import cycle
     from hagent_app.scheduler import SchedulerComponent  # noqa: PLC0415 - import cycle
     from hagent_app.settings import SettingsComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.settings.component import (  # noqa: PLC0415 - import cycle
+        SettingsNotStartedError,
+    )
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -131,17 +136,29 @@ def default_components() -> list[Component]:  # noqa: PLR0915 - one wiring list
     scheduler.state_store.rules = rules.agent_state
     tools.calls = scheduler.calls
 
-    # The inspect area reads the tables of other areas and publishes the
-    # invocations change events from the router listeners.
-    inspect_area = InspectComponent(http.events, tools=tools, router=router)
-    http.add_routes(inspect_area.routes())
-
     async def agent_cost(agent_id: str) -> tuple[Decimal, Decimal]:
         state = await providers.meter.budget_state(agent_id)
         return state.spent_usd, state.remaining_usd
 
     link = LinkComponent(http.events, router, cost=agent_cost)
     http.add_routes(link.routes())
+
+    def inspect_secrets() -> list[str]:
+        values = [link.secret]
+        with contextlib.suppress(SettingsNotStartedError):
+            for provider in PROVIDERS:
+                key = settings.keys.key(provider)
+                if key:
+                    values.append(key.reveal())
+        return values
+
+    # The inspect area reads the tables of other areas and publishes the
+    # invocations change events from the router listeners. Its responses
+    # never hold an API key or the link secret.
+    inspect_area = InspectComponent(
+        http.events, tools=tools, router=router, secrets=inspect_secrets
+    )
+    http.add_routes(inspect_area.routes())
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()

@@ -94,6 +94,24 @@ describe("rules", () => {
     expect(screen.getByText("No trials.")).toBeInTheDocument();
   });
 
+  it("shows the spec of an earlier version", async () => {
+    rulesApi((call) =>
+      call.path === `${BASE}/${RULE_ID}/versions/1`
+        ? {
+            status: 200,
+            body: { rule_id: RULE_ID, version: 1, spec: { name: "first try" } },
+          }
+        : undefined,
+    );
+    renderApp(`/inspect/rules/${AGENT_ID}/${RULE_ID}`);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Spec 1" }),
+    );
+    expect(await screen.findByLabelText("Spec of version 1")).toHaveTextContent(
+      "first try",
+    );
+  });
+
   it("turns a rule off, rolls it back and deletes it", async () => {
     const api = rulesApi((call) => {
       if (call.method === "POST" && call.path.endsWith("/state")) {

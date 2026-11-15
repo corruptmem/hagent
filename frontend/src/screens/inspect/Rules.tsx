@@ -74,72 +74,112 @@ export function Rules() {
   );
 }
 
+/** The spec of one rule version, loaded through the rule routes. */
+function VersionSpec({
+  agentId,
+  ruleId,
+  version,
+}: {
+  agentId: string;
+  ruleId: string;
+  version: number;
+}) {
+  const spec = useQuery({
+    queryKey: [...keys.rule(agentId, ruleId), "version", version],
+    queryFn: () => api.getRuleVersion(agentId, ruleId, version),
+    staleTime: Infinity,
+  });
+  if (spec.error) return <ErrorMessage error={spec.error} />;
+  return spec.data ? (
+    <Json label={`Spec of version ${String(version)}`} value={spec.data.spec} />
+  ) : (
+    <p className="muted">Loading…</p>
+  );
+}
+
 function Versions({
+  agentId,
   rule,
   onRollback,
   busy,
 }: {
+  agentId: string;
   rule: RuleDetail;
   onRollback: (version: number) => void;
   busy: boolean;
 }) {
+  const [shown, setShown] = useState<number | null>(null);
   return (
-    <table className="data" aria-label="Versions">
-      <thead>
-        <tr>
-          <th>Version</th>
-          <th>Matched</th>
-          <th>Answered</th>
-          <th>Declined</th>
-          <th>Cache hits</th>
-          <th>Errors</th>
-          <th>Cost</th>
-          <th>Backtest agreement</th>
-          <th>Trial agreement</th>
-          <th />
-        </tr>
-      </thead>
-      <tbody>
-        {rule.versions.map((v) => (
-          <tr
-            key={v.version}
-            className={v.version === rule.current_version ? "selected" : ""}
-          >
-            <td>
-              {v.version}
-              {v.version === rule.current_version ? " (current)" : ""}
-            </td>
-            <td>{v.matched}</td>
-            <td>{v.answered}</td>
-            <td>{v.declined}</td>
-            <td>{v.cache_hits}</td>
-            <td title={v.last_error ?? undefined}>{v.errors}</td>
-            <td>{formatUsd(v.cost_usd)}</td>
-            <td>
-              {formatRate(v.backtest?.agreement_rate)} ({v.backtest?.runs ?? 0}{" "}
-              runs)
-            </td>
-            <td>
-              {formatRate(v.trial?.agreement_rate)} ({v.trial?.agreed ?? 0}/
-              {(v.trial?.agreed ?? 0) + (v.trial?.disagreed ?? 0)})
-            </td>
-            <td>
-              {v.version !== rule.current_version && !rule.deleted ? (
+    <>
+      <table className="data" aria-label="Versions">
+        <thead>
+          <tr>
+            <th>Version</th>
+            <th>Matched</th>
+            <th>Answered</th>
+            <th>Declined</th>
+            <th>Cache hits</th>
+            <th>Errors</th>
+            <th>Cost</th>
+            <th>Backtest agreement</th>
+            <th>Trial agreement</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {rule.versions.map((v) => (
+            <tr
+              key={v.version}
+              className={v.version === rule.current_version ? "selected" : ""}
+            >
+              <td>
+                {v.version}
+                {v.version === rule.current_version ? " (current)" : ""}
+              </td>
+              <td>{v.matched}</td>
+              <td>{v.answered}</td>
+              <td>{v.declined}</td>
+              <td>{v.cache_hits}</td>
+              <td title={v.last_error ?? undefined}>{v.errors}</td>
+              <td>{formatUsd(v.cost_usd)}</td>
+              <td>
+                {formatRate(v.backtest?.agreement_rate)} (
+                {v.backtest?.runs ?? 0} runs)
+              </td>
+              <td>
+                {formatRate(v.trial?.agreement_rate)} ({v.trial?.agreed ?? 0}/
+                {(v.trial?.agreed ?? 0) + (v.trial?.disagreed ?? 0)})
+              </td>
+              <td>
                 <button
                   type="button"
-                  disabled={busy}
+                  aria-expanded={shown === v.version}
                   onClick={() => {
-                    onRollback(v.version);
+                    setShown(shown === v.version ? null : v.version);
                   }}
                 >
-                  Roll back to {v.version}
+                  Spec {v.version}
                 </button>
-              ) : null}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+                {v.version !== rule.current_version && !rule.deleted ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      onRollback(v.version);
+                    }}
+                  >
+                    Roll back to {v.version}
+                  </button>
+                ) : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {shown === null ? null : (
+        <VersionSpec agentId={agentId} ruleId={rule.id} version={shown} />
+      )}
+    </>
   );
 }
 
@@ -251,6 +291,7 @@ export function RuleView({
       ) : null}
       <h3>Versions and statistics</h3>
       <Versions
+        agentId={agentId}
         rule={data}
         busy={busy}
         onRollback={(v) => {

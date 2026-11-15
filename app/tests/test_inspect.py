@@ -20,8 +20,10 @@ from hagent_app.http.events import ChangeEvent, ChangeEvents
 from hagent_app.inspection import InspectComponent
 from hagent_app.link.secret import load_or_create_secret
 from hagent_app.providers.meter import local_now
+from hagent_app.router import InvocationRequest, RouterComponent
 from hagent_app.router.models import InvocationResult
 from hagent_app.tools import ToolContext, ToolsComponent
+from hagent_app.turns.models import TurnResult
 from helpers.tools import Harness, harness
 from helpers.wait import wait_until
 
@@ -42,6 +44,7 @@ class Env:
     inspect: InspectComponent
     events: list[ChangeEvent]
     data_dir: Path
+    link_secret: str
 
     async def sql(self, statement: str, *args: Any) -> None:
         def run(conn: sqlite3.Connection) -> None:
@@ -124,14 +127,17 @@ async def env(tmp_path: Path) -> AsyncIterator[Env]:
         seen: list[ChangeEvent] = []
         events.subscribe(seen.append)
         tools = ToolsComponent()
-        inspect = InspectComponent(events, tools=tools)
+        link_secret = load_or_create_secret(tmp_path)
+        inspect = InspectComponent(
+            events, tools=tools, secrets=lambda: [API_KEY, link_secret, "short"]
+        )
         await tools.start(ctx)
         await inspect.start(ctx)
         await wait_until(
             lambda: tools.registry is not None and not tools.registry.stale
         )
         try:
-            yield Env(h, tools, inspect, seen, tmp_path)
+            yield Env(h, tools, inspect, seen, tmp_path, link_secret)
         finally:
             await inspect.stop()
             await tools.stop()
@@ -587,18 +593,21 @@ async def test_router_results_publish_invocation_events(env: Env) -> None:
 
 
 async def test_no_route_returns_a_secret(env: Env, api: TestClient[Any, Any]) -> None:
+    """A secret that leaks into a record never reaches the UI."""
     agent = await env.h.agent()
-    link_secret = load_or_create_secret(env.data_dir)
-    await env.sql(
-        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
-        "key.openai",
-        json.dumps(API_KEY),
-        datetime.now(UTC).isoformat(),
-    )
-    await env.invocation(agent, _hex("1"))
+    leak = f"key {API_KEY} secret {env.link_secret}"
+    await env.invocation(agent, _hex("1"), request={"data": {"note": leak}})
+    await env.sql("UPDATE invocations SET error = ? WHERE id = ?", leak, _hex("1"))
     await env.provider_call(agent.id, _hex("1"))
+    await env.sql("UPDATE provider_calls SET error = ?", leak)
+    await env.tools.executor().execute(
+        ToolContext(agent, invocation_id=_hex("1")),
+        "ha.get_state",
+        {"entity_id": leak},
+    )
     paths = [
         "/api/inspect/invocations",
+        f"/api/inspect/invocations?q={API_KEY}",
         f"/api/inspect/invocations/{_hex('1')}",
         "/api/inspect/audit",
         "/api/inspect/schedules",
@@ -609,8 +618,46 @@ async def test_no_route_returns_a_secret(env: Env, api: TestClient[Any, Any]) ->
         resp = await api.get(path)
         text = await resp.text()
         assert resp.status == 200, path
-        assert API_KEY not in text
-        assert link_secret not in text
+        assert API_KEY not in text, path
+        assert env.link_secret not in text, path
+    _, body = await _get(api, f"/api/inspect/invocations/{_hex('1')}")
+    assert body["invocation"]["error"] == "key [redacted] secret [redacted]"
+    assert body["provider_calls"][0]["error"] == "key [redacted] secret [redacted]"
+    assert "[redacted]" in json.dumps(body["audit"])
+
+
+async def test_the_real_router_publishes_invocation_events(env: Env) -> None:
+    class Turns:
+        class History:
+            async def get(self, turn_id: str) -> None:
+                return None
+
+        history = History()
+
+        async def run_turn(self, agent: Agent, turn: Any, **_: Any) -> TurnResult:
+            return TurnResult(turn_id=f"t-{turn.invocation_id}", status="ok", result=1)
+
+    events = ChangeEvents()
+    seen: list[ChangeEvent] = []
+    events.subscribe(seen.append)
+    router = RouterComponent(Turns(), tools=env.tools)
+    InspectComponent(events, router=router)
+    config = Config(ha_url=env.h.ha.url, ha_token=env.h.ha.token, data_dir=env.data_dir)
+    await router.start(AppContext(config, env.h.db, env.h.client, env.h.states, "i"))
+    try:
+        agent = await env.h.agent()
+        result = await router.invoke(InvocationRequest(agent.id, "invoke"))
+        assert result.status == "ok"
+        await wait_until(lambda: any(e.action == "finished" for e in seen))
+    finally:
+        await router.stop()
+    finished = [e for e in seen if e.action == "finished"]
+    assert [(e.topic, e.id) for e in finished] == [
+        ("invocations", result.invocation_id)
+    ]
+    activity = [e for e in seen if e.action == "activity"]
+    assert [e.data for e in activity] == [{"running": 1}, {"running": 0}]
+    assert all(e.id == agent.id for e in activity)
 
 
 async def test_routes_answer_503_before_start(tmp_path: Path) -> None:

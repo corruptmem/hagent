@@ -6,6 +6,7 @@ the agent ID.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,9 @@ DECISIONS = frozenset({"allowed", "denied"})
 MAX_LIMIT = 500
 MAX_DAYS = 366
 MAX_TEXT = 200
+
+
+REDACTED = "[redacted]"
 
 
 def _limit(request: web.Request, default: int = 100) -> int:
@@ -96,6 +100,13 @@ class InspectApi:
     async def _run(self, fn: Any) -> Any:
         return await self._component.db().run(fn)
 
+    def _json(self, data: Any) -> web.Response:
+        """A JSON response with each secret value replaced."""
+        text = json.dumps(data, ensure_ascii=False)
+        for secret in self._component.secrets():
+            text = text.replace(json.dumps(secret)[1:-1], REDACTED)
+        return web.json_response(text=text)
+
     async def invocations(self, request: web.Request) -> web.Response:
         """The invocation list, with filters and the history search."""
         filters = queries.InvocationFilter(
@@ -112,7 +123,7 @@ class InspectApi:
         def run(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             return queries.list_invocations(conn, filters)
 
-        return web.json_response({"invocations": await self._run(run)})
+        return self._json({"invocations": await self._run(run)})
 
     async def trace(self, request: web.Request) -> web.Response:
         """The full trace of one invocation."""
@@ -124,7 +135,7 @@ class InspectApi:
         found = await self._run(run)
         if found is None:
             raise ApiError(404, "invocation_not_found", "no invocation with this ID")
-        return web.json_response(found)
+        return self._json(found)
 
     async def audit(self, request: web.Request) -> web.Response:
         """The audit log: changes to HA and denied calls, newest first."""
@@ -142,7 +153,7 @@ class InspectApi:
         def run(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             return queries.list_audit(conn, filters)
 
-        return web.json_response({"entries": await self._run(run)})
+        return self._json({"entries": await self._run(run)})
 
     async def schedules(self, request: web.Request) -> web.Response:
         """Schedules and subscriptions, with their last runs and events."""
@@ -151,7 +162,7 @@ class InspectApi:
         def run(conn: sqlite3.Connection) -> dict[str, Any]:
             return queries.schedules(conn, agent_id)
 
-        return web.json_response(await self._run(run))
+        return self._json(await self._run(run))
 
     async def cost(self, request: web.Request) -> web.Response:
         """Cost totals by agent, day, path and call type."""
@@ -165,7 +176,7 @@ class InspectApi:
         def run(conn: sqlite3.Connection) -> dict[str, Any]:
             return queries.cost(conn, since, agent_id)
 
-        return web.json_response(await self._run(run))
+        return self._json(await self._run(run))
 
     async def permissions(self, request: web.Request) -> web.Response:
         """The effective scopes of one agent and its denied calls."""
@@ -177,4 +188,4 @@ class InspectApi:
             return queries.denied_calls(conn, agent.id, limit)
 
         view["denied"] = await self._run(run)
-        return web.json_response(view)
+        return self._json(view)

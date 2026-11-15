@@ -1318,7 +1318,9 @@ Rules for all inspect routes:
 
 - No route returns an API key, the link secret or an approval action ID.
   The app replaces each approval action ID and approval tag with
-  `[redacted]`.
+  `[redacted]`. It also replaces each stored API key and the link secret
+  with `[redacted]` in every response, also inside error text and tool
+  results.
 - `limit` is 1 to 500. The default is 100.
 - `agent_id` is optional where this section does not put it in the path.
   It must be 32 hexadecimal characters.

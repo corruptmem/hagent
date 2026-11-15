@@ -6,13 +6,17 @@ HTTP server::
     inspect = InspectComponent(http.events, tools=tools, router=router)
     http.add_routes(inspect.routes())
 
-The component reads the tables of other areas, but it never writes. It
+The component reads the tables of other areas, but it never writes.
+``secrets`` returns the current API keys and the link secret. Each response
+replaces them with ``[redacted]``, as a second barrier behind the redaction
+when the records are written. It
 publishes the ``invocations`` change events from the router listeners, so
 that the UI lists update live.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
 from hagent_app.agents import AgentReader
@@ -31,6 +35,9 @@ if TYPE_CHECKING:
     from hagent_app.router.models import InvocationResult
     from hagent_app.storage import Database
     from hagent_app.tools import ToolsComponent
+
+
+_MIN_SECRET = 8
 
 
 def _scope_view(scope: ResolvedScope, known: list[str]) -> dict[str, Any]:
@@ -54,9 +61,11 @@ class InspectComponent:
         *,
         tools: ToolsComponent | None = None,
         router: RouterComponent | None = None,
+        secrets: Callable[[], Iterable[str]] | None = None,
     ) -> None:
         self._events = events
         self._tools = tools
+        self._secrets = secrets
         self._ctx: AppContext | None = None
         self._agents: AgentReader | None = None
         if router is not None:
@@ -78,6 +87,16 @@ class InspectComponent:
         self._agents = None
 
     # ------------------------------------------------------------ helpers
+
+    def secrets(self) -> list[str]:
+        """The secret values that no response may hold: API keys, link secret.
+
+        Short values are skipped: a scrub of a short text would damage the
+        data and protects nothing.
+        """
+        if self._secrets is None:
+            return []
+        return [s for s in self._secrets() if len(s) >= _MIN_SECRET]
 
     def db(self) -> Database:
         """The database. Answer 503 before start."""

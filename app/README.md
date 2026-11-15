@@ -1136,6 +1136,10 @@ describes them.
   rules through the rule routes of `backtest/api.py`.
 - Each payload passes `scheduler.redact.redact`, so that an approval
   action ID never reaches the UI.
+- Each response replaces the current API keys and the link secret with
+  `[redacted]`. `default_components()` gives the component a function
+  that returns these values. Values shorter than 8 characters are not
+  replaced.
 - Permissions resolve the scope with `tools.scope.agent_scope` and the
   last registry snapshot. The entity list comes from the state cache.
 - The component registers a result listener and an activity listener on
