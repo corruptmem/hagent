@@ -25,6 +25,7 @@ SIGINT.
 | `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/router/` | The router, the persistent invocation queue, the fallback, chat retries and the test invocation route (task-12). See "How to invoke an agent" below. |
+| `src/hagent_app/link/` | `LinkComponent`: the integration link WebSocket, its shared secret and the Supervisor discovery (task-17). See "The integration link" below and `docs/link.md`. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
@@ -115,10 +116,10 @@ def default_components() -> list[Component]:
   does not come from `172.30.32.2` (design section 6.1), also for the event
   WebSocket. It uses the TCP peer address, never a header. Before it
   starts, it refuses all requests with 503.
-- The integration link connects from HA Core, not from that address. The
-  link must therefore use its own port, or give its path to
-  `IngressGuard(exempt_prefixes=[...])` and authenticate each connection
-  itself.
+- The integration link connects from HA Core, not from that address.
+  `default_components()` gives its path, and only its path, to
+  `IngressGuard(exempt_prefixes=LinkComponent.exempt_prefixes)`. The link
+  checks the shared secret itself. Do not add other exempt paths.
 - `UiComponent` serves the UI on every path that does not start with
   `api/`. Its route pattern excludes `api/`, so it never hides a route
   that another component adds. Put new routes under `/api/<area>`.
@@ -732,6 +733,50 @@ it (see `docs/api.md`). The sample states go to the turn through
 
 The `router` section of `options.json` holds the keys in `RouterConfig`
 (`src/hagent_app/router/config.py`).
+
+## The integration link
+
+The `link` package serves the WebSocket for the HA integration (design
+section 6). `docs/link.md` is the protocol. `docs/link-messages.json` holds
+example messages. The app tests and the integration tests both load it, so
+that the two sides cannot drift apart.
+
+Rules:
+
+- `LINK_PATH` (`/api/link/ws`) is the only path that the Ingress guard does
+  not check. The upgrade request must carry `Authorization: Bearer
+  <secret>`. Otherwise the app answers 401 and does not open the
+  WebSocket. `test_link.py` proves both points.
+- The app creates the secret on the first start in `<data dir>/link_secret`
+  (mode 0600). `GET api/integration` shows it. That route is guarded like
+  every other route.
+- `hello` holds every live agent. The integration removes devices of agents
+  that are not in it.
+- `invoke` calls `RouterComponent.submit`. The link applies `wait`,
+  `timeout` and `on_timeout`. For `on_timeout: cancel` it calls
+  `router.cancel`.
+- `router.add_result_listener` gives each final result to the link. The
+  link sends it as a `result` message, with `delivered` true if a waiting
+  command got it as response data.
+- `router.add_activity_listener` tells the link when an invocation starts
+  or ends. The link then sends the agent snapshot with the new status.
+- `set_enabled` uses `AgentService`. The link is a management surface, not
+  an agent tool.
+- Inside an app container, the link posts its host, port and secret to the
+  Supervisor (`POST /discovery`, service `hagent`). Task-21 must list
+  `hagent` under `discovery` in the app configuration.
+
+The `link` section of `options.json` holds the keys in `LinkConfig`
+(`src/hagent_app/link/config.py`).
+
+### Attachments
+
+`InvocationRequest.attachments` and `TurnInput.attachments` hold
+`Attachment` objects (`turns/models.py`). The request refuses types outside
+`ATTACHMENT_TYPES` and more than `ATTACHMENT_MAX_BYTES` in total. The
+runner gives images and PDF files to the model as `BinaryContent`, and text
+files as text marked as data. The queue row keeps the attachments as
+base64, so a resumed invocation still has them.
 
 ## How to use the HA client and the state cache
 
