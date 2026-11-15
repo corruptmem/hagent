@@ -174,3 +174,39 @@ async def test_default_components_serve_the_api(
             assert await resp.json() == {"agents": []}
     finally:
         await app.stop()
+
+
+async def test_new_agent_defaults_follow_the_settings_budget(
+    fake_ha: FakeHA, tmp_path: Path
+) -> None:
+    """GET api/agents/defaults takes budget.daily_usd from the settings."""
+    components = default_components()
+    config = Config(
+        ha_url=fake_ha.url,
+        ha_token=fake_ha.token,
+        data_dir=tmp_path,
+        port=0,
+        options={
+            "ingress": {"allowed_addresses": ["127.0.0.1"]},
+            "providers": {"refresh_openrouter_prices": False},
+        },
+    )
+    app = App(config, components)
+    await app.start()
+    try:
+        http = components[-1]
+        assert isinstance(http, HttpServer)
+        base = f"http://127.0.0.1:{http.port}/api"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{base}/agents/defaults") as resp:
+                body = await resp.json()
+                assert body["definition"]["budget"]["daily_usd"] == 0.5
+            async with session.patch(
+                f"{base}/settings", json={"agent_daily_budget_usd": 0.3}
+            ) as resp:
+                assert resp.status == 200
+            async with session.get(f"{base}/agents/defaults") as resp:
+                body = await resp.json()
+                assert body["definition"]["budget"]["daily_usd"] == 0.3
+    finally:
+        await app.stop()

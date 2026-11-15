@@ -66,7 +66,8 @@ class ProvidersConfig:
       ``output``, and can have ``cache_read`` and ``cache_write``.
     - ``agent_daily_budget_usd``: the default daily budget of each agent.
     - ``agent_budgets_usd``: daily budgets for single agents, keyed by agent
-      ID.
+      ID. They apply only when the definition of the agent has
+      ``budget.daily_usd`` set to ``null`` (task-20).
     - ``installation_daily_budget_usd``: the daily budget of the
       installation. It counts the costs of all agents and the costs that
       belong to no agent.

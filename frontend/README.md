@@ -55,7 +55,8 @@ To test the build with the app, run `npm run build`. The app serves
   (`src/events.ts`) invalidates the queries.
 - Each definition field has a control with a `data-path` attribute. A test
   checks this for each field of `src/test/fixtures/defaults.json`. A
-  Python test keeps that fixture equal to `GET api/agents/defaults`.
+  Python test keeps that fixture equal to `GET api/agents/defaults`,
+  except `budget.daily_usd`, which the app takes from the settings.
 - The knowledge editor (`KnowledgeEditor`) takes a `stores` list.
   `Editor` in `src/screens/AgentEditor.tsx` loads it from
   `api/knowledge/stores`. If that request fails, the editor asks for a

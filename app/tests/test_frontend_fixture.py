@@ -2,7 +2,8 @@
 
 A front-end test checks that the agent form has a control for each field
 of this fixture. This test keeps the fixture equal to
-``GET api/agents/defaults``, so that a new definition field fails the
+``default_definition_data()`` (the body of ``GET api/agents/defaults``
+without the settings budget), so that a new definition field fails the
 front-end test until the form has a control for it.
 """
 
