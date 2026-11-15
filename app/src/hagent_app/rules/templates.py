@@ -19,8 +19,12 @@ Limits. A template is text from a model, so this module also limits what a
 template can cost:
 
 - The template text and the rendered output have a maximum size.
-- Each render runs in a worker thread with a time limit. A trace function
-  stops the render at the time limit, also inside a loop.
+- Each render runs in a separate worker process (``rules.render_pool``)
+  with a memory limit, a CPU limit and a wall-clock limit. The app kills
+  and replaces a worker that passes the wall-clock limit.
+- Inside the worker, a trace function stops the render at the time limit,
+  also inside a loop. A join that counts the length stops the output at
+  ``MAX_OUTPUT``.
 - Operators and filters that can build very large values (``*``, ``**``,
   ``%``, ``join``, ``replace``, ``center``, ``indent``, ``format``) check the
   size first.
@@ -29,8 +33,9 @@ template can cost:
 
 from __future__ import annotations
 
-import asyncio
 import functools
+import hashlib
+import itertools
 import json
 import math
 import re
@@ -38,12 +43,19 @@ import statistics
 import sys
 import time
 from ast import literal_eval
-from collections.abc import Callable, Iterable, Iterator, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    MappingView,
+)
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta, tzinfo
+from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
+from datetime import time as dt_time
 from types import FrameType
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo
 
 from jinja2 import TemplateSyntaxError, meta, nodes, pass_environment
 from jinja2.compiler import CodeGenerator, Frame
@@ -52,16 +64,20 @@ from jinja2.filters import do_batch as jinja_batch
 from jinja2.filters import make_attrgetter
 from jinja2.runtime import Context
 from jinja2.sandbox import ImmutableSandboxedEnvironment
+from jinja2.utils import Namespace
 
-from hagent_app.ha import State
+if TYPE_CHECKING:
+    from hagent_app.ha import State
+    from hagent_app.rules.render_pool import RenderPool
 
 MAX_TEMPLATE = 10_000
 MAX_OUTPUT = 256 * 1024
 MAX_VALUE = 256 * 1024
 MAX_WIDTH = 1000
 MAX_DEEP = 1024 * 1024
-RENDER_THREADS = 4
+RENDER_WORKERS = 4
 MAX_BITS = 4096
+MAX_NESTING = 100
 RENDER_SECONDS = 1.0
 
 # The variables that the runtime passes to rule templates (design 10.2).
@@ -86,22 +102,26 @@ _NO_VALUE = frozenset({"unknown", "unavailable"})
 # HA's check for a number that keeps its text form (homeassistant/helpers/
 # template). "01" stays text, "1.0" becomes a float.
 _IS_NUMERIC = re.compile(r"^[+-]?(?!0\d)\d*(?:\.\d*)?$")
-_FORMAT_WIDTH = re.compile(r"%[-+ #0]*(\d+)?(?:\.(\d+))?")
-
-
-# A small pool of its own, so that a stuck render never blocks the default
-# executor of the event loop.
-_RENDER_POOL = ThreadPoolExecutor(
-    max_workers=RENDER_THREADS, thread_name_prefix="rule-template"
-)
+# A printf conversion: an optional mapping key, flags, a width and a
+# precision. A width or precision of "*" takes its value from the arguments,
+# so the check cannot see it. The check therefore refuses "*".
+_FORMAT_WIDTH = re.compile(r"%(?:\([^)]*\))?[-+ #0]*(\*|\d+)?(?:\.(\*|\d+))?")
 
 
 class TemplateError(Exception):
     """A template failed to parse, to pass the check, or to render."""
 
 
-class _Deadline(Exception):  # noqa: N818 - internal signal
-    """The render reached its time limit."""
+class TemplateMemoryError(TemplateError):
+    """The render passed the memory limit of the worker process."""
+
+
+class _Deadline(BaseException):
+    """The render reached its time limit.
+
+    It is a ``BaseException``, so that an ``except Exception`` in Jinja or in
+    a filter cannot catch it.
+    """
 
 
 # --------------------------------------------------------------- state view
@@ -135,6 +155,33 @@ class TemplateState:
         self.last_changed = state.last_changed
         self.last_updated = state.last_updated
 
+    def plain(self) -> tuple[str, str, dict[str, Any], datetime, datetime]:
+        """The state as plain data, for the worker process."""
+        return (
+            self.entity_id,
+            self.state,
+            plain_data(self.attributes),
+            self.last_changed,
+            self.last_updated,
+        )
+
+    @classmethod
+    def from_plain(
+        cls, data: tuple[str, str, dict[str, Any], datetime, datetime]
+    ) -> TemplateState:
+        """The reverse of ``plain``."""
+        self = cls.__new__(cls)
+        entity_id, state, attributes, last_changed, last_updated = data
+        self.entity_id = entity_id
+        self.domain, _, self.object_id = entity_id.partition(".")
+        self.state = state
+        self.attributes = dict(attributes)
+        name = self.attributes.get("friendly_name")
+        self.name = name if isinstance(name, str) else self.object_id
+        self.last_changed = last_changed
+        self.last_updated = last_updated
+        return self
+
     def __repr__(self) -> str:
         return f"<template TemplateState({self.entity_id}={self.state})>"
 
@@ -151,6 +198,11 @@ class ScopedStates:
     """
 
     states: Mapping[str, TemplateState] = field(default_factory=dict)
+    # A number that is unique in the app process. The render pool uses it to
+    # send the snapshot to a worker only once.
+    token: int = field(
+        default_factory=itertools.count(1).__next__, compare=False, repr=False
+    )
 
     @classmethod
     def build(
@@ -166,6 +218,30 @@ class ScopedStates:
         if not isinstance(entity_id, str):
             return None
         return self.states.get(entity_id.lower())
+
+    def fingerprint(self) -> str:
+        """A digest of the visible entity IDs.
+
+        The rule result cache puts it in its key. When an entity leaves the
+        scope, the digest changes, so that no cached value outlives the
+        scope that permitted it.
+        """
+        digest = hashlib.sha256()
+        for entity_id in sorted(self.states):
+            digest.update(entity_id.encode())
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def snapshot(self) -> list[tuple[str, str, dict[str, Any], datetime, datetime]]:
+        """The view as plain data, for the worker process."""
+        return [s.plain() for s in self.states.values()]
+
+    @classmethod
+    def from_snapshot(
+        cls, data: Iterable[tuple[str, str, dict[str, Any], datetime, datetime]]
+    ) -> ScopedStates:
+        """The reverse of ``snapshot``."""
+        return cls({item[0]: TemplateState.from_plain(item) for item in data})
 
 
 class _DomainStates:
@@ -497,6 +573,14 @@ def deep_size(value: Any, limit: int = MAX_DEEP) -> int:
         elif isinstance(item, Context):
             # Jinja passes the render context to some filters.
             total += 24
+        elif isinstance(item, Namespace):
+            # str() of a namespace holds the repr of all its values.
+            total += 12
+            stack.append(object.__getattribute__(item, "_Namespace__attrs"))
+        elif isinstance(item, MappingView):
+            # dict.keys(), .values() and .items(): str() holds the content.
+            total += 2 + 2 * len(item)
+            stack.extend(cast("Iterable[Any]", item))
         elif isinstance(item, Mapping):
             total += 2 + 2 * len(item)
             stack.extend(item.keys())
@@ -523,7 +607,8 @@ def _guard(fn: Callable[..., Any]) -> Callable[..., Any]:
     def guarded(*args: Any, **kwargs: Any) -> Any:
         for arg in (*args, *kwargs.values()):
             if isinstance(
-                arg, (str, Mapping, list, tuple, set, frozenset)
+                arg,
+                (str, Mapping, MappingView, Namespace, list, tuple, set, frozenset),
             ) and not isinstance(arg, Context):
                 deep_size(arg)
         return fn(*args, **kwargs)
@@ -541,6 +626,9 @@ def _check_size(value: Any) -> Any:
 def _check_format(text: str) -> None:
     for match in _FORMAT_WIDTH.finditer(text):
         for group in match.groups():
+            if group == "*":
+                msg = "a format width or precision of * is not supported"
+                raise TemplateError(msg)
             if group is not None and int(group) > MAX_WIDTH:
                 msg = f"a format width or precision is larger than {MAX_WIDTH}"
                 raise TemplateError(msg)
@@ -627,6 +715,23 @@ def _checked_concat(values: Iterable[Any]) -> str:
             raise TemplateError(msg)
         parts.append(str(value))
     return "".join(parts)
+
+
+def _bounded_concat(parts: Iterable[str]) -> str:
+    """Jinja's join of the output parts, with a running length check.
+
+    Jinja uses it for the whole output and for ``{% set %}`` blocks. It
+    stops as soon as the sum passes ``MAX_OUTPUT``, before the join.
+    """
+    out: list[str] = []
+    total = 0
+    for part in parts:
+        total += len(part)
+        if total > MAX_OUTPUT:
+            msg = f"the template output is longer than {MAX_OUTPUT}"
+            raise TemplateError(msg)
+        out.append(part)
+    return "".join(out)
 
 
 def _finalize(value: Any) -> Any:
@@ -781,6 +886,7 @@ class _Sandbox(ImmutableSandboxedEnvironment):
     intercepted_binops = frozenset({"*", "**", "%", "+"})
     code_generator_class = _CodeGenerator
     checked_concat = staticmethod(_checked_concat)
+    concat = staticmethod(_bounded_concat)
 
     def call_binop(self, context: Context, operator: str, left: Any, right: Any) -> Any:
         if operator == "**":
@@ -796,6 +902,13 @@ class _Sandbox(ImmutableSandboxedEnvironment):
                 raise TemplateError(msg)
             return left**right
         if operator == "*":
+            if (
+                isinstance(left, int)
+                and isinstance(right, int)
+                and abs(left).bit_length() + abs(right).bit_length() > MAX_BITS
+            ):
+                msg = "the product is too large"
+                raise TemplateError(msg)
             for seq, n in ((left, right), (right, left)):
                 if (
                     isinstance(seq, (str, list, tuple))
@@ -1175,74 +1288,150 @@ def parse_result(text: str) -> Any:
     return result
 
 
+_PLAIN_TYPES = frozenset(
+    {str, int, float, bool, type(None), datetime, date, dt_time, timedelta}
+)
+
+
+def plain_data(value: Any, depth: int = 0) -> Any:  # noqa: PLR0911 - one per type
+    """A copy of ``value`` that holds only plain data.
+
+    The worker process gets only this: text, numbers, ``None``, dates,
+    times, lists, tuples and dicts. Any other object becomes its text, so
+    that no object with methods crosses to the worker.
+    """
+    if depth > MAX_NESTING:
+        msg = "a template variable is nested too deep"
+        raise TemplateError(msg)
+    if type(value) in _PLAIN_TYPES:
+        return value
+    # A subclass (for example a str enum) becomes its base type.
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        return str.__str__(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, Mapping):
+        return {
+            plain_data(k, depth + 1): plain_data(v, depth + 1) for k, v in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(plain_data(v, depth + 1) for v in value)
+    if isinstance(value, (list, set, frozenset)):
+        return [plain_data(v, depth + 1) for v in value]
+    return str(value)
+
+
+def tz_key(tz: tzinfo | None) -> tuple[str, Any]:
+    """The time zone as plain data, for the worker process."""
+    if tz is None:
+        return ("local", None)
+    if isinstance(tz, ZoneInfo):
+        return ("zone", tz.key)
+    if isinstance(tz, timezone):
+        offset = tz.utcoffset(None)
+        return ("offset", offset.total_seconds())
+    msg = f"the time zone {tz!r} has no plain form"
+    raise TemplateError(msg)
+
+
+def tz_from_key(key: tuple[str, Any]) -> tzinfo | None:
+    """The reverse of ``tz_key``."""
+    kind, value = key
+    if kind == "zone":
+        return ZoneInfo(value)
+    if kind == "offset":
+        return timezone(timedelta(seconds=value))
+    return None
+
+
+def render_sync(
+    view: ScopedStates,
+    clock: TemplateClock,
+    seconds: float,
+    source: str,
+    variables: Mapping[str, Any],
+) -> str:
+    """Render a template in this process. The worker process calls it.
+
+    The trace function stops a slow render inside Python code. It cannot
+    stop one slow call in C. The worker process is the hard limit for that.
+    """
+    check_template(source, variables.keys() | VARIABLES)
+    env = _make_env()
+    funcs, filters, tests = _bound(view, clock)
+    env.globals.update({k: _guard(v) for k, v in _PLAIN_GLOBALS.items()})
+    env.globals.update({k: v if k == "states" else _guard(v) for k, v in funcs.items()})
+    env.filters.update({k: _guard(v) for k, v in filters.items()})
+    env.tests.update({k: _guard(v) for k, v in tests.items()})
+    template = env.from_string(source)
+    deadline = time.monotonic() + seconds
+    late = f"the template took longer than {seconds} s"
+
+    def tracer(frame: FrameType, event: str, arg: Any) -> Any:
+        if time.monotonic() > deadline:
+            raise _Deadline
+        return tracer
+
+    previous = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        text = template.render(dict(variables))
+        # CPython removes a trace function that raises. If code caught the
+        # signal anyway, the render ran on with no limit: never use it.
+        escaped = sys.gettrace() is not tracer
+    except _Deadline:
+        raise TemplateError(late) from None
+    except TemplateError:
+        raise
+    except MemoryError:
+        msg = "the template used more memory than its limit"
+        raise TemplateMemoryError(msg) from None
+    except (SecurityError, UndefinedError) as err:
+        raise TemplateError(str(err)) from err
+    except RecursionError as err:
+        msg = "the template recursed too deep"
+        raise TemplateError(msg) from err
+    except Exception as err:
+        msg = f"{type(err).__name__}: {err}"
+        raise TemplateError(msg) from err
+    finally:
+        sys.settrace(previous)
+    if escaped or time.monotonic() > deadline:
+        raise TemplateError(late)
+    if len(text) > MAX_OUTPUT:
+        msg = f"the template output is longer than {MAX_OUTPUT}"
+        raise TemplateError(msg)
+    return text.strip()
+
+
 @dataclass(frozen=True, slots=True)
 class TemplateEngine:
-    """Renders rule templates against one scoped state view."""
+    """Renders rule templates against one scoped state view.
+
+    ``pool`` is the render pool. ``None`` selects the shared pool of the app
+    process (``render_pool.shared_pool``).
+    """
 
     view: ScopedStates
     clock: TemplateClock = TemplateClock()
     seconds: float = RENDER_SECONDS
+    pool: RenderPool | None = None
 
     def _render_sync(self, source: str, variables: Mapping[str, Any]) -> str:
-        check_template(source, variables.keys() | VARIABLES)
-        env = _make_env()
-        funcs, filters, tests = _bound(self.view, self.clock)
-        env.globals.update({k: _guard(v) for k, v in _PLAIN_GLOBALS.items()})
-        env.globals.update(
-            {k: v if k == "states" else _guard(v) for k, v in funcs.items()}
-        )
-        env.filters.update({k: _guard(v) for k, v in filters.items()})
-        env.tests.update({k: _guard(v) for k, v in tests.items()})
-        template = env.from_string(source)
-        deadline = time.monotonic() + self.seconds
-
-        def tracer(frame: FrameType, event: str, arg: Any) -> Any:
-            if time.monotonic() > deadline:
-                raise _Deadline
-            return tracer
-
-        previous = sys.gettrace()
-        sys.settrace(tracer)
-        try:
-            text = template.render(dict(variables))
-        except _Deadline:
-            msg = f"the template took longer than {self.seconds} s"
-            raise TemplateError(msg) from None
-        except TemplateError:
-            raise
-        except (SecurityError, UndefinedError) as err:
-            raise TemplateError(str(err)) from err
-        except RecursionError as err:
-            msg = "the template recursed too deep"
-            raise TemplateError(msg) from err
-        except Exception as err:
-            msg = f"{type(err).__name__}: {err}"
-            raise TemplateError(msg) from err
-        finally:
-            sys.settrace(previous)
-        if len(text) > MAX_OUTPUT:
-            msg = f"the template output is longer than {MAX_OUTPUT}"
-            raise TemplateError(msg)
-        return text.strip()
+        """Render in this process, with the in-process limits only."""
+        return render_sync(self.view, self.clock, self.seconds, source, variables)
 
     async def render(self, source: str, variables: Mapping[str, Any]) -> str:
-        """Render a template to text, in a worker thread with a time limit.
+        """Render a template to text, in a worker process with hard limits."""
+        # A lazy import: render_pool imports this module.
+        from hagent_app.rules.render_pool import shared_pool  # noqa: PLC0415
 
-        The trace function stops a slow render inside Python code. One slow
-        call in C, for example a regular expression that backtracks, cannot
-        be stopped. The outer time limit then ends the wait, so that the
-        invocation ends. The thread runs on until the call ends, and keeps
-        one of the ``RENDER_THREADS`` threads.
-        """
-        loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(
-            _RENDER_POOL, self._render_sync, source, dict(variables)
-        )
-        try:
-            return await asyncio.wait_for(future, self.seconds + 1)
-        except TimeoutError:
-            msg = f"the template took longer than {self.seconds} s"
-            raise TemplateError(msg) from None
+        pool = self.pool or shared_pool()
+        return await pool.render(self.view, self.clock, self.seconds, source, variables)
 
     async def render_value(self, source: str, variables: Mapping[str, Any]) -> Any:
         """Render a template and parse the text into a native value."""

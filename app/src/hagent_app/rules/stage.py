@@ -334,7 +334,9 @@ class RuleEngine:
 
     # ------------------------------------------------------------- one rule
 
-    def _cache_key(self, rule: ActiveRule, spec: RuleSpec, request: RuleRequest) -> str:
+    def _cache_key(
+        self, rule: ActiveRule, spec: RuleSpec, request: RuleRequest, scope: str
+    ) -> str:
         assert spec.cache is not None  # noqa: S101 - checked by the caller
         data = request.request.turn_data
         values = []
@@ -349,6 +351,9 @@ class RuleEngine:
                 rule.version,
                 # A new definition version (scope, approval) starts empty.
                 request.agent.version,
+                # The visible entities. A registry change that moves an
+                # entity out of the scope starts empty too.
+                scope,
                 request.request.source_key,
                 values,
             ],
@@ -358,16 +363,16 @@ class RuleEngine:
 
     async def _answer(self, rule: ActiveRule, spec: RuleSpec, run: _Run) -> _Answer:
         request, engine, ctx, executor = run.request, run.engine, run.ctx, run.executor
+        # A rule whose writes now need approval, or left the scope, fails
+        # before any part of it runs, also on a cache hit.
+        check_writes(ctx, executor.env, spec)
+
         key = None
         if spec.cache is not None:
-            key = self._cache_key(rule, spec, request)
+            key = self._cache_key(rule, spec, request, engine.view.fingerprint())
             cached = self._cache.get(key)
             if cached is not None and cached[0] > self._monotonic():
                 return _Answer(cached[1], cache_hit=True)
-
-        # A rule whose writes now need approval, or left the scope, fails
-        # before any part of it runs.
-        check_writes(ctx, executor.env, spec)
 
         context = await self.context.collect(
             ctx, executor, spec.context, request.request.source_key
