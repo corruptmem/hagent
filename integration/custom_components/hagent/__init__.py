@@ -23,6 +23,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.service import async_register_admin_service
 from homeassistant.helpers.typing import ConfigType
 
 from .const import (
@@ -60,12 +61,18 @@ INVOKE_SCHEMA = probatio.Schema(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the ``hagent.invoke`` action."""
+    """Register the ``hagent.invoke`` action as an admin action.
+
+    Admin users and calls without a user (automations, scripts) may call
+    it. Other users get ``Unauthorized``, because an agent can act with
+    more rights than the user has (see docs/link.md).
+    """
 
     async def handle_invoke(call: ServiceCall) -> ServiceResponse:
         return await _async_invoke(hass, call)
 
-    hass.services.async_register(
+    async_register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_INVOKE,
         handle_invoke,

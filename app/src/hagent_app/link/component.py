@@ -488,7 +488,7 @@ class LinkComponent:
         """Send the link address and secret to the Supervisor (hassio discovery).
 
         HA then offers to set up the integration with these values. The app
-        configuration must list ``hagent`` under ``discovery`` (task-21).
+        configuration lists ``hagent`` under ``discovery`` (hagent/config.yaml).
         """
         assert self._ctx is not None  # noqa: S101 - started
         payload = {

@@ -127,17 +127,21 @@ async def test_hassio_discovery_with_a_bad_secret_aborts(
     assert result["reason"] == "invalid_auth"
 
 
-async def test_hassio_discovery_updates_a_configured_app(
+async def test_hassio_discovery_never_changes_a_configured_app(
     hass: HomeAssistant, fake_app: FakeApp
 ) -> None:
-    make_entry(fake_app, secret="old").add_to_hass(hass)
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_HASSIO},
-        data=_discovery(fake_app),
-    )
+    # Another app sends a discovery with its own host and secret, and its
+    # fake link answers with the installation ID of the configured app.
+    entry = make_entry(fake_app, host="app.local", secret="old")
+    entry.add_to_hass(hass)
+    with patch.object(hass.config_entries, "async_reload") as reload:
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_HASSIO},
+            data=_discovery(fake_app),
+        )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    assert (
-        hass.config_entries.async_entries(DOMAIN)[0].data["secret"] == fake_app.secret
-    )
+    assert entry.data["host"] == "app.local"
+    assert entry.data["secret"] == "old"
+    reload.assert_not_called()

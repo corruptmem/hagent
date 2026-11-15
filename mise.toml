@@ -64,6 +64,14 @@ description = "Build the management UI into frontend/dist"
 dir = "frontend"
 run = "npm run build"
 
+[tasks.package-app]
+description = "Create the self-contained app folder build/app/hagent"
+run = "scripts/package-app.sh"
+
+[tasks.smoke-app]
+description = "Build the app image (linux/amd64) and run it against a fake HA (needs Docker)"
+run = "spikes/task-21/smoke.sh"
+
 [tasks.check]
 description = "Run every check that CI and pre-commit run"
 depends = [

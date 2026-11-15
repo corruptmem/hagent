@@ -158,3 +158,13 @@ class AgentStateStore(Protocol):
     ) -> dict[str, Any]:
         """Make an older version of the agent's rule the current version."""
         ...
+
+    async def backtest_rule(
+        self, agent: Any, rule_id: str, options: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Run a backtest of one of the agent's rules (design section 10.7).
+
+        ``agent`` is the snapshot of the invocation, for the scope checks.
+        ``options`` holds ``version``, ``days``, ``limit`` and ``live``.
+        """
+        ...

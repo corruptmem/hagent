@@ -8,7 +8,8 @@ from pathlib import Path
 SUPERVISOR_ADDRESS = "172.30.32.2"
 
 # In a source checkout, the UI build is in ``frontend/dist`` at the root of
-# the repository. The app package sets ``ui_dir`` (task-21).
+# the repository. The app image keeps the same layout in /opt/hagent, so
+# this path also holds there (see hagent/Dockerfile).
 SOURCE_UI_DIR = Path(__file__).resolve().parents[4] / "frontend" / "dist"
 
 

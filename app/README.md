@@ -26,6 +26,7 @@ SIGINT.
 | `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/rules/` | The rule spec, the template sandbox, the rule store and the rule engine (task-13). See "Rules" below. |
+| `src/hagent_app/backtest/` | Invocation records, backtests, trials and the rule routes of the management API (task-14). See "Backtests and trials" below. |
 | `src/hagent_app/router/` | The router, the persistent invocation queue, the fallback, chat retries and the test invocation route (task-12). See "How to invoke an agent" below. |
 | `src/hagent_app/scheduler/` | `SchedulerComponent`: timers, cron schedules, reviews, event subscriptions and own-write filtering (task-15). See "Schedules and subscriptions" below. |
 | `src/hagent_app/link/` | `LinkComponent`: the integration link WebSocket, its shared secret and the Supervisor discovery (task-17). See "The integration link" below and `docs/link.md`. |
@@ -825,7 +826,8 @@ Terms:
 | `result` | A template. `decline` passes the invocation to an agent turn. Without it, the result is the action output. |
 | `writes` | Up to 10 service calls: `service`, `entity_id` and `data` (each value a template that gets `result`). |
 | `cache` | `seconds` and `keys` (input entity IDs, or `data.<key>`). |
-| `agreement`, `trial` | Stored for backtests and trials (task-14). |
+| `agreement` | A template that receives `rule_result` and `agent_result`. Backtests and trials use it. See "Backtests and trials". |
+| `trial` | `enabled` (default false) and `rate` (default 0.2). See "Backtests and trials". |
 
 ### Checks
 
@@ -887,7 +889,8 @@ Migration `0700` holds `rules`, `rule_versions` and `rule_stats`.
   for history.
 - `rule_stats` counts `matched`, `answered`, `declined`, `cache_hits`,
   `errors` and `cost_pusd` for each version. `memory.rule_stats` reads
-  them through `TurnHistory.rules`.
+  them through `TurnHistory.rules`. `RuleStore.version_extras` adds the
+  backtest and trial figures (task-14).
 
 Every SQL statement for an agent's rules filters by the agent ID.
 
@@ -896,6 +899,102 @@ Every SQL statement for an agent's rules filters by the agent ID.
 The `rules` section of `options.json` holds the keys in `RulesConfig`
 (`src/hagent_app/rules/config.py`): decision retries, the render time limit
 and the cache size.
+
+## Backtests and trials
+
+The `backtest` package lets an agent test a rule before and after it turns
+the rule on (design sections 10.1 and 10.7). `BacktestComponent` owns three
+parts:
+
+- **Invocation records**: the inputs, the full input states, the context
+  values and the decision answers of each invocation that a rule can answer.
+- **Backtests**: a run of one rule version against recorded history. It
+  writes nothing.
+- **Trials**: a dry-run agent turn next to a rule that answered, on a
+  sample of matches.
+
+Terms:
+
+- **Dry run**: a run in which tools check the scope and record changes, but
+  do not make them (`ToolContext.dry_run`).
+- **Agreement template**: the `agreement` template of a rule. It receives
+  `rule_result` and `agent_result`. Without it, two results agree when they
+  have the same JSON form.
+- **Item key** and **request key**: the keys of a context value and of a
+  decision answer in a record. See `backtest/records.py`.
+
+### Wiring
+
+`default_components` builds `BacktestComponent` before `RulesComponent`:
+
+- `RulesComponent` gets `backtest.decision_source()`. It records each
+  decision answer for its invocation (`current_invocation`).
+- `BacktestComponent.start` replaces `RuleEngine.context` with
+  `RecordingContextCollector`, sets `RuleStore.version_extras` (backtest and
+  trial figures in the rule statistics) and `AgentStateStores.backtests`
+  (the `self.backtest_rule` tool).
+- The router uses `BacktestComponent` as its rule stage.
+  `BacktestComponent.try_rules` calls `RulesComponent.try_rules` and writes
+  the record also when no rule is active. A draft rule can then run a
+  backtest on invocations from before it existed.
+
+List it after `rules` and `turns` and before `router`. `rules/stage.py` has
+no backtest code.
+
+### Records and retention
+
+Migration `0750` holds `invocation_records`, `rule_backtests`,
+`rule_backtest_cases` and `rule_trials`. The component deletes records and
+backtest cases older than `backtest.retention_days` (30) at start and every
+`backtest.purge_hours` (6). It never keeps less than `backtest.max_days`.
+The `invocations` and `turns` tables stay.
+
+### Backtest
+
+`Backtester.run(agent, rule_id, BacktestOptions(...))` runs one backtest.
+`POST api/agents/{id}/rules/{rule_id}/backtests` and the tool
+`self.backtest_rule` call it. `docs/api.md` ("Run a backtest") gives the
+steps and the replay rules. Points for maintainers:
+
+- `DryRunEvaluator` (`backtest/evaluate.py`) repeats the steps of
+  `RuleEngine._answer` with a fixed clock, recorded input states and
+  `HistoryContext`. A change to the live steps needs the same change here.
+  `test_the_dry_run_matches_the_live_rule` compares the two.
+- The evaluator uses `ToolExecutor.without_approval()` and a tool context
+  with `dry_run` set. It calls the executor only for reads
+  (`ha.get_statistics`, `knowledge.read`). For each write, it runs the
+  `authorize` step of `ha.call_service` on the rendered data and the
+  approval check, as the executor does for a live write. It records the
+  write in the case and never sends it, so a backtest adds no audit row.
+- It never calls `RuleStore.record` and never uses the live result cache.
+- It never calls an `action_response` action again. It takes the response
+  from `turn_tool_calls` of the turn, or skips the case.
+- A history without a record (from before `0750`) takes the input values
+  from `turns.input`.
+- The runner runs in its own task and sets `current_invocation` to the
+  backtest ID, so the cost of its decision requests is exact.
+  `BudgetExceededError` stops it with the status `budget`.
+- One backtest at a time runs for each rule (`backtest_running`).
+- `utcnow()` reads the real time. Use `now()` in rules that backtests test.
+
+### Trials
+
+`TrialRunner` (`backtest/trials.py`) starts a trial when a rule with
+`trial.enabled` answers and `BacktestComponent.sample()` is below
+`trial.rate`:
+
+- The trial runs `TurnsComponent.run_turn` with `TurnInput.dry_run`, in its
+  own task, with the trial ID as `current_invocation`. The caller does not
+  wait for it.
+- It reads the agent and installation budgets first. A spent budget ends
+  the trial with the status `budget`, and no turn runs.
+- One trial at a time runs for each rule. `stop()` cancels running trials.
+- A later backtest also compares with the result of a finished trial.
+
+### Options
+
+The `backtest` section of `options.json` holds the keys in
+`BacktestConfig` (`src/hagent_app/backtest/config.py`).
 
 ## Schedules and subscriptions
 
@@ -1053,8 +1152,8 @@ Rules:
 - `set_enabled` uses `AgentService`. The link is a management surface, not
   an agent tool.
 - Inside an app container, the link posts its host, port and secret to the
-  Supervisor (`POST /discovery`, service `hagent`). Task-21 must list
-  `hagent` under `discovery` in the app configuration.
+  Supervisor (`POST /discovery`, service `hagent`). `hagent/config.yaml`
+  lists `hagent` under `discovery`.
 
 The `link` section of `options.json` holds the keys in `LinkConfig`
 (`src/hagent_app/link/config.py`).
@@ -1144,8 +1243,11 @@ config = ctx.config.section("scheduler", SchedulerConfig)
 ```
 
 Missing keys take the defaults of the dataclass. Unknown keys cause
-`ConfigError`. Task-21 adds the keys to the app option schema when it
-packages the app.
+`ConfigError`. The Supervisor writes only the keys of the option schema
+in `hagent/config.yaml`. To let the user set a key on the Configuration
+tab, add it to `options`/`schema` there and to
+`hagent/translations/en.yaml`. `test_app_package.py` checks that each
+schema key is a field of the section dataclass.
 
 ## Providers and cost
 

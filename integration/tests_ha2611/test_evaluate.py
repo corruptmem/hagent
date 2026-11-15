@@ -18,6 +18,8 @@ from custom_components.hagent.ai_task import (
 )
 from custom_components.hagent.invoke import HagentInvocationError
 from homeassistant.components import ai_task
+from homeassistant.core import Context
+from homeassistant.exceptions import Unauthorized, UnknownUser
 
 QUESTIONS: dict[str, Any] = {
     "open": {"type": "noul", "instructions": "Is a window open?"},
@@ -121,3 +123,41 @@ async def test_an_error_result_raises() -> None:
     task = ai_task.EvaluationTask(name="t", questions=QUESTIONS, state=1)
     with pytest.raises(HagentInvocationError, match="agent_off"):
         await entity._async_evaluate(task)
+
+
+class FakeUser:
+    def __init__(self, *, is_admin: bool) -> None:
+        self.is_admin = is_admin
+
+
+class FakeAuth:
+    def __init__(self, users: dict[str, FakeUser]) -> None:
+        self.users = users
+
+    async def async_get_user(self, user_id: str) -> FakeUser | None:
+        return self.users.get(user_id)
+
+
+class FakeHass:
+    def __init__(self, users: dict[str, FakeUser]) -> None:
+        self.auth = FakeAuth(users)
+
+
+@pytest.mark.parametrize(
+    ("user_id", "error"), [("user", Unauthorized), ("ghost", UnknownUser)]
+)
+async def test_evaluate_refuses_a_non_admin_user(
+    user_id: str, error: type[Exception]
+) -> None:
+    runtime = FakeRuntime(ok(ANSWERS))
+    entity = HagentAITaskEntity(runtime, "agent-1")  # type: ignore[arg-type]
+    entity.hass = FakeHass({"user": FakeUser(is_admin=False)})  # type: ignore[assignment]
+    task = ai_task.EvaluationTask(name="check", questions=QUESTIONS, state={})
+    entity.async_set_context(Context(user_id=user_id))
+    with pytest.raises(error):
+        await entity._async_evaluate(task)
+    assert runtime.calls == []
+    # A call without a user (an automation) may evaluate.
+    entity.async_set_context(Context())
+    await entity._async_evaluate(task)
+    assert len(runtime.calls) == 1
