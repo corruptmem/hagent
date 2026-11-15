@@ -50,6 +50,20 @@ INDIRECT_DOMAINS = frozenset(
         "pyscript",
         "hassio",
         "notify",
+        # Services that select other things through their data (domains,
+        # globs, broadcast flags, node IDs, topics) or that change the
+        # system. A backstop to the declared-field check in the scope check.
+        "recorder",
+        "zwave_js",
+        "zha",
+        "matter",
+        "knx",
+        "mqtt",
+        "group",
+        "logger",
+        "system_log",
+        "backup",
+        "hagent",
     }
 )
 
@@ -58,7 +72,7 @@ MAX_LIST = 500
 
 def _match(pattern: re.Pattern[str], what: str) -> Any:
     def check(value: str) -> str:
-        if not pattern.match(value):
+        if not pattern.fullmatch(value):
             msg = f"not a valid {what}: {value!r}"
             raise ValueError(msg)
         return value
@@ -75,7 +89,7 @@ def _no_duplicates[T](values: tuple[T, ...]) -> tuple[T, ...]:
 
 def _cron(value: str) -> str:
     parts = value.split()
-    if len(parts) != 5 or not all(_CRON_FIELD.match(p) for p in parts):  # noqa: PLR2004
+    if len(parts) != 5 or not all(_CRON_FIELD.fullmatch(p) for p in parts):  # noqa: PLR2004
         msg = f"not a 5-field cron expression: {value!r}"
         raise ValueError(msg)
     return value
@@ -234,7 +248,7 @@ class HATools(_Model):
             msg = "only level 'control' takes services"
             raise ValueError(msg)
         for name in self.services:
-            match = _SERVICE.match(name)
+            match = _SERVICE.fullmatch(name)
             assert match is not None  # noqa: S101 - checked by ServiceName
             if match["domain"] in INDIRECT_DOMAINS and match["service"] == "*":
                 msg = (
@@ -379,7 +393,7 @@ class AgentDefinition(_Model):
             msg = "a knowledge store is attached twice"
             raise ValueError(msg)
         for ref in self.approval.tools:
-            match = _TOOL_REF.match(ref)
+            match = _TOOL_REF.fullmatch(ref)
             assert match is not None  # noqa: S101 - checked by ToolRef
             group = match["group"]
             if group not in TOOL_GROUPS:

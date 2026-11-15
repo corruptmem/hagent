@@ -61,6 +61,8 @@ class EntityEntry:
     disabled: bool = False
     entity_category: str | None = None
     name: str | None = None
+    # Extra names for the entity catalogue search (task-11).
+    aliases: tuple[str, ...] = ()
 
     @property
     def indirect_target(self) -> bool:
@@ -80,6 +82,7 @@ class DeviceEntry:
     id: str
     area_id: str | None = None
     labels: frozenset[str] = frozenset()
+    name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +93,28 @@ class AreaEntry:
     floor_id: str | None = None
     labels: frozenset[str] = frozenset()
     name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceInfo:
+    """What the ``get_services`` reply declares for one service.
+
+    - ``target_domains``: the entity domains that the declared entity target
+      accepts. ``None`` means that the service declares no entity target.
+    - ``any_domain``: an entity target filter has no domain, so the target
+      accepts entities of every domain.
+    - ``fields``: the declared data fields. Sections are flattened.
+    """
+
+    target_domains: frozenset[str] | None = None
+    any_domain: bool = False
+    fields: frozenset[str] = frozenset()
+
+    def accepts_target(self, entity_domain: str) -> bool:
+        """True if the declared entity target accepts the domain."""
+        if self.target_domains is None:
+            return False
+        return self.any_domain or entity_domain in self.target_domains
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,13 +130,21 @@ class RegistrySnapshot:
     areas: Mapping[str, AreaEntry] = field(default_factory=lambda: MappingProxyType({}))
     floors: frozenset[str] = frozenset()
     labels: frozenset[str] = frozenset()
+    label_names: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     services: Mapping[str, frozenset[str]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    service_info: Mapping[str, ServiceInfo] = field(
         default_factory=lambda: MappingProxyType({})
     )
 
     def has_service(self, domain: str, service: str) -> bool:
         """True if HA has the service."""
         return service in self.services.get(domain, frozenset())
+
+    def info(self, domain: str, service: str) -> ServiceInfo | None:
+        """The declared metadata of the service, or ``None`` if it is missing."""
+        return self.service_info.get(f"{domain}.{service}")
 
     # Resolution. These follow HA's target resolution (helpers/target.py).
 
@@ -178,8 +211,83 @@ def _labels(value: Any) -> frozenset[str]:
     return frozenset(str(v) for v in value if isinstance(v, str))
 
 
+def _aliases(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple | set | frozenset):
+        return ()
+    return tuple(sorted(str(v) for v in value if isinstance(v, str) and v))
+
+
 def _opt(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _field_names(fields: Any) -> frozenset[str] | None:
+    """The declared field names. A section adds its child fields."""
+    if not isinstance(fields, Mapping):
+        return None
+    names: set[str] = set()
+    for name, spec in fields.items():
+        if not isinstance(name, str):
+            return None
+        if (
+            isinstance(spec, Mapping)
+            and "selector" not in spec
+            and isinstance(spec.get("fields"), Mapping)
+        ):
+            children = _field_names(spec["fields"])
+            if children is None:
+                return None
+            names |= children
+        else:
+            names.add(name)
+    return frozenset(names)
+
+
+def _target(target: Any) -> tuple[frozenset[str] | None, bool]:
+    """The entity domains of a declared target, and the any-domain flag.
+
+    An unknown shape returns ``(None, False)``: no entity target.
+    """
+    if not isinstance(target, Mapping) or "entity" not in target:
+        return None, False
+    filters = target["entity"]
+    if filters is None:
+        filters = [{}]
+    elif isinstance(filters, Mapping):
+        filters = [filters]
+    if not isinstance(filters, list):
+        return None, False
+    domains: set[str] = set()
+    any_domain = False
+    for raw in filters:
+        item = {} if raw is None else raw
+        if not isinstance(item, Mapping):
+            return None, False
+        domain = item.get("domain")
+        if domain is None:
+            # No domain filter (for example only an integration filter).
+            any_domain = True
+        elif isinstance(domain, str):
+            domains.add(domain)
+        elif isinstance(domain, list) and all(isinstance(d, str) for d in domain):
+            domains |= set(domain)
+        else:
+            return None, False
+    return frozenset(domains), any_domain
+
+
+def parse_service_info(description: Any) -> ServiceInfo | None:
+    """Parse one service description. Return ``None`` if the shape is unknown."""
+    # HA always sends "fields" (helpers/service.py), so a description
+    # without it is not a description that the check can trust.
+    if not isinstance(description, Mapping) or "fields" not in description:
+        return None
+    raw = description["fields"]
+    fields = _field_names({} if raw is None else raw)
+    if fields is None:
+        return None
+    target_domains, any_domain = _target(description.get("target"))
+    return ServiceInfo(target_domains, any_domain, fields)
 
 
 def parse_snapshot(  # noqa: PLR0913
@@ -206,6 +314,7 @@ def parse_snapshot(  # noqa: PLR0913
             disabled=item.get("disabled_by") is not None,
             entity_category=_opt(item.get("entity_category")),
             name=_opt(item.get("name")) or _opt(item.get("original_name")),
+            aliases=_aliases(item.get("aliases")),
         )
     device_map = {}
     for item in devices:
@@ -215,6 +324,7 @@ def parse_snapshot(  # noqa: PLR0913
                 id=device_id,
                 area_id=_opt(item.get("area_id")),
                 labels=_labels(item.get("labels")),
+                name=_opt(item.get("name_by_user")) or _opt(item.get("name")),
             )
     area_map = {}
     for item in areas:
@@ -226,11 +336,24 @@ def parse_snapshot(  # noqa: PLR0913
                 labels=_labels(item.get("labels")),
                 name=_opt(item.get("name")),
             )
+    label_names = {
+        str(lb["label_id"]): str(lb.get("name") or lb["label_id"])
+        for lb in labels
+        if isinstance(lb.get("label_id"), str)
+    }
     service_map = {
         str(domain): frozenset(str(s) for s in names)
         for domain, names in services.items()
         if isinstance(names, Mapping)
     }
+    info_map = {}
+    for domain, names in services.items():
+        if not isinstance(names, Mapping):
+            continue
+        for name, description in names.items():
+            info = parse_service_info(description)
+            if info is not None:
+                info_map[f"{domain}.{name}"] = info
     return RegistrySnapshot(
         entities=MappingProxyType(entity_map),
         devices=MappingProxyType(device_map),
@@ -238,10 +361,10 @@ def parse_snapshot(  # noqa: PLR0913
         floors=frozenset(
             str(f["floor_id"]) for f in floors if isinstance(f.get("floor_id"), str)
         ),
-        labels=frozenset(
-            str(lb["label_id"]) for lb in labels if isinstance(lb.get("label_id"), str)
-        ),
+        labels=frozenset(label_names),
+        label_names=MappingProxyType(label_names),
         services=MappingProxyType(service_map),
+        service_info=MappingProxyType(info_map),
     )
 
 

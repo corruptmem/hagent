@@ -16,16 +16,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from hagent_app.agents import AgentReader
 from hagent_app.approvals.api import ApprovalsApi
 from hagent_app.approvals.config import ApprovalsConfig
 from hagent_app.approvals.notifier import MobileAppNotifier, Notifier
 from hagent_app.approvals.service import ACTION_EVENT, ApprovalService
 from hagent_app.ha.client import HAError, Subscription
-from hagent_app.http.events import ChangeEvents
+from hagent_app.http.events import ChangeEvent, ChangeEvents
 from hagent_app.tools.base import Prepared, ToolContext
 from hagent_app.tools.executor import ApprovalOutcome
 
@@ -70,7 +72,9 @@ class ApprovalsComponent:
         self._sub: Subscription | None = None
         self._app_user: str | None = None
         self._user_task: asyncio.Task[None] | None = None
-        self._api = ApprovalsApi(self.service)
+        self._trust_any_peer = False
+        self._unsubscribe_agents: Callable[[], None] | None = None
+        self._api = ApprovalsApi(self.service, lambda: self._trust_any_peer)
 
     def routes(self) -> list[web.RouteDef]:
         """The routes for ``HttpServer.add_routes``."""
@@ -98,8 +102,16 @@ class ApprovalsComponent:
             notifier,
             config,
             app_user=lambda: self._app_user,
+            agents=AgentReader(ctx.db),
             events=self._events,
         )
+        self._trust_any_peer = config.dev_trust_user_header
+        if config.dev_trust_user_header:
+            _LOG.warning(
+                "approvals.dev_trust_user_header is on: the approvals API "
+                "trusts X-Remote-User-Id from every allowed address. Use it "
+                "only for local development."
+            )
         expired = await service.expire_pending("the app restarted")
         if expired:
             _LOG.warning(
@@ -110,11 +122,22 @@ class ApprovalsComponent:
         ctx.ha.add_connect_listener(self._on_connect)
         if ctx.ha.connected:
             self._user_task = asyncio.create_task(self._on_connect())
+        if self._events is not None:
+            self._unsubscribe_agents = self._events.subscribe(self._on_change)
         self._service = service
+
+    def _on_change(self, event: ChangeEvent) -> None:
+        """End the pending requests of an agent that changed (review M1)."""
+        service = self._service
+        if service is not None and event.topic == "agents":
+            service.on_agent_change(event.id)
 
     async def stop(self) -> None:
         """Stop listening and expire every pending request."""
         service, self._service = self._service, None
+        if self._unsubscribe_agents is not None:
+            self._unsubscribe_agents()
+            self._unsubscribe_agents = None
         ctx, self._ctx = self._ctx, None
         if self._user_task is not None:
             self._user_task.cancel()

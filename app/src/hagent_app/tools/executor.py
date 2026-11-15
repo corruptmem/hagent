@@ -5,12 +5,13 @@
 1. Find the tool. Check that the definition turns on the tool.
 2. Validate the arguments. Unknown arguments fail.
 3. ``authorize``: the scope check. It returns a prepared request.
-4. A dry run of a call that writes stops here. It records the call and
-   returns the prepared request, with no approval request.
+4. A dry run of a call that writes or needs approval stops here. It records
+   the call and returns the prepared request, with no approval request.
 5. The approval check. If the definition marks the call for approval, the
    approval gate must accept it. With no gate, the executor denies the call
    (task-16 supplies the gate). The gate can return ``ApprovalOutcome`` with
-   a denial code, for example ``approval_timeout``.
+   a denial code, for example ``approval_timeout``. If the invocation is
+   cancelled during the wait, the executor records ``approval_cancelled``.
 6. For a call that changes HA: write the audit row with status
    ``pending``. If the write fails, stop.
 7. ``run`` on the prepared request.
@@ -47,6 +48,7 @@ from hagent_app.tools.ha_tools import HA_TOOLS
 from hagent_app.tools.registry import RegistryUnavailableError
 from hagent_app.tools.scope import ScopeDeniedError
 from hagent_app.tools.store_tools import STORE_TOOLS
+from hagent_app.tools.stores import StoreError
 
 _LOG = logging.getLogger(__name__)
 
@@ -54,7 +56,12 @@ ALL_TOOLS: tuple[Tool, ...] = HA_TOOLS + STORE_TOOLS
 
 
 APPROVAL_DENIAL_CODES = frozenset(
-    {"approval_rejected", "approval_timeout", "approval_unavailable"}
+    {
+        "approval_rejected",
+        "approval_timeout",
+        "approval_unavailable",
+        "approval_stale",
+    }
 )
 
 
@@ -104,6 +111,8 @@ def needs_approval(definition: AgentDefinition, tool: Tool, prepared: Prepared) 
     if not tool.writes:
         # Service and entity approval applies to changes only.
         return False
+    if prepared.approval_required:
+        return True
     for name in prepared.services:
         domain = name.split(".", 1)[0]
         if name in approval.services or f"{domain}.*" in approval.services:
@@ -188,6 +197,12 @@ class ToolExecutor:
             return await self._deny(call, "unavailable", str(err))
         except (HAError, TimeoutError) as err:
             return await self._deny(call, "ha_error", f"the check failed: {err}")
+        except Exception:
+            # Fail closed, and record the attempt.
+            _LOG.exception("the check of tool %s failed", name)
+            return await self._deny(
+                call, "check_failed", "the check failed because of an internal error"
+            )
         call = AuditCall(
             call.agent_id,
             call.agent_version,
@@ -199,30 +214,17 @@ class ToolExecutor:
 
         approval_needed = needs_approval(ctx.definition, tool, prepared)
 
-        # A dry run stops here for a call that writes. It sends no approval
-        # request, because a test invocation must not reach approvers.
-        if ctx.dry_run and tool.writes:
+        # A dry run stops here for a call that writes or needs approval. It
+        # sends no approval request, because a test invocation must not
+        # reach approvers.
+        if ctx.dry_run and (tool.writes or approval_needed):
             return await self._dry_run(call, tool, prepared, approval_needed)
 
         # The approval hook.
         if approval_needed:
-            if self._approval is None:
-                return await self._deny(
-                    call,
-                    "approval_unavailable",
-                    "the call needs approval, and approvals are not available",
-                )
-            try:
-                outcome = _approval_outcome(
-                    await self._approval.request(ctx, name, prepared)
-                )
-            except Exception:
-                _LOG.exception("approval request failed")
-                outcome = ApprovalOutcome(
-                    False, "approval_unavailable", "the approval request failed"
-                )
-            if not outcome.accepted:
-                return await self._deny(call, outcome.code, outcome.message)
+            denied = await self._approve(ctx, call, name, prepared)
+            if denied is not None:
+                return denied
 
         audit_id = None
         if tool.changes_ha:
@@ -253,6 +255,9 @@ class ToolExecutor:
         except (HAError, TimeoutError) as err:
             await self._finish(audit_id, "error", str(err))
             return ToolResult(False, error_code="ha_error", error=str(err))
+        except StoreError as err:
+            await self._finish(audit_id, "error", err.message)
+            return ToolResult(False, error_code=err.code, error=err.message)
         except Exception as err:
             _LOG.exception("tool %s failed", name)
             await self._finish(audit_id, "error", repr(err))
@@ -262,6 +267,39 @@ class ToolExecutor:
             audit_id, "ok", None, context_id if isinstance(context_id, str) else None
         )
         return ToolResult(True, data, audit_id=audit_id)
+
+    async def _approve(
+        self, ctx: ToolContext, call: AuditCall, name: str, prepared: Prepared
+    ) -> ToolResult | None:
+        """Ask the gate. Return a denial, or ``None`` if an approver accepted."""
+        if self._approval is None:
+            return await self._deny(
+                call,
+                "approval_unavailable",
+                "the call needs approval, and approvals are not available",
+            )
+        try:
+            outcome = _approval_outcome(
+                await self._approval.request(ctx, name, prepared)
+            )
+        except asyncio.CancelledError:
+            # Record the held call in the denied-calls log, then stop.
+            await asyncio.shield(
+                self._deny(
+                    call,
+                    "approval_cancelled",
+                    "the invocation was cancelled during the approval",
+                )
+            )
+            raise
+        except Exception:
+            _LOG.exception("approval request failed")
+            outcome = ApprovalOutcome(
+                False, "approval_unavailable", "the approval request failed"
+            )
+        if not outcome.accepted:
+            return await self._deny(call, outcome.code, outcome.message)
+        return None
 
     async def _dry_run(
         self, call: AuditCall, tool: Tool, prepared: Prepared, approval_needed: bool

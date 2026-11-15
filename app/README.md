@@ -20,13 +20,17 @@ SIGINT.
 | `src/hagent_app/providers/` | Provider adapters, the price table, cost records and budgets (task-9). See "Providers and cost" below. |
 | `src/hagent_app/ingress/` | `IngressGuard`, the source-address check, and `UiComponent`, which serves the UI files (task-18). |
 | `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
+| `src/hagent_app/knowledge/` | Knowledge stores, documents, the search index, the embedding queue and the knowledge management API (task-11). See "Knowledge stores and search". |
 | `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
 | `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
+| `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
 | `tests/helpers/home.py` | A sample home (registries, services and states) for scope tests. |
 | `tests/helpers/tools.py` | `harness`, the tool test harness, with fake knowledge, history and agent-state stores. |
+| `tests/helpers/knowledge.py` | `knowledge_env`, a started knowledge component with a real tool executor, and `FakeEmbeddings`, a fake embedding model. |
+| `tests/helpers/pdf.py` | `make_pdf`, which builds small PDF files with or without a text layer. |
 | `tests/helpers/wait.py` | `wait_until`, a poll helper for async tests. |
 | `tests/helpers/fake_providers.py` | `FakeProviders`, a fake provider API that replays recorded responses from `tests/fixtures/providers/`. |
 | `tests/helpers/providers_env.py` | `ProvidersEnv`, a started providers component on a temporary database. The `providers_env` fixture creates it. |
@@ -175,6 +179,93 @@ Rules that task-7 applies, and that task-11 must keep:
 - The app refuses to delete a private store that other live agents attach.
 - A definition can attach only stores that exist in `knowledge_stores`.
 
+## Knowledge stores and search (task-11)
+
+The `knowledge` package owns knowledge stores, their files and documents,
+and the search index of all collections (design sections 13.3 and 13.4).
+Migration `0500` extends `knowledge_stores` with `size_limit` and
+`updated_at`, and adds the other tables.
+
+Terms:
+
+- **Collection**: one kind of indexed text: `knowledge`, `history`,
+  `conversation` or `entity`.
+- **Passage**: one piece of indexed text, at most 1500 characters. Each
+  passage has a content hash (SHA-256 of its text).
+- **Hybrid search**: an FTS5 keyword search and a sqlite-vec vector search
+  on the same query, merged with reciprocal rank fusion (RRF).
+
+Modules:
+
+| Module | Content |
+|---|---|
+| `service.py` | `KnowledgeService`: stores, files with versions and history, documents, size limits. It implements the `KnowledgeStore` protocol of the tools. |
+| `index.py` | `SearchIndex`: the passage table, the FTS5 query, the RRF merge and the keyword-only fallback. |
+| `vectors.py` | Every sqlite-vec statement. Vectors are float32 BLOBs in `search_embeddings`. A query uses `vec_distance_cosine` over the passages in scope. It does not use `vec0` KNN tables, because KNN applies its limit before the scope filter. |
+| `embedder.py` | The background embedding queue. |
+| `text.py` | Extraction of PDF (text layer, with pypdf), Markdown, plain text and HTML, and the split into passages. |
+| `entities.py` | `EntityCatalog`: the HA entity catalogue in the index. |
+| `history.py` | `HistoryIndex`: the history and conversation index for task-10. |
+| `context.py` | `build_turn_context`: the knowledge part of each agent turn. |
+| `api.py` | The management routes under `/api/knowledge` (see `docs/api.md`). |
+
+Rules:
+
+- The executor checks attachments before it calls the service. The service
+  receives only attached store IDs.
+- Each search applies the scope filter in SQL, before the ranking and the
+  limit.
+- The vector search drops matches with a cosine distance above
+  `knowledge.max_vector_distance` (0.75 by default). Without this cutoff,
+  every passage in scope would rank. The right value depends on the
+  embedding model.
+- The app loads sqlite-vec from the component, through `db.run`. No
+  migration uses it. If it does not load, if no embedding model is set, or
+  if the provider fails, search uses keywords only. `GET
+  api/knowledge/status` gives the reason.
+- The embedder embeds each content hash once per model. It charges text
+  that an agent writes to that agent, and documents and the entity
+  catalogue to the installation. A query embedding of `knowledge.search`
+  or `memory.search` counts towards the invocation agent:
+  `KnowledgeStore.search` receives the agent ID from the executor. A search
+  from the management API counts towards the installation. A query that is
+  in the query cache costs nothing. A model change re-indexes every passage. The embedder deletes vectors of
+  other models and vectors whose text no longer exists.
+- Store errors (`KnowledgeError`) subclass `StoreError` in
+  `tools/stores.py`. The executor returns their code to the model, for
+  example `version_conflict`.
+- Tables that refer to a store use `ON DELETE CASCADE`. Triggers keep the
+  FTS5 index in step, also for cascade deletes.
+
+### Knowledge in agent turns (task-10)
+
+`default_components()` connects the knowledge component to the turns
+component:
+
+- `turns.history.index = knowledge.history_index`. `HistoryIndex`
+  implements the `HistoryIndex` protocol of `turns/history.py`. The turn
+  history indexes each finished turn (`index_history`) or Assist turn
+  (`index_conversation`), but not dry runs. `memory.search` then calls
+  `search_history`, which ranks with hybrid search and sees only the
+  records of the invocation agent. The filters are `source` (the source or
+  the source key), `since` and `until`.
+- `turns.knowledge_context = knowledge.turn_context`. The prompt builder
+  calls it for part 3 of each turn (design section 9.5), with
+  `turns.index_max_entries` as the index size (50 by default). It gives
+  the store list, the name-sorted index and the injected main files. The
+  text holds no time or other value that changes between turns. The
+  builder also uses it for the main file requests (design section 13.1).
+  If the call fails, the builder reads the stores through the executor.
+- Other code can index records with `await knowledge.history.add(...)` and
+  remove them with `remove`, for example when retention deletes a record.
+
+### Hand-off to task-20: knowledge screens
+
+All routes are in `docs/api.md`, "Knowledge stores". A store list with the
+attached agents, the items, the file history with restore, the document
+upload and the embedding model setting are available. Attachments are part
+of the agent definition.
+
 ## How to call tools: the executor and the scope check
 
 Every agent tool call goes through `ToolExecutor` (`tools/executor.py`). The
@@ -239,11 +330,36 @@ Rules of the HA check (`tools/scope.py`):
   areas, floors, labels or services cause a denial.
 - Indirect services need their exact name in `tools.ha.services`.
 - A call that resolves to no entity needs its exact name in
-  `tools.ha.services`. This stops `mqtt.publish`, `recorder.purge` and
-  similar services.
-- Outputs are a short form of `control`, but not for indirect services.
-- `admin` passes every call unchanged.
+  `tools.ha.services`. This stops `conversation.process` and similar
+  services.
+- The service metadata from `get_services` is an allowlist. A call with
+  target entities needs a declared entity target that accepts the domain of
+  each entity (`target_not_declared`). Each data key must be a declared
+  field (`unknown_field`). Sections of fields count as fields. Missing
+  metadata causes a denial (`service_metadata`).
+- An explicit target entity of another domain than the service needs the
+  exact service name in `tools.ha.services` (`cross_domain`). A wildcard
+  such as `remote_bridge.*` does not permit it.
+- `group.set` and `group.remove` act on `group.<object_id>`. That entity
+  must be in the scope.
+- Outputs are a short form of `control`, but not for indirect services and
+  not for a service of another domain.
+- `admin` passes every call unchanged. For approval, the executor finds the
+  entities of an `admin` call: targets, entity and device IDs in the data,
+  and group members. If that scan cannot finish (for example a template in
+  the data), and `approval.entities` is set, the call needs approval.
 - While the registry is stale, every check that needs it fails.
+- While the state cache is not loaded or not in sync, `ha.call_service`,
+  `ha.get_state` and `ha.find_entities` fail (`states_unavailable`). The
+  group check and the data scan read the cache.
+- An unexpected error in a check causes a denial (`check_failed`) and an
+  audit row. The log keeps the traceback.
+
+Rules of the `self` tools: each spec kind has a strict model, and unknown
+keys fail (`invalid_spec`). A state subscription must name entities in the
+read scope. Rule and schedule specs fail with `not_supported` until task-13
+and task-15 add their models and checks to `SPEC_CHECKS`
+(`tools/store_tools.py`).
 
 The admin tools accept only the WebSocket commands in `tools/admin.py`.
 Each change command has a reader for the previous version, which the audit
@@ -255,6 +371,8 @@ has no REST client yet.
 scope grew within the same definition version, it creates an HA persistent
 notification and publishes `tools` / `scope_grown`. It stores the last
 result in `tool_scope_snapshots`, so it also finds growth across a restart.
+After growth, it stores the new result only when HA accepts the
+notification. Otherwise the next reload sends it again.
 
 ### How to plug in a store
 
@@ -264,6 +382,11 @@ The knowledge, memory and self tools use the protocols in
 in `default_components()`, before the app starts. Until then, those tools
 return `unavailable`. The executor passes only
 attached store IDs and the invocation's agent ID to a store.
+
+`ToolsComponent.entities` takes an `EntitySearch` (task-11 sets it).
+`ha.find_entities` first builds the candidates in the read scope. Then it
+asks `EntitySearch` to rank only those candidates. Without it, or when the
+catalogue is empty, the tool uses its word match.
 
 ### How to add a tool
 
@@ -297,7 +420,19 @@ Rules:
 
 - The gate returns `ApprovalOutcome`. The executor runs the call only for
   an accepted outcome. Denial codes: `approval_rejected`,
-  `approval_timeout` and `approval_unavailable`.
+  `approval_timeout`, `approval_unavailable` and `approval_stale`. If the
+  invocation is cancelled during the wait, the executor records
+  `approval_cancelled` in the audit log.
+- After an accept, the gate loads the agent again. If the agent is deleted,
+  off, or has another definition version, the gate denies the call with
+  `approval_stale`. An `agents` change event also ends the pending
+  requests of that agent with status `cancelled`.
+- An answer counts only before `expires_at`, also when the wall clock
+  jumps.
+- The API trusts `X-Remote-User-Id` only from the Supervisor peer
+  (`172.30.32.2`), unless `approvals.dev_trust_user_header` is on.
+- No agent can subscribe to `call_service` events, at any level. Their
+  data holds the action IDs of approval notifications.
 - Only users in `approvals.approvers` can answer. An answer from another
   user, from no user, or from the HA user of the app has no effect. The
   table `approval_answers` records each answer and its outcome.
@@ -309,7 +444,8 @@ Rules:
 - If no notification reaches an approver, the request fails at once.
 - After a request ends, the app clears the notification on each target.
 - On start, the app expires each pending request.
-- A dry run sends no approval request.
+- A dry run sends no approval request. It stops before the approval hook
+  for each tool that needs approval, also for a read tool.
 
 `Notifier` is the send interface. `MobileAppNotifier` is the app-side
 implementation. The app cannot read the HA user or the webhook ID of a
@@ -318,6 +454,122 @@ mobile app device trackers, or the `notify_services` option. It refuses a
 service that does not exist, or a device name that more than one mobile app
 device has. Set `approvals.notifier` before start to use another sender,
 for example one in HA Core (task-17).
+## How to run an agent turn
+
+The `turns` package runs agent turns (design sections 9.5, 11, 13.1 and
+13.2). `TurnsComponent` owns a `TurnRunner` and a `TurnHistory`.
+
+Terms:
+
+- **Stable prefix**: the start of the prompt that does not change between
+  invocations: the tool definitions and the instructions. The provider
+  prompt cache works only for this part.
+- **Source key**: the key of a running summary. It is the source of the
+  invocation, or `assist:<conversation ID>` for an Assist conversation.
+- **Running summary**: a short text that replaces the older records of one
+  source key in the prompt. The summary model of the definition writes it.
+
+### Entry point for the router
+
+The router (task-12) calls one method:
+
+```python
+result = await turns.run_turn(
+    agent,
+    TurnInput(
+        source="invoke",
+        inputs={"sensor.<name>": "19.5"},  # the router collects the inputs
+        data={"reason": "..."},  # the caller data
+        invocation_id=invocation_id,
+        conversation_id=None,  # set for Assist
+        result_schema=None,  # an AI Task structure, if any
+        dry_run=False,
+    ),
+)
+```
+
+`agent` is the `Agent` snapshot from `AgentReader`. `result` is a
+`TurnResult`:
+
+- `status` is `ok`, `stopped`, `failed` or `cancelled`.
+- `stop_reason` says why a turn did not return a result:
+  `tool_call_limit`, `token_limit`, `request_limit`, `budget`,
+  `provider_error`, `invalid_result` or `error`. The router then returns
+  the fallback (design section 9.7).
+- `result` is the text or the structured result. It is `None` for the
+  result type `none`.
+- `usage` holds the requests, tool calls and token counts of the turn.
+
+`run_turn` does not raise for a model, provider or limit failure. A
+cancelled turn records `cancelled` and raises `CancelledError` again. The
+runner does not retry a failed model call. The router decides on retries.
+
+### Prompt order
+
+`PromptBuilder` builds the prompt in the order of design section 9.5:
+
+- Part 1, the tool definitions, comes from `ToolExecutor.tools_for`. Provider tool names
+  cannot contain `.`, so `ha.get_state` becomes `ha__get_state`.
+- Parts 2 to 4 are the instructions: the instructions of the definition, the attached
+  stores (description, access, index sorted by name, main files), and the
+  rules, schedules and scopes. This part has no time, inputs or caller
+  data.
+- Parts 5 to 7 are the user prompt: the running summary and the latest records of the
+  source key, the recall results (only if retrieval is on), and the
+  invocation (source, time, inputs, caller data, main-file requests).
+
+The builder reads stores and rules only through the tool executor, with the
+same scope check as a model tool call.
+
+### Tool calls, limits and compaction
+
+- Each tool call goes to `ToolExecutor.execute`. History keeps the full
+  result. The model receives at most `tool_result_max_chars` characters,
+  with a marker.
+- `UsageLimits` applies `budget.max_tool_calls` and `budget.max_tokens`.
+  The executor never runs more calls than the limit.
+- `Caching` adds provider cache markers. `WarnOnCacheBusts` warns when the
+  cached prefix collapses.
+- `TieredCompaction` with `ClearToolResults` clears old tool results when
+  the context is larger than `compaction_target_tokens`. Each clear must
+  save `compaction_min_clear_tokens`. The runtime uses only local
+  strategies, because `MeteredModel` refuses provider-side compaction.
+- A structured result must match its JSON schema. The model gets one
+  correction attempt. A second failure gives `invalid_result`.
+- When an injected `MAIN.md` reaches `main_file_warn_fraction` of
+  `main_file_max_chars`, the invocation part asks the agent to move detail
+  into other files. The runtime does not cut the file.
+
+### History
+
+`TurnHistory` writes these tables (migration `0400`):
+
+| Table | Content |
+|---|---|
+| `turns` | One row for each turn: input, prompt, hash of the instructions, status, stop reason, result, messages and usage. |
+| `turn_tool_calls` | Each tool call with its full result and its audit row ID. |
+| `turn_compactions` | Each compaction: `tool_result_cut`, `in_turn`, `running_summary` (with the new summary) or `main_file_request`. |
+| `source_summaries` | The running summary of each source key. |
+
+Read interface for the Inspect screens (task-19):
+
+- `await history.list_turns(agent_id, source_key=..., status=..., before=..., limit=...)`:
+  turns, newest first, without messages.
+- `await history.get(turn_id)`: one turn with its messages, tool calls and
+  compactions.
+- `await history.summary(agent_id, source_key)`: the running summary.
+
+`TurnHistory` also implements the `HistoryStore` protocol of the tool
+executor. `TurnsComponent` sets `ToolsComponent.history` in its
+constructor. `rule_owner` returns `None` until task-13 adds rules. A
+`HistoryIndex` (task-11) indexes the turns and serves `memory.search`:
+`default_components()` sets `turns.history.index`. Without an index,
+search uses a plain text match. Dry runs do not go into the index, the search or the summaries.
+
+### Options
+
+The `turns` section of `options.json` holds the keys in `TurnsConfig`
+(`src/hagent_app/turns/config.py`).
 
 ## How to use the HA client and the state cache
 

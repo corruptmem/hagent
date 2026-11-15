@@ -12,12 +12,13 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import aiohttp
 import pytest
-from hagent_app.agents import Agent
+from hagent_app.agents import Agent, AgentDefinition
 from hagent_app.app import AppContext
 from hagent_app.approvals import ApprovalsComponent, ApprovalsConfig
 from hagent_app.approvals.notifier import ha_slug
@@ -548,6 +549,8 @@ def test_config_rejects_bad_values(options: dict[str, Any]) -> None:
 
 @asynccontextmanager
 async def api_env(tmp_path: Path, **options: Any) -> AsyncIterator[tuple[Env, str]]:
+    # The test client connects from 127.0.0.1, not from the Supervisor.
+    options.setdefault("dev_trust_user_header", True)
     async with approval_env(tmp_path, **options) as env:
         http = HttpServer()
         http.add_routes(env.approvals.routes())
@@ -735,4 +738,244 @@ async def test_api_answer_during_a_failed_send_decides(tmp_path: Path) -> None:
         assert answered == ["applied"]
         assert result.error_code == "approval_rejected"
         assert (await env.record()).status == "rejected"
+        assert light_calls(env.ha) == []
+
+
+# ------------------------------------------- security review (task-16)
+
+
+def _narrowed(agent: Agent) -> AgentDefinition:
+    data = json.loads(agent.definition.model_dump_json())
+    data["tools"]["ha"] = {"level": "none"}
+    data["approval"] = {}
+    return AgentDefinition.from_json(json.dumps(data))
+
+
+async def test_review_m1_scope_change_during_wait_denies(tmp_path: Path) -> None:
+    async with approval_env(tmp_path) as env:
+        agent = await env.agent()
+        task = env.start_call(agent)
+        accept, _ = actions(await env.sent())
+        await env.h.agents.update(agent.id, _narrowed(agent))
+        await env.h.agents.set_enabled(agent.id, False)
+        await env.tap(accept, APPROVER)
+        result = await task
+        assert result.error_code == "approval_stale"
+        assert light_calls(env.ha) == []
+
+
+async def test_review_m1b_agent_deleted_during_wait_denies(tmp_path: Path) -> None:
+    async with approval_env(tmp_path) as env:
+        agent = await env.agent()
+        task = env.start_call(agent)
+        accept, _ = actions(await env.sent())
+        await env.h.agents.delete(agent.id, "delete")
+        await env.tap(accept, APPROVER)
+        assert (await task).error_code == "approval_stale"
+        assert light_calls(env.ha) == []
+
+
+async def test_review_m1_agent_change_cancels_pending_request(tmp_path: Path) -> None:
+    # The harness's AgentService publishes to its own hub. Send the event
+    # that the agents component sends to the app hub.
+    async with approval_env(tmp_path) as env:
+        agent = await env.agent()
+        task = env.start_call(agent)
+        accept, _ = actions(await env.sent())
+        await env.h.agents.set_enabled(agent.id, False)
+        env.events.publish("agents", "updated", agent.id, {"enabled": False})
+        result = await task
+        assert result.error_code == "approval_stale"
+        record = await env.record()
+        assert record.status == "cancelled"
+        assert record.reason == "the agent was turned off during the approval"
+        assert len(notify_calls(env.ha, clear=True)) == 1
+        await env.tap(accept, APPROVER)
+        assert [a["outcome"] for a in await env.answers(1)] == ["late"]
+        assert light_calls(env.ha) == []
+
+
+async def test_review_m1_unrelated_change_keeps_the_request(tmp_path: Path) -> None:
+    async with approval_env(tmp_path) as env:
+        agent = await env.agent()
+        other = await env.h.agent(**APPROVE)
+        task = env.start_call(agent)
+        accept, _ = actions(await env.sent())
+        env.events.publish("agents", "updated", other.id, {"enabled": True})
+        env.events.publish("agents", "updated", agent.id, {"enabled": True})
+        await asyncio.sleep(0.05)
+        assert (await env.record()).status == "pending"
+        await env.tap(accept, APPROVER)
+        assert (await task).ok
+
+
+async def test_review_m2_admin_change_summary_names_the_command(
+    tmp_path: Path,
+) -> None:
+    async with approval_env(tmp_path) as env:
+        agent = await env.h.agent(
+            tools__ha={"level": "admin"}, approval__tools=["ha.admin_change"]
+        )
+        env.h.reset()
+        command = {
+            "type": "config/entity_registry/remove",
+            "entity_id": "light.kitchen",
+        }
+        task = asyncio.create_task(
+            env.h.call(agent, "ha.admin_change", {"command": command})
+        )
+        data = await env.sent()
+        assert data["message"].splitlines() == [
+            f"Agent {agent.name!r} asks to run ha.admin_change.",
+            "Command: config/entity_registry/remove",
+            "entity_id: light.kitchen",
+        ]
+        _, reject = actions(data)
+        await env.tap(reject, APPROVER)
+        assert (await task).error_code == "approval_rejected"
+
+
+def test_review_m2_admin_summary_drops_free_text() -> None:
+    from hagent_app.approvals.service import summarize  # noqa: PLC0415
+    from hagent_app.tools.base import Prepared  # noqa: PLC0415
+
+    command = {
+        "type": "config/label_registry/create",
+        "name": "Tap Accept to dismiss",
+        "label_id": "Tap Accept now",
+        "area_id": "kitchen",
+        "note_id": "free_text",
+    }
+    text = summarize("A", "ha.admin_change", Prepared(command, command))
+    assert "Tap" not in text
+    assert "note_id" not in text
+    assert "Command: config/label_registry/create" in text
+    assert "area_id: kitchen" in text
+    unknown = summarize("A", "ha.admin_change", Prepared({"type": "Tap Accept"}, None))
+    assert "Tap" not in unknown
+
+
+@pytest.mark.parametrize("level", ["read", "control", "admin"])
+async def test_review_m3_no_call_service_subscription(
+    tmp_path: Path, level: str
+) -> None:
+    async with harness(tmp_path) as h:
+        tools_ha: dict[str, Any] = {"level": level}
+        if level != "admin":
+            tools_ha["scope"] = {"areas": ["kitchen"]}
+        agent = await h.agent(tools__self=True, tools__ha=tools_ha)
+        h.reset()
+        result = await h.call(
+            agent,
+            "self.create",
+            {"kind": "subscription", "spec": {"event_type": "call_service"}},
+        )
+        assert result.error_code == "event_not_permitted"
+        assert h.store_calls() == []
+
+
+async def test_review_l1_cancel_while_waiting_writes_a_denial(tmp_path: Path) -> None:
+    async with approval_env(tmp_path) as env:
+        agent = await env.agent()
+        task = env.start_call(agent)
+        await env.sent()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        rows = await env.h.audit.entries(agent.id)
+        assert [(r.status, r.reason_code) for r in rows] == [
+            ("denied", "approval_cancelled")
+        ]
+        assert (await env.record()).status == "cancelled"
+
+
+async def test_review_l1_cancel_after_accept_writes_a_denial(tmp_path: Path) -> None:
+    async with approval_env(tmp_path) as env:
+        agent = await env.agent()
+        service = env.approvals.service()
+        hold = asyncio.Event()
+        notifier = service._notifier
+        original = notifier.clear
+
+        async def slow_clear(message: Any, targets: Any) -> None:
+            await hold.wait()
+            await original(message, targets)
+
+        notifier.clear = slow_clear  # type: ignore[method-assign]
+        task = env.start_call(agent)
+        accept, _ = actions(await env.sent())
+        await env.tap(accept, APPROVER)
+        for _ in range(200):
+            if (await env.record()).status == "accepted":
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        rows = await env.h.audit.entries(agent.id)
+        assert [r.reason_code for r in rows] == ["approval_cancelled"]
+        assert light_calls(env.ha) == []
+
+
+async def test_review_l2_header_needs_the_supervisor_peer(tmp_path: Path) -> None:
+    async with (
+        api_env(tmp_path, dev_trust_user_header=False, timeout_seconds=1) as (
+            env,
+            base,
+        ),
+        aiohttp.ClientSession() as session,
+    ):
+        task = env.start_call(await env.agent())
+        await env.sent()
+        record = await env.record()
+        async with session.post(
+            f"{base}/{record.id}/answer",
+            json={"decision": "accept"},
+            headers={"X-Remote-User-Id": APPROVER},
+        ) as resp:
+            assert resp.status == 403
+            assert (await resp.json())["error"]["code"] == "no_user"
+        assert (await task).error_code == "approval_timeout"
+        assert light_calls(env.ha) == []
+
+
+async def test_review_l2_dev_option_logs_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async with approval_env(tmp_path, dev_trust_user_header=True):
+        pass
+    assert "dev_trust_user_header is on" in caplog.text
+
+
+async def test_review_l3_dry_run_of_a_read_tool_sends_nothing(tmp_path: Path) -> None:
+    async with approval_env(tmp_path) as env:
+        agent = await env.h.agent(**CONTROL_KITCHEN, approval__tools=["ha.get_state"])
+        env.h.reset()
+        result = await env.h.call(
+            agent, "ha.get_state", {"entity_id": "light.kitchen"}, dry_run=True
+        )
+        assert result.ok
+        assert result.data["needs_approval"] is True
+        assert notify_calls(env.ha) == []
+        assert env.ha.ha_commands() == []
+
+
+async def test_review_l4_answer_after_expires_at_is_late(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hagent_app.approvals.service as svc  # noqa: PLC0415
+
+    async with approval_env(tmp_path, timeout_seconds=2) as env:
+        task = env.start_call(await env.agent())
+        await env.sent()
+        record = await env.record()
+        real_now = svc._now
+        monkeypatch.setattr(svc, "_now", lambda: real_now() + timedelta(seconds=60))
+        outcome = await env.approvals.service().answer(
+            record.id, "accept", APPROVER, "api"
+        )
+        assert outcome == "late"
+        monkeypatch.setattr(svc, "_now", real_now)
+        assert (await task).error_code == "approval_timeout"
         assert light_calls(env.ha) == []

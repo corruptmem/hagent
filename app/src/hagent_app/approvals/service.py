@@ -41,10 +41,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from hagent_app.agents import AgentReader
 from hagent_app.approvals.config import ApprovalsConfig
 from hagent_app.approvals.notifier import ApprovalMessage, Delivery, Notifier
 from hagent_app.http.events import ChangeEvents
 from hagent_app.storage import Database, transaction
+from hagent_app.tools.admin import CHANGE_COMMANDS, HELPER_DOMAINS
 from hagent_app.tools.base import Prepared, ToolContext
 from hagent_app.tools.executor import ApprovalOutcome
 
@@ -53,6 +55,18 @@ _LOG = logging.getLogger(__name__)
 ACTION_EVENT = "mobile_app_notification_action"
 ACTION_ID = re.compile(r"HAGENT_(ACCEPT|REJECT)_([0-9a-f]{32})")
 REQUEST_ID = re.compile(r"[0-9a-f]{32}")
+ADMIN_CHANGE = "ha.admin_change"
+ID_VALUE = re.compile(r"[a-z0-9_.-]{1,100}")
+ADMIN_ID_KEYS = (
+    "entity_id",
+    "device_id",
+    "area_id",
+    "floor_id",
+    "label_id",
+    "dashboard_id",
+    "url_path",
+    *(f"{domain}_id" for domain in HELPER_DOMAINS),
+)
 TOPIC = "approvals"
 MAX_LISTED = 10
 
@@ -144,6 +158,7 @@ class ApprovalRecord:
 @dataclass
 class _Waiter:
     approvers: frozenset[str]
+    ctx: ToolContext
     future: asyncio.Future[str] = field(
         default_factory=lambda: asyncio.get_running_loop().create_future()
     )
@@ -156,6 +171,8 @@ def summarize(agent_name: str, tool: str, prepared: Prepared) -> str:
     a misleading prompt to the approver.
     """
     lines = [f"Agent {agent_name!r} asks to run {tool}."]
+    if tool == ADMIN_CHANGE:
+        lines.extend(_admin_lines(prepared.request))
     for label, values in (
         ("Services", prepared.services),
         ("Entities", prepared.entities),
@@ -168,6 +185,24 @@ def summarize(agent_name: str, tool: str, prepared: Prepared) -> str:
                 text += f" and {more} more"
             lines.append(f"{label}: {text}")
     return "\n".join(lines)
+
+
+def _admin_lines(command: Mapping[str, Any]) -> list[str]:
+    """The command type and its ID fields, if they are plain IDs.
+
+    The type must be in the allowlist of change commands. Only fixed ID keys
+    whose values match ``ID_VALUE`` go into the text, so a model cannot put
+    free text in the notification.
+    """
+    kind = command.get("type")
+    if not isinstance(kind, str) or kind not in CHANGE_COMMANDS:
+        return ["Command: (not shown)"]
+    lines = [f"Command: {kind}"]
+    for key in ADMIN_ID_KEYS:
+        value = command.get(key)
+        if isinstance(value, str) and ID_VALUE.fullmatch(value):
+            lines.append(f"{key}: {value}")
+    return lines
 
 
 def message_for(request_id: str, summary: str) -> ApprovalMessage:
@@ -190,19 +225,21 @@ class ApprovalService:
     yet. The service refuses to send a request while it is ``None``.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only services
         self,
         db: Database,
         notifier: Notifier,
         config: ApprovalsConfig,
         *,
         app_user: Callable[[], Any],
+        agents: AgentReader,
         events: ChangeEvents | None = None,
     ) -> None:
         self._db = db
         self._notifier = notifier
         self._config = config
         self._app_user = app_user
+        self._agents = agents
         self._events = events
         self._waiters: dict[str, _Waiter] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -219,20 +256,17 @@ class ApprovalService:
         self, ctx: ToolContext, tool: str, prepared: Prepared
     ) -> ApprovalOutcome:
         """Hold the call until an approver answers or the time runs out."""
-        if self._closed:
-            return _unavailable("the approval service is not running")
-        if self._app_user() is None:
-            return _unavailable("the HA user of the app is not known yet")
+        refusal = self._refusal()
+        if refusal is not None:
+            return refusal
         approvers = self.current_approvers()
-        if not approvers:
-            return _unavailable("no approvers are set")
 
         request_id = secrets.token_hex(16)
         summary = summarize(ctx.agent.name, tool, prepared)
         message = message_for(request_id, summary)
         created = _now()
         expires = created + timedelta(seconds=self._config.timeout_seconds)
-        waiter = _Waiter(approvers)
+        waiter = _Waiter(approvers, ctx)
         await self._insert(
             ctx=ctx,
             request_id=request_id,
@@ -274,6 +308,27 @@ class ApprovalService:
         finally:
             self._waiters.pop(request_id, None)
         await self._notifier.clear(message, delivery.targets)
+        return await self._outcome(ctx, request_id, status)
+
+    def _refusal(self) -> ApprovalOutcome | None:
+        """Why the service cannot send a request now, or ``None``."""
+        if self._closed:
+            return _unavailable("the approval service is not running")
+        if self._app_user() is None:
+            return _unavailable("the HA user of the app is not known yet")
+        if not self.current_approvers():
+            return _unavailable("no approvers are set")
+        return None
+
+    async def _outcome(
+        self, ctx: ToolContext, request_id: str, status: str
+    ) -> ApprovalOutcome:
+        """The gate answer for a final status. An accept needs a fresh agent."""
+        if status == "accepted":
+            stale = await self._stale_reason(ctx)
+            if stale is not None:
+                await self._note(request_id, f"accepted, but not run: {stale}")
+                return ApprovalOutcome(False, "approval_stale", stale)
         return _OUTCOMES.get(status) or _unavailable(
             f"the approval request ended: {status}"
         )
@@ -296,6 +351,46 @@ class ApprovalService:
         record = await self.get(request_id)
         return record.status if record else "failed"
 
+    async def _stale_reason(self, ctx: ToolContext) -> str | None:
+        """Why the definition of the call no longer holds, or ``None``.
+
+        The scope check ran before the wait. The call may run only with the
+        same live, enabled definition version.
+        """
+        try:
+            current = await self._agents.get(ctx.agent.id)
+        except Exception:
+            _LOG.exception("cannot read the agent after an approval")
+            return "the agent could not be read after the approval"
+        if current is None:
+            return "the agent was deleted during the approval"
+        if not current.enabled:
+            return "the agent was turned off during the approval"
+        if current.version != ctx.agent.version:
+            return "the agent definition changed during the approval"
+        return None
+
+    def on_agent_change(self, agent_id: str) -> None:
+        """End the pending requests of an agent that changed. It must be fast."""
+        if any(w.ctx.agent.id == agent_id for w in self._waiters.values()):
+            self._spawn(self._cancel_stale(agent_id))
+
+    async def _cancel_stale(self, agent_id: str) -> None:
+        for request_id, waiter in list(self._waiters.items()):
+            if waiter.ctx.agent.id != agent_id or waiter.future.done():
+                continue
+            stale = await self._stale_reason(waiter.ctx)
+            if stale is None:
+                continue
+            won = await self._finish(request_id, "cancelled", reason=stale)
+            if won and not waiter.future.done():
+                waiter.future.set_result("cancelled")
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
     # -- answers
 
     def on_event(self, event: Mapping[str, Any]) -> None:
@@ -312,7 +407,7 @@ class ApprovalService:
         decision: Decision = "accept" if match.group(1) == "ACCEPT" else "reject"
         context = event.get("context")
         user_id = context.get("user_id") if isinstance(context, Mapping) else None
-        task = asyncio.create_task(
+        self._spawn(
             self.answer(
                 match.group(2),
                 decision,
@@ -320,8 +415,6 @@ class ApprovalService:
                 "notification",
             )
         )
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
 
     async def answer(
         self, request_id: str, decision: Decision, user_id: str | None, via: Via
@@ -348,7 +441,11 @@ class ApprovalService:
         else:
             status = "accepted" if decision == "accept" else "rejected"
             won = await self._finish(
-                request_id, status, answered_by=user_id, answered_via=via
+                request_id,
+                status,
+                answered_by=user_id,
+                answered_via=via,
+                before_expiry=True,
             )
             outcome = "applied" if won else "late"
             if won and not waiter.future.done():
@@ -489,7 +586,7 @@ class ApprovalService:
 
         await self._db.run(run)
 
-    async def _finish(
+    async def _finish(  # noqa: PLR0913 - keyword-only fields
         self,
         request_id: str,
         status: str,
@@ -497,16 +594,26 @@ class ApprovalService:
         reason: str | None = None,
         answered_by: str | None = None,
         answered_via: str | None = None,
+        before_expiry: bool = False,
     ) -> bool:
-        """Move a pending row to ``status``. Return False if it was not pending."""
+        """Move a pending row to ``status``. Return False if it was not pending.
+
+        With ``before_expiry`` (an answer), the row must also be before its
+        ``expires_at``. The stored limit is then a hard limit, also when the
+        wall clock jumps or the event loop stalls.
+        """
         now = _now().isoformat()
+        sql = (
+            "UPDATE approval_requests SET status = ?, finished_at = ?, reason = ?, "
+            "answered_by = ?, answered_via = ? WHERE id = ? AND status = 'pending'"
+        )
+        params: list[Any] = [status, now, reason, answered_by, answered_via, request_id]
+        if before_expiry:
+            sql += " AND expires_at > ?"
+            params.append(now)
 
         def run(conn: sqlite3.Connection) -> bool:
-            cur = conn.execute(
-                "UPDATE approval_requests SET status = ?, finished_at = ?, reason = ?, "
-                "answered_by = ?, answered_via = ? WHERE id = ? AND status = 'pending'",
-                (status, now, reason, answered_by, answered_via, request_id),
-            )
+            cur = conn.execute(sql, params)
             return cur.rowcount == 1
 
         won = await self._db.run(run)
@@ -536,6 +643,15 @@ class ApprovalService:
         except sqlite3.Error:
             _LOG.exception("cannot record an approval answer")
 
+    async def _note(self, request_id: str, reason: str) -> None:
+        def run(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE approval_requests SET reason = ? WHERE id = ?",
+                (reason, request_id),
+            )
+
+        await self._db.run(run)
+
     def _publish(self, request_id: str, action: str, status: str) -> None:
         if self._events is not None:
             self._events.publish(TOPIC, action, request_id, {"status": status})
@@ -545,6 +661,9 @@ _OUTCOMES = {
     "accepted": ApprovalOutcome(True, "approved", "an approver accepted the call"),
     "rejected": ApprovalOutcome(
         False, "approval_rejected", "the approver rejected the call"
+    ),
+    "cancelled": ApprovalOutcome(
+        False, "approval_stale", "the agent changed during the approval"
     ),
     "timeout": ApprovalOutcome(
         False, "approval_timeout", "no approver answered in time"

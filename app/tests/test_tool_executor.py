@@ -49,6 +49,236 @@ READ_HALL = {"tools__ha": {"level": "read", "scope": {"entities": ["light.hall"]
 CONTROL_KITCHEN = {"tools__ha": {"level": "control", "scope": {"areas": ["kitchen"]}}}
 SELF_READ_HALL = {"tools__self": True, **READ_HALL}
 
+ADMIN_LOCK_APPROVAL = {
+    "tools__ha": {"level": "admin"},
+    "approval": {"entities": ["lock.front"]},
+}
+
+# Regressions for review-8 (security review of task-8). Each one was a
+# working bypass before the fix.
+REVIEW_8_CASES = [
+    # Finding 1: a cross-domain service with unscoped selectors in its data.
+    Case(
+        "ha.call_service",
+        {
+            "domain": "recorder",
+            "service": "purge_entities",
+            "target": {"entity_id": "input_boolean.guest"},
+            "data": {"entity_globs": ["*"], "keep_days": 0},
+        },
+        "indirect_service",
+        {"outputs": ["input_boolean.guest"]},
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "recorder",
+            "service": "purge_entities",
+            "target": {"entity_id": "light.hall"},
+            "data": {"entity_globs": ["*"], "domains": ["lock", "sensor"]},
+        },
+        # The scope names the service, but it declares no entity target.
+        "target_not_declared",
+        {
+            "tools__ha": {
+                "level": "control",
+                "scope": {"entities": ["light.hall"]},
+                "services": ["recorder.purge_entities"],
+            }
+        },
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "zwave_js",
+            "service": "multicast_set_value",
+            "target": {"entity_id": "light.hall"},
+            "data": {
+                "broadcast": True,
+                "command_class": 37,
+                "property": "targetValue",
+                "value": True,
+            },
+        },
+        "indirect_service",
+        {"outputs": ["light.hall"]},
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "remote_bridge",
+            "service": "send",
+            "target": {"entity_id": "light.hall"},
+            "data": {"command": "x"},
+        },
+        "cross_domain",
+        {"outputs": ["light.hall"]},
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.kitchen"},
+            "data": {"entity_globs": ["*"]},
+        },
+        "unknown_field",
+        CONTROL_KITCHEN,
+    ),
+    # Finding 2: group.set and group.remove on a group outside the scope.
+    Case(
+        "ha.call_service",
+        {
+            "domain": "group",
+            "service": "set",
+            "data": {"object_id": "everyone", "entities": ["light.hall"]},
+        },
+        "out_of_scope",
+        {
+            "tools__ha": {
+                "level": "control",
+                "scope": {"entities": ["light.hall"]},
+                "services": ["group.set", "group.remove"],
+            }
+        },
+    ),
+    Case(
+        "ha.call_service",
+        {"domain": "group", "service": "remove", "data": {"object_id": "everyone"}},
+        "out_of_scope",
+        {
+            "tools__ha": {
+                "level": "control",
+                "scope": {"entities": ["light.hall"]},
+                "services": ["group.set", "group.remove"],
+            }
+        },
+    ),
+    # Finding 3: an empty or stale state cache.
+    Case(
+        "ha.call_service",
+        {
+            "domain": "light",
+            "service": "turn_on",
+            "target": {"entity_id": "light.hall"},
+        },
+        "states_unavailable",
+        {"tools__ha": {"level": "control", "scope": {"entities": ["light.hall"]}}},
+        setup="stale_states",
+    ),
+    Case(
+        "ha.get_state",
+        {"entity_id": "light.hall"},
+        "states_unavailable",
+        READ_HALL,
+        setup="stale_states",
+    ),
+    Case(
+        "ha.find_entities",
+        {},
+        "states_unavailable",
+        READ_HALL,
+        setup="stale_states",
+    ),
+    # Finding 4: rule and schedule specs, and unchecked subscription keys.
+    Case(
+        "self.create",
+        {
+            "kind": "rule",
+            "spec": {
+                "trigger": {"entity_id": "lock.front"},
+                "action": {
+                    "service": "lock.unlock",
+                    "target": {"entity_id": "lock.front"},
+                },
+            },
+        },
+        "not_supported",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.create",
+        {"kind": "schedule", "spec": {"cron": "* * * * *"}},
+        "not_supported",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.update",
+        {"kind": "rule", "item_id": "r1", "spec": {}},
+        "not_supported",
+        SELF_READ_HALL,
+        setup="own_item_r1",
+    ),
+    Case(
+        "self.create",
+        {
+            "kind": "subscription",
+            "spec": {"entity_ids": ["light.hall"], "entity_globs": ["*"]},
+        },
+        "invalid_spec",
+        SELF_READ_HALL,
+    ),
+    Case(
+        "self.create",
+        {
+            "kind": "subscription",
+            "spec": {"entity_ids": ["light.hall"], "domains": ["lock"]},
+        },
+        "invalid_spec",
+        SELF_READ_HALL,
+    ),
+    # Finding 6: admin approval by entity, through a group and through data.
+    Case(
+        "ha.call_service",
+        {"domain": "lock", "service": "unlock", "target": {"entity_id": "group.locks"}},
+        "approval_unavailable",
+        ADMIN_LOCK_APPROVAL,
+        setup="group_locks",
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "scene",
+            "service": "apply",
+            "data": {"entities": {"lock.front": {"state": "unlocked"}}},
+        },
+        "approval_unavailable",
+        ADMIN_LOCK_APPROVAL,
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "scene",
+            "service": "apply",
+            "data": {"entities": {"{{ 'lock.front' }}": {"state": "unlocked"}}},
+        },
+        "approval_unavailable",
+        ADMIN_LOCK_APPROVAL,
+    ),
+    *(
+        Case(
+            "ha.call_service",
+            {"domain": "lock", "service": "unlock", key: {"entity_id": value}},
+            "approval_unavailable",
+            ADMIN_LOCK_APPROVAL,
+        )
+        for key in ("target", "data")
+        for value in ("all", "LOCK.FRONT", "lock.front, lock.back", " lock.front")
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "scene",
+            "service": "apply",
+            "data": {"x": {"entity_id": "all"}},
+        },
+        "approval_unavailable",
+        ADMIN_LOCK_APPROVAL,
+    ),
+    # Finding 7: an unexpected error in the check.
+    Case("memory.rule_stats", {"rule_id": "r1"}, "check_failed", setup="boom"),
+]
+
 CASES = [
     # ha
     Case("ha.get_state", {"entity_id": "light.kitchen"}, "out_of_scope", READ_HALL),
@@ -121,7 +351,7 @@ CASES = [
     ),
     Case(
         "ha.call_service",
-        {"domain": "mqtt", "service": "publish", "data": {"topic": "t"}},
+        {"domain": "conversation", "service": "process", "data": {"text": "t"}},
         "no_target",
         {"tools__ha": {"level": "control", "scope": {"all": True}}},
     ),
@@ -239,9 +469,13 @@ CASES = [
     ),
     Case(
         "self.update",
-        {"kind": "rule", "item_id": "r1", "spec": {}},
+        {
+            "kind": "subscription",
+            "item_id": "r1",
+            "spec": {"entity_ids": ["light.hall"]},
+        },
         "not_owner",
-        {"tools__self": True},
+        SELF_READ_HALL,
         setup="other_owner",
     ),
     Case(
@@ -271,13 +505,15 @@ CASES = [
     ),
     # Unknown tool names.
     Case("ha.run_anything", {}, "unknown_tool"),
+    *REVIEW_8_CASES,
 ]
 
 
 # Tools that cannot get a scope denial, with the test that proves their
 # limit.
+# ha.find_entities also filters (test_find_entities_returns_only_the_read_scope),
+# but it has a denial case: states_unavailable.
 FILTER_TOOLS = {
-    "ha.find_entities": "test_find_entities_returns_only_the_read_scope",
     # These take no agent or item ID: the executor binds the agent ID, so
     # the only out-of-scope form is an extra argument (in CASES).
     "memory.search": "test_memory_and_self_use_the_invocation_agent",
@@ -328,7 +564,24 @@ async def _agent_for(h: Harness, case: Case) -> Agent:
                 and h.states.get("light.kitchen_group") is not None
             )
         )
+    if case.setup == "group_locks":
+        await h.ha.set_state("group.locks", "locked", {"entity_id": ["lock.front"]})
+        await wait_until(lambda: h.states.get("group.locks") is not None)
     agent = await h.agent(**changes)
+    if case.setup == "stale_states":
+        # The registry stays current. Only the state cache is not in sync,
+        # as after a reconnect before the state reload ends.
+        h.states._synced = False
+        assert not h.registry.stale
+    if case.setup == "own_item_r1":
+        h.agent_state.owners["r1"] = agent.id
+    if case.setup == "boom":
+
+        async def boom(rule_id: str) -> str:
+            msg = "db locked"
+            raise RuntimeError(msg)
+
+        h.history.rule_owner = boom  # type: ignore[method-assign]
     if case.setup == "other_owner":
         h.history.owners["r1"] = "another-agent"
         h.agent_state.owners["r1"] = "another-agent"
@@ -444,7 +697,9 @@ async def test_knowledge_search_passes_only_attached_stores(h: Harness) -> None:
     assert agent.private_store is not None
     result = await h.call(agent, "knowledge.search", {"query": "boiler"})
     assert result.ok, result.error
-    assert h.knowledge.calls == [("search", (agent.private_store.id,), "boiler")]
+    assert h.knowledge.calls == [
+        ("search", (agent.private_store.id,), "boiler", agent.id)
+    ]
     result = await h.call(
         agent,
         "knowledge.write",
@@ -763,3 +1018,96 @@ async def test_registry_stays_stale_until_the_reload_ends(h: Harness) -> None:
     release.set()
     await wait_until(lambda: not h.registry.stale)
     assert (await h.call(agent, "ha.call_service", CALL)).ok
+
+
+# ------------------------------------------------ review-8 regressions
+
+
+async def test_subscription_stores_the_checked_spec(h: Harness) -> None:
+    agent = await h.agent(**SELF_READ_HALL)
+    result = await h.call(
+        agent,
+        "self.create",
+        {"kind": "subscription", "spec": {"entity_ids": ["light.hall"]}},
+    )
+    assert result.ok, result.error
+    assert h.agent_state.specs == [
+        {
+            "event_type": "state_changed",
+            "entity_ids": ["light.hall"],
+            "include_own_writes": False,
+        }
+    ]
+
+
+async def test_admin_event_subscription_is_strict(h: Harness) -> None:
+    agent = await h.agent(tools__self=True, tools__ha={"level": "admin"})
+    # call_service is denied at every level (task-16 review, M3).
+    spec = {"event_type": "automation_triggered", "debounce_seconds": 5}
+    result = await h.call(agent, "self.create", {"kind": "subscription", "spec": spec})
+    assert result.ok, result.error
+    spec = {"event_type": "automation_triggered", "entity_globs": ["*"]}
+    result = await h.call(agent, "self.create", {"kind": "subscription", "spec": spec})
+    assert result.error_code == "invalid_spec"
+
+
+async def test_admin_scan_failure_needs_approval_only_with_entity_approval(
+    h: Harness,
+) -> None:
+    # Without approval.entities, a template in admin data does not hold the call.
+    agent = await h.agent(tools__ha={"level": "admin"})
+    data = {"entities": {"{{ 'lock.front' }}": {"state": "unlocked"}}}
+    result = await h.call(
+        agent, "ha.call_service", {"domain": "scene", "service": "apply", "data": data}
+    )
+    assert result.ok, result.error
+
+
+async def test_admin_group_target_asks_the_approver(tmp_path: Path) -> None:
+    gate = RecordingGate(answer=True)
+    async with harness(tmp_path, approval=gate) as h:
+        await h.ha.set_state("group.locks", "locked", {"entity_id": ["lock.front"]})
+        await wait_until(lambda: h.states.get("group.locks") is not None)
+        agent = await h.agent(
+            tools__ha={"level": "admin"}, approval={"entities": ["lock.front"]}
+        )
+        result = await h.call(
+            agent,
+            "ha.call_service",
+            {
+                "domain": "lock",
+                "service": "unlock",
+                "target": {"entity_id": "group.locks"},
+            },
+        )
+        assert result.ok, result.error
+        assert gate.requests == ["ha.call_service"]
+
+
+async def test_state_cache_resync_permits_calls_again(h: Harness) -> None:
+    agent = await h.agent(**READ_HALL)
+    h.states._synced = False
+    result = await h.call(agent, "ha.get_state", {"entity_id": "light.hall"})
+    assert result.error_code == "states_unavailable"
+    await h.ha.drop()
+    await wait_until(lambda: not h.states.stale and not h.registry.stale)
+    result = await h.call(agent, "ha.get_state", {"entity_id": "light.hall"})
+    assert result.ok, result.error
+
+
+async def test_check_failure_is_logged_and_audited(
+    h: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def boom(rule_id: str) -> str:
+        msg = "db locked"
+        raise RuntimeError(msg)
+
+    h.history.rule_owner = boom  # type: ignore[method-assign]
+    agent = await h.agent()
+    result = await h.call(agent, "memory.rule_stats", {"rule_id": "r1"})
+    assert result.error_code == "check_failed"
+    assert "db locked" not in (result.error or "")
+    assert "db locked" in caplog.text
+    [entry] = await h.audit.entries(agent.id)
+    assert entry.decision == "denied"
+    assert entry.reason_code == "check_failed"

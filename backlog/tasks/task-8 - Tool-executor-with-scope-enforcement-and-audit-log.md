@@ -1,11 +1,11 @@
 ---
 id: TASK-8
 title: Tool executor with scope enforcement and audit log
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-15 00:16'
+updated_date: '2026-11-15 00:50'
 labels:
   - app
   - security
@@ -52,6 +52,16 @@ Design: docs/design.md sections 8 and 19.
 9. Wire ToolsComponent into default_components; document in app/README.md and docs/api.md.
 
 10. After review: check group members, entity IDs in data keys, safe knowledge paths, no approval request in dry runs, final audit status on cancel.
+
+11. Review-8 fixes. Registry: keep the get_services target filters and the declared fields (sections flattened). Scope check: a call with target entities needs a declared entity target that includes each entity domain. An explicit entity of another domain needs the exact service name in services. Outputs never permit a cross-domain service. A data key outside the declared fields is denied. Missing metadata denies. INDIRECT_DOMAINS gets recorder, zwave_js, zha, matter, knx, mqtt, group, logger, system_log, backup and hagent.
+
+12. group.set and group.remove: object_id maps to group.<object_id>, which must be in the control scope.
+
+13. A state cache that is not ready or is stale denies call_service and the read tools that use the cache (states_unavailable).
+
+14. self.create and self.update: strict subscription model (extra=forbid), entities checked against the read scope. Rule and schedule kinds return not_supported until task-13 and task-15 add validated models.
+
+15. Scope monitor stores a grown baseline only after the notification succeeds. admin_entities expands groups and scans data; a failed scan marks the call for approval when approval.entities is set. Executor catch-all denies with check_failed. ENTITY_ID and _NAME use fullmatch.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -86,6 +96,21 @@ Evidence: mise run check passes (ruff, mypy strict, 300 tests). Tool tests: 222 
 - AC6: test_permitted_service_call_sends_explicit_entities, test_admin_change_keeps_the_previous_version, test_admin_service_call_keeps_previous_states, test_no_ha_call_when_the_audit_write_fails, test_cancelled_call_finishes_its_audit_row.
 - AC7: test_out_of_scope_call_never_reaches_ha_or_a_store (42 cases; asserts FakeHA.ha_commands() and fake store calls are empty), test_every_tool_has_an_out_of_scope_case.
 - Task-7 AC #4 completion: test_tools_package_imports_no_definition_writer and test_executor_reaches_no_agent_service.
+
+Review-8 fixes (security review of task-8, 7 findings):
+- F1 (critical): the registry keeps the get_services target filters and field names. A section adds its child fields. The scope check uses this metadata as an allowlist. A call with target entities needs a declared entity target that accepts each entity domain (target_not_declared). Each data key must be a declared field (unknown_field). A description without metadata or without 'fields' causes a denial (service_metadata). An explicit target entity of another domain needs the exact service name in services (cross_domain). A wildcard does not permit it. Outputs never permit another domain. INDIRECT_DOMAINS now also holds recorder, zwave_js, zha, matter, knx, mqtt, group, logger, system_log, backup and hagent.
+- F2: group.set and group.remove add group.<object_id> to the checked entities. object_id must be a slug. object_id stays in the data.
+- F3: ha.call_service, ha.get_state and ha.find_entities deny with states_unavailable while the state cache is not ready or is stale. The pure-level cache probes are closed by this executor gate, not by check_service_call.
+- F4: self.create and self.update validate subscription specs with strict models (extra=forbid, strict=True) and store the validated dump. Unknown keys give invalid_spec. Rule and schedule kinds give not_supported. SPEC_CHECKS in store_tools.py is the seam for task-13 and task-15.
+- F5: the scope monitor stores a grown baseline only after HA accepts the notification. Otherwise the next reload sends it again.
+- F6: admin_entities resolves targets, normalises entity_id text as HA does (comma split, strip, lower case), scans data and expands groups. Decision: an incomplete scan ('all', a template, an unparsable piece, groups nested too deep, no current registry) marks the call for approval only when approval.entities is set. Agents without entity approval are not held.
+- F7: the executor denies an unexpected error in authorize with check_failed, writes the denied audit row and logs the traceback.
+- Hardening: ENTITY_ID, service names and store paths use fullmatch. agents/definition.py validators use fullmatch too.
+Test codes that changed on purpose: mqtt.publish and recorder.purge with scope all now give indirect_service (no_target case now uses conversation.process). self.update on a rule now gives not_supported before the owner check. The fixture home now has realistic service descriptions (recorder, zwave_js and group follow HA Core 2026.6 services.yaml).
+Evidence: mise run check passes (ruff, mypy strict, 447 tests, frontend). The 10 review-8 probes all fail now (each bypass is denied). New regressions: REVIEW_8_CASES in test_tool_executor.py (31 cases; each asserts the denial code, no FakeHA command, no store call and a denied audit row), test_subscription_stores_the_checked_spec, test_admin_event_subscription_is_strict, test_admin_scan_failure_needs_approval_only_with_entity_approval, test_admin_group_target_asks_the_approver, test_state_cache_resync_permits_calls_again, test_check_failure_is_logged_and_audited; in test_tool_scope.py the review-8 section (cross domain, outputs, recorder, zwave, unknown fields, metadata, group object_id, trailing newline, admin_entities, description parsing); test_failed_notification_keeps_the_old_baseline in test_tool_monitor.py.
+Known limit: stored definitions are validated again on load. A stored definition with a wildcard for a newly indirect domain (for example mqtt.*) no longer loads.
+
+Lead: an independent security review found 1 critical, 3 medium and 3 low issues. task-8-fix fixed all 7. The lead re-ran the 10 original bypass probes against impl: all are now denied (indirect_service, outside the scope, no metadata, or check_failed). Accepted: stored wildcard scopes for newly indirect domains no longer load (no stored definitions exist yet).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -96,10 +121,16 @@ created: 2026-11-15 00:16
 ---
 Proposed follow-ups (not created): (1) task-13: rule writes change HA, so they must run through ToolExecutor or check_service_call to get the scope check and the audit row; self.create does not check rule specs. (2) task-15: check subscriptions again at delivery, because a scope can shrink after a subscription exists; enforce max_schedules and min_interval. (3) An HA REST client for admin changes to automation, script and scene configuration, with previous versions. (4) A management API route for the audit log and for effective scopes (design 7.2, Inspect > Permissions and Changes to HA).
 ---
+
+author: @claude
+created: 2026-11-15 00:49
+---
+Proposed follow-ups (not created): (1) task-13: add a strict rule spec model to SPEC_CHECKS. Check trigger entities against the read scope, and check each action with check_service_call at create time and again at fire time. (2) task-15: add a strict schedule spec model to SPEC_CHECKS, with the same action checks at fire time. (3) Decide whether to migrate stored definitions that use a wildcard for a newly indirect domain.
+---
 <!-- COMMENTS:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added the tools package: a pure scope check that resolves area, device, floor and label targets and rewrites each call to explicit entity IDs; the HA registry snapshot with fail-closed staleness; the tool executor with the ha, knowledge, memory and self groups, an approval hook and dry runs; the audit log (migration 0200) with previous versions for admin changes; and the scope monitor that notifies HA when a scope grows. Added floors to HAScope with the lead's approval. Store protocols let task-10, task-11 and task-13 to task-15 plug in. Verified with mise run check (300 tests), including an out-of-scope table for every tool that asserts FakeHA and the fake stores receive nothing.
+Task-8 built the tool executor, the scope check and the audit log for the ha, knowledge, memory and self tools. The review-8 fixes close 7 findings. Service metadata is now an allowlist, with declared targets, declared fields and exact names for other domains. group object_id is checked. A stale state cache denies calls. Self specs are strict, and rules and schedules are not supported yet. A failed scope notification is sent again. The admin approval scan is complete or fails closed. Check errors are audited. Verified with mise run check (447 tests) and the 10 review probes, which are all denied now.
 <!-- SECTION:FINAL_SUMMARY:END -->

@@ -17,6 +17,9 @@ exists (task-20), the app reads them from the ``approvals`` section of
 - ``notify_services``: an optional explicit notify service list for an
   approver. It replaces the person chain for that approver (see
   ``notifier.py``).
+- ``dev_trust_user_header``: development only. The API then trusts the
+  ``X-Remote-User-Id`` header from every allowed peer, not only from the
+  Supervisor address. The app logs a warning at start.
 """
 
 from __future__ import annotations
@@ -52,8 +55,15 @@ class ApprovalsConfig:
     approvers: list[str] = field(default_factory=list)
     timeout_seconds: float = 300.0
     notify_services: dict[str, list[str]] = field(default_factory=dict)
+    # Development only: trust X-Remote-User-Id from every allowed peer, not
+    # only from the Supervisor. The app logs a warning at start.
+    dev_trust_user_header: bool = False
 
     def __post_init__(self) -> None:
+        flag: object = self.dev_trust_user_header
+        if not isinstance(flag, bool):
+            msg = "approvals.dev_trust_user_header must be true or false"
+            raise ConfigError(msg)
         if not isinstance(self.approvers, list) or not all(
             isinstance(a, str) and USER_ID.fullmatch(a) for a in self.approvers
         ):

@@ -18,6 +18,7 @@ Layout:
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from hagent_app.tools.registry import RegistrySnapshot, parse_snapshot
@@ -65,28 +66,127 @@ AREAS: list[dict[str, Any]] = [
 FLOORS = [{"floor_id": "ground"}, {"floor_id": "upstairs"}]
 LABELS = [{"label_id": "quiet"}, {"label_id": "heating"}]
 
-SERVICES: dict[str, list[str]] = {
-    "light": ["turn_on", "turn_off", "toggle"],
-    "switch": ["turn_on", "turn_off"],
-    "climate": ["set_temperature"],
-    "lock": ["lock", "unlock"],
-    "number": ["set_value"],
-    "media_player": ["join", "play_media"],
-    "script": ["turn_on", "morning"],
-    "automation": ["trigger", "turn_off"],
-    "scene": ["turn_on", "apply"],
-    "homeassistant": ["turn_on", "restart"],
-    "shell_command": ["run"],
-    "rest_command": ["call"],
-    "python_script": ["run"],
-    "pyscript": ["run"],
-    "hassio": ["addon_stop"],
-    "notify": ["notify", "send_message"],
-    "mqtt": ["publish"],
-    "recorder": ["purge"],
-    "conversation": ["process"],
-    "input_boolean": ["turn_on", "turn_off"],
-    "persistent_notification": ["create"],
+
+def _fields(names: list[str]) -> dict[str, Any]:
+    return {name: {"selector": {"text": None}} for name in names}
+
+
+def _svc(
+    target: str | None = None,
+    fields: list[str] | None = None,
+    section: list[str] | None = None,
+) -> dict[str, Any]:
+    """A ``get_services`` description, in the shape that HA sends.
+
+    ``target`` is an entity domain, ``"*"`` for an entity target with no
+    domain filter, or ``None`` for no target. ``section`` adds a collapsed
+    section of fields, as ``light.turn_on`` has.
+    """
+    description: dict[str, Any] = {"fields": _fields(fields or [])}
+    if section:
+        description["fields"]["advanced_fields"] = {
+            "collapsed": True,
+            "fields": _fields(section),
+        }
+    if target == "*":
+        description["target"] = {"entity": [{"integration": "test"}]}
+    elif target is not None:
+        description["target"] = {"entity": {"domain": target}}
+    return description
+
+
+# The service descriptions of the sample home. The recorder, zwave_js and
+# group descriptions follow the HA Core 2026.6 services.yaml files.
+SERVICES: dict[str, dict[str, dict[str, Any]]] = {
+    "light": {
+        "turn_on": _svc("light", ["brightness", "transition"], ["flash", "effect"]),
+        "turn_off": _svc("light", ["transition", "flash"]),
+        "toggle": _svc("light", ["brightness", "transition"]),
+    },
+    "switch": {"turn_on": _svc("switch"), "turn_off": _svc("switch")},
+    "climate": {"set_temperature": _svc("climate", ["temperature", "hvac_mode"])},
+    "lock": {"lock": _svc("lock", ["code"]), "unlock": _svc("lock", ["code"])},
+    "number": {"set_value": _svc("number", ["value"])},
+    "media_player": {
+        "join": _svc("media_player", ["group_members"]),
+        "play_media": _svc("media_player", ["media_content_id", "media_content_type"]),
+    },
+    "input_boolean": {
+        "turn_on": _svc("input_boolean"),
+        "turn_off": _svc("input_boolean"),
+    },
+    "persistent_notification": {
+        "create": _svc(None, ["message", "title", "notification_id"])
+    },
+    "conversation": {"process": _svc(None, ["text", "language", "agent_id"])},
+    # An integration service whose entity target has no domain filter.
+    "remote_bridge": {"send": _svc("*", ["command"])},
+    # Indirect domains.
+    "script": {"turn_on": _svc("script", ["variables"]), "morning": _svc()},
+    "automation": {
+        "trigger": _svc("automation", ["skip_condition"]),
+        "turn_off": _svc("automation", ["stop_actions"]),
+    },
+    "scene": {
+        "turn_on": _svc("scene", ["transition"]),
+        "apply": _svc(None, ["entities", "transition"]),
+    },
+    "homeassistant": {"turn_on": _svc("*"), "restart": _svc()},
+    "shell_command": {"run": _svc()},
+    "rest_command": {"call": _svc()},
+    "python_script": {"run": _svc()},
+    "pyscript": {"run": _svc()},
+    "hassio": {"addon_stop": _svc(None, ["addon"])},
+    "notify": {
+        "notify": _svc(None, ["message", "title", "target", "data"]),
+        "send_message": _svc("notify", ["message", "title"]),
+    },
+    "mqtt": {"publish": _svc(None, ["topic", "payload", "qos", "retain"])},
+    "recorder": {
+        "purge": _svc(None, ["keep_days", "repack", "apply_filter"]),
+        "purge_entities": _svc(
+            None, ["entity_id", "domains", "entity_globs", "keep_days"]
+        ),
+    },
+    "zwave_js": {
+        "multicast_set_value": _svc(
+            None,
+            [
+                "area_id",
+                "device_id",
+                "entity_id",
+                "broadcast",
+                "command_class",
+                "endpoint",
+                "property",
+                "property_key",
+                "options",
+                "value",
+            ],
+        )
+    },
+    "zha": {"permit": _svc(None, ["duration", "ieee"])},
+    "matter": {"open_commissioning_window": _svc(None, ["device_id"])},
+    "knx": {"send": _svc(None, ["address", "payload", "type"])},
+    "group": {
+        "set": _svc(
+            None,
+            [
+                "object_id",
+                "name",
+                "icon",
+                "entities",
+                "add_entities",
+                "remove_entities",
+                "all",
+            ],
+        ),
+        "remove": _svc(None, ["object_id"]),
+    },
+    "logger": {"set_level": _svc()},
+    "system_log": {"clear": _svc()},
+    "backup": {"create": _svc()},
+    "hagent": {"invoke": _svc(None, ["agent_id", "text"])},
 }
 
 
@@ -102,6 +202,11 @@ def _entry(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def services() -> dict[str, dict[str, dict[str, Any]]]:
+    """A deep copy of the service descriptions."""
+    return copy.deepcopy(SERVICES)
+
+
 def snapshot() -> RegistrySnapshot:
     """The registry snapshot of the sample home."""
     return parse_snapshot(
@@ -110,7 +215,7 @@ def snapshot() -> RegistrySnapshot:
         areas=AREAS,
         floors=FLOORS,
         labels=LABELS,
-        services={d: {s: {} for s in names} for d, names in SERVICES.items()},
+        services=services(),
     )
 
 
@@ -121,7 +226,7 @@ def populate(ha: FakeHA) -> None:
     ha.registry["area"] = [dict(a) for a in AREAS]
     ha.registry["floor"] = [dict(f) for f in FLOORS]
     ha.registry["label"] = [dict(lb) for lb in LABELS]
-    ha.services = {d: {s: {} for s in names} for d, names in SERVICES.items()}
+    ha.services = services()
     stamp = now_iso()
     for item in ENTITIES:
         entity_id = item["entity_id"]
