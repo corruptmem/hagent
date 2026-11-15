@@ -23,6 +23,7 @@ from hagent_app.config import Config
 from hagent_app.ha import HAClient, StateCache
 from hagent_app.http import HttpServer
 from hagent_app.storage import Database, transaction
+from hagent_app.tools import ToolsComponent
 
 _LOG = logging.getLogger(__name__)
 
@@ -61,7 +62,8 @@ def default_components() -> list[Component]:
     http = HttpServer()
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
-    return [agents, http]
+    tools = ToolsComponent(http.events)
+    return [agents, tools, http]
 
 
 class App:

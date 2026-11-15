@@ -11,6 +11,14 @@ WebSocket API that the app uses:
   changes the target entities. Like real HA (task-2), the fake sends the
   ``state_changed`` events before the call result, and both carry the same
   context;
+- the registry lists (``config/<kind>_registry/list`` for entity,
+  device, area, floor and label), ``config/entity_registry/get`` and
+  ``get_services``, from ``FakeHA.registry`` and ``FakeHA.services``.
+  ``FakeHA.registry_updated`` sends ``<kind>_registry_updated``;
+- ``history/history_during_period`` and
+  ``recorder/statistics_during_period``. They return an entry for each
+  entity in ``states``, so that a test can see a reply that names more
+  entities than the request;
 - other commands, through ``FakeHA.handlers``.
 
 ``FakeHA.commands`` records every command that a client sends after
@@ -34,6 +42,7 @@ import itertools
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Self
 
 from aiohttp import WSMsgType, web
@@ -70,6 +79,10 @@ class FakeHA:
         self.states: dict[str, Message] = {}
         self.commands: list[Message] = []
         self.handlers: dict[str, Handler] = {}
+        self.registry: dict[str, list[Message]] = {
+            kind: [] for kind in ("entity", "device", "area", "floor", "label")
+        }
+        self.services: dict[str, dict[str, Message]] = {}
         self.connections_accepted = 0
         self._conns: list[_Conn] = []
         self._down = False
@@ -174,6 +187,20 @@ class FakeHA:
         """Accept connections again after ``restart``."""
         self._down = False
 
+    def registry_updated(self, kind: str) -> asyncio.Task[None]:
+        """Send ``<kind>_registry_updated``, as HA does after a change."""
+        return self.fire_event(f"{kind}_registry_updated", {"action": "update"})
+
+    def ha_commands(self) -> list[Message]:
+        """The commands that act on HA or read HA data.
+
+        This leaves out the commands that the registry loader, the state
+        cache and the subscriptions send.
+        """
+        background = {"get_states", "get_services", "subscribe_events"}
+        background |= {f"config/{k}_registry/list" for k in self.registry}
+        return [c for c in self.commands if c.get("type") not in background]
+
     def commands_of(self, kind: str) -> list[Message]:
         """The recorded commands of one type."""
         return [c for c in self.commands if c.get("type") == kind]
@@ -237,6 +264,8 @@ class FakeHA:
                     result = await result
             elif kind == "get_states":
                 result = list(self.states.values())
+            elif isinstance(kind, str) and kind in self._data_commands():
+                result = self._data_commands()[kind](msg)
             elif kind == "subscribe_events":
                 conn.subs[msg_id] = msg.get("event_type")  # type: ignore[index]
                 result = None
@@ -258,6 +287,31 @@ class FakeHA:
         await conn.ws.send_json(
             {"id": msg_id, "type": "result", "success": True, "result": result}
         )
+
+    def _data_commands(self) -> dict[str, Callable[[Message], Any]]:
+        commands: dict[str, Callable[[Message], Any]] = {}
+        for kind in self.registry:
+            commands[f"config/{kind}_registry/list"] = partial(
+                self._registry_list, kind
+            )
+        commands["config/entity_registry/get"] = self._entity_entry
+        commands["get_services"] = lambda _m: self.services
+        commands["history/history_during_period"] = lambda _m: {
+            e: [{"s": s["state"]}] for e, s in self.states.items()
+        }
+        commands["recorder/statistics_during_period"] = lambda _m: {
+            e: [{"mean": 1.0}] for e in self.states
+        }
+        return commands
+
+    def _registry_list(self, kind: str, _msg: Message) -> list[Message]:
+        return list(self.registry[kind])
+
+    def _entity_entry(self, msg: Message) -> Message:
+        for entry in self.registry["entity"]:
+            if entry.get("entity_id") == msg.get("entity_id"):
+                return entry
+        raise FakeCommandError("not_found", "Entity not found")
 
     async def _call_service(self, msg: Message) -> Message:
         context = make_context()
