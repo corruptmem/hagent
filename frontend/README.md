@@ -66,18 +66,33 @@ To test the build with the app, run `npm run build`. The app serves
 - An item that arrives in parts (more than 20000 characters) is
   read-only. A save sends the whole file, so a save of one part would lose
   the other parts.
+- The inspect screens read rules only through the rule routes, and
+  approval requests only through the approval routes. The answer route
+  takes the HA user from the Ingress header, so the UI posts only the
+  decision.
+- The inspect screens never show an API key or the link secret. The app
+  replaces approval action IDs before it sends a trace.
 - Encode each part of an item path with `itemPath` in `src/api/client.ts`.
   Keep the `/` between parts.
 
 ## Screens
 
-| Path             | Screen          | Content                                                                                                                                                                                           |
-| ---------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `agents`         | `AgentsList`    | The agents. Create, copy, turn on or off, delete.                                                                                                                                                 |
-| `agents/<id>`    | `AgentShell`    | The definition, the versions and the test panel of one agent.                                                                                                                                     |
-| `knowledge`      | `KnowledgeList` | The stores, their size and the agents that attach each store. Create a store.                                                                                                                     |
-| `knowledge/<id>` | `StoreView`     | One store: its settings, its agents and its items. Upload, replace and delete documents. Create, edit and delete files. See the history of a path, also of a deleted file, and restore a version. |
-| `settings`       | `Settings`      | API keys, the embedding model, budgets, approvers, price overrides, the genai-prices auto-update and decision models.                                                                             |
+| Path                           | Screen                      | Content                                                                                                                                                                                           |
+| ------------------------------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents`                       | `AgentsList`                | The agents. Create, copy, turn on or off, delete.                                                                                                                                                 |
+| `agents/<id>`                  | `AgentShell`                | The definition, the versions and the test panel of one agent.                                                                                                                                     |
+| `knowledge`                    | `KnowledgeList`             | The stores, their size and the agents that attach each store. Create a store.                                                                                                                     |
+| `knowledge/<id>`               | `StoreView`                 | One store: its settings, its agents and its items. Upload, replace and delete documents. Create, edit and delete files. See the history of a path, also of a deleted file, and restore a version. |
+| `inspect/invocations`          | `Invocations`               | The invocation list with filters by agent, source, path and result, and the history search. The `invocations` change events update it live.                                                       |
+| `inspect/invocations/<id>`     | `Trace`                     | One invocation: inputs, the rule spec or the agent turns with their model messages, each tool call with its scope decision, each compaction, the result and the cost.                             |
+| `inspect/rules`                | `Rules`                     | The rules of one agent, in router order.                                                                                                                                                          |
+| `inspect/rules/<agent>/<rule>` | `RuleView`                  | One rule: versions with statistics, backtests and trials. Turn off or on, delete, and roll back.                                                                                                  |
+| `inspect/schedules`            | `Schedules`                 | Schedules and subscriptions, their last run or event, and the last review of each agent.                                                                                                          |
+| `inspect/permissions`          | `Permissions`               | The effective scopes of one agent as entity IDs, its tools, and its denied calls.                                                                                                                 |
+| `inspect/changes`              | `Changes`                   | The audit log of changes to HA, with the previous version of each admin change.                                                                                                                   |
+| `inspect/cost`                 | `Cost`                      | Cost by agent, day, path and call type, with cached tokens and embedding cost.                                                                                                                    |
+| `inspect/approvals`            | `Approvals`, `ApprovalView` | Approval requests. An approver accepts or rejects a pending request.                                                                                                                              |
+| `settings`                     | `Settings`                  | API keys, the embedding model, budgets, approvers, price overrides, the genai-prices auto-update and decision models.                                                                             |
 
 ## Packaging
 

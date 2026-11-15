@@ -310,3 +310,343 @@ export interface HaUsers {
   reason: string | null;
   users: HaUser[];
 }
+
+// Inspect (docs/api.md, "Inspect", "Rules" and "Approvals")
+
+export type InvocationStatus =
+  "queued" | "running" | "ok" | "fallback" | "error" | "cancelled";
+export type InvocationPath = "rule" | "agent_turn" | "fallback";
+
+export interface InvocationSummary {
+  id: string;
+  agent_id: string;
+  source: string;
+  source_key: string;
+  conversation_id: string | null;
+  dry_run: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  status: InvocationStatus;
+  path: InvocationPath | null;
+  fallback_reason: string | null;
+  error_code: string | null;
+  agent_version: number | null;
+  rule_id: string | null;
+  rule_version: number | null;
+  turn_id: string | null;
+  cost_usd: number;
+}
+
+export interface InvocationFilters {
+  agent_id?: string;
+  source?: string;
+  path?: string;
+  status?: string;
+  q?: string;
+}
+
+export interface AuditEntry {
+  id: number;
+  created_at: string;
+  finished_at: string | null;
+  agent_id: string;
+  agent_version: number;
+  invocation_id: string | null;
+  tool: string;
+  level: string;
+  request: unknown;
+  decision: "allowed" | "denied";
+  reason_code: string | null;
+  reason: string | null;
+  status: string;
+  error: string | null;
+  context_id: string | null;
+  previous: unknown;
+  previous_note: string | null;
+}
+
+export interface Tokens {
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  output_tokens: number;
+}
+
+export interface TraceToolCall {
+  seq: number;
+  created_at: string;
+  tool: string;
+  arguments: unknown;
+  ok: boolean;
+  error_code: string | null;
+  result: unknown;
+  result_chars: number;
+  cut: boolean;
+  scope_decision: "allowed" | "denied";
+  audit: AuditEntry | null;
+}
+
+export interface TraceCompaction {
+  id: number;
+  created_at: string;
+  kind: string;
+  detail: unknown;
+  summary: string | null;
+}
+
+export interface TraceTurn {
+  id: string;
+  agent_version: number;
+  source: string;
+  dry_run: boolean;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  stop_reason: string | null;
+  error: string | null;
+  input: unknown;
+  prompt: string;
+  result: unknown;
+  messages: unknown;
+  usage: Tokens & { requests: number; tool_calls: number };
+  tool_calls: TraceToolCall[];
+  compactions: TraceCompaction[];
+}
+
+export interface ProviderCall extends Tokens {
+  id: number;
+  started_at: string;
+  provider: string;
+  call_type: "chat" | "decision" | "embedding";
+  model: string;
+  status: string;
+  error: string | null;
+  cost_usd: number;
+  cost_source: string;
+}
+
+export interface Trace {
+  invocation: InvocationSummary & {
+    request: unknown;
+    result: unknown;
+    error: string | null;
+  };
+  turns: TraceTurn[];
+  audit: AuditEntry[];
+  provider_calls: ProviderCall[];
+  trials: {
+    id: string;
+    rule_id: string;
+    version: number;
+    status: string;
+    rule_result: unknown;
+    agent_result: unknown;
+    detail: string | null;
+    cost_usd: number;
+  }[];
+  approvals: { id: string; tool: string; status: string }[];
+  cost: Tokens & { total_usd: number };
+}
+
+export interface ScopeView {
+  all: boolean;
+  entities: string[];
+  domains: string[];
+}
+
+export interface Permissions {
+  agent_id: string;
+  version: number;
+  registry_stale: boolean;
+  ha: {
+    level: HaLevel;
+    services: string[];
+    outputs: string[];
+    read?: ScopeView;
+    control?: ScopeView;
+    unavailable?: string;
+  };
+  tools: { name: string; group: string }[];
+  knowledge: { store_id: string; access: StoreAccess }[];
+  approval: { tools: string[]; services: string[]; entities: string[] };
+  denied: AuditEntry[];
+}
+
+export interface ScheduleRun {
+  due_at: string;
+  at: string;
+  status: string;
+  missed_count?: number;
+  invocation_id: string | null;
+  result_status?: string | null;
+  result_code?: string | null;
+}
+
+export interface ScheduleItem {
+  id: string;
+  agent_id: string;
+  kind: "schedule" | "subscription";
+  spec: unknown;
+  enabled: boolean;
+  run_at: string | null;
+  created_at: string;
+  updated_at: string;
+  last_run: ScheduleRun | null;
+  last_event: {
+    event_type: string;
+    entity_id: string | null;
+    origin: string;
+    received_at: string;
+    outcome: string;
+    detail: string | null;
+    invocation_id: string | null;
+  } | null;
+}
+
+export interface Schedules {
+  items: ScheduleItem[];
+  reviews: (ScheduleRun & { agent_id: string })[];
+}
+
+export interface CostTotals extends Tokens {
+  calls: number;
+  cost_usd: number;
+  embedding_cost_usd: number;
+}
+
+export interface CostReport {
+  since: string;
+  total: CostTotals;
+  by_agent: (CostTotals & { agent_id: string | null })[];
+  by_day: (CostTotals & { day: string })[];
+  by_path: (CostTotals & { path: string })[];
+  by_type: (CostTotals & { call_type: string })[];
+}
+
+export type RuleState = "draft" | "active" | "off";
+
+export interface RuleSummary {
+  id: string;
+  position: number;
+  state: RuleState;
+  current_version: number;
+  latest_version: number;
+  updated_at: string;
+  spec: Record<string, unknown>;
+}
+
+export interface Backtest {
+  id: string;
+  rule_id: string;
+  version: number;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  candidates: number;
+  matched: number;
+  compared: number;
+  agreed: number;
+  disagreed: number;
+  declined: number;
+  errors: number;
+  skipped: number;
+  agreement_rate: number | null;
+  cost_usd: number;
+  error: string | null;
+  cases?: {
+    seq: number;
+    invocation_id: string;
+    invocation_at: string;
+    outcome: string;
+    rule_result: unknown;
+    agent_result: unknown;
+    detail: string | null;
+  }[];
+}
+
+export interface RuleVersionStats {
+  version: number;
+  created_at: string;
+  matched: number;
+  answered: number;
+  declined: number;
+  cache_hits: number;
+  errors: number;
+  cost_usd: number;
+  last_used_at: string | null;
+  last_error: string | null;
+  backtest?: {
+    runs: number;
+    cost_usd: number;
+    agreement_rate: number | null;
+  };
+  trial?: {
+    runs: number;
+    agreed: number;
+    disagreed: number;
+    errors: number;
+    budget: number;
+    agreement_rate: number | null;
+    cost_usd: number;
+  };
+}
+
+export interface RuleDetail {
+  id: string;
+  state: RuleState;
+  current_version: number;
+  latest_version: number;
+  deleted: boolean;
+  spec: Record<string, unknown>;
+  versions: RuleVersionStats[];
+}
+
+export interface Trial {
+  id: string;
+  version: number;
+  invocation_id: string;
+  created_at: string;
+  status: string;
+  rule_result: unknown;
+  agent_result: unknown;
+  detail: string | null;
+  cost_usd: number;
+}
+
+export type ApprovalStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "timeout"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export interface ApprovalRequest {
+  id: string;
+  status: ApprovalStatus;
+  agent_id: string;
+  agent_version: number;
+  invocation_id: string | null;
+  tool: string;
+  summary: string;
+  request: unknown;
+  approvers: string[];
+  targets: string[];
+  problems: string[];
+  created_at: string;
+  expires_at: string;
+  finished_at: string | null;
+  answered_by: string | null;
+  answered_via: string | null;
+  reason: string | null;
+  can_answer?: boolean;
+  answers?: {
+    received_at: string;
+    decision: string;
+    user_id: string | null;
+    via: string;
+    outcome: string;
+  }[];
+}

@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:12'
+updated_date: '2026-11-15 02:20'
 labels:
   - ui
 dependencies:
@@ -47,3 +47,9 @@ Design: docs/design.md section 7.2 (Inspect).
 5. Front end: Inspect area with screens Invocations (+ search), Trace, Rules, Schedules, Permissions, Changes, Cost, Approvals. events.ts invalidates invocations, rules, approvals, tools. vitest test per screen, including a live-update test. Update frontend/README.md.
 6. mise run check; notes, summary, report to t3.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Back end done: inspection/ package with routes under api/inspect (invocations + history search, trace, audit, schedules, cost, agent permissions), invocations change events from router listeners, rule state and delete routes in backtest/api.py. 1066 app tests pass.
+<!-- SECTION:NOTES:END -->

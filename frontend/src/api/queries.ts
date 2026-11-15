@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "./client";
+import type { InvocationFilters } from "./types";
 
 export const keys = {
   agents: ["agents"] as const,
@@ -23,6 +24,23 @@ export const keys = {
   knowledgeStatus: ["knowledge", "status"] as const,
   knowledgeSettings: ["knowledge", "settings"] as const,
   settings: ["settings"] as const,
+  inspect: ["inspect"] as const,
+  invocations: (filters: InvocationFilters) =>
+    ["inspect", "invocations", filters] as const,
+  trace: (id: string) => ["inspect", "trace", id] as const,
+  audit: (filters: object) => ["inspect", "audit", filters] as const,
+  schedules: (agentId: string) => ["inspect", "schedules", agentId] as const,
+  cost: (days: number, agentId: string) =>
+    ["inspect", "cost", days, agentId] as const,
+  permissions: (agentId: string) =>
+    ["inspect", "permissions", agentId] as const,
+  rules: ["rules"] as const,
+  agentRules: (agentId: string) => ["rules", agentId] as const,
+  rule: (agentId: string, ruleId: string) =>
+    ["rules", agentId, ruleId] as const,
+  approvals: ["approvals"] as const,
+  approvalList: (status: string) => ["approvals", "list", status] as const,
+  approval: (id: string) => ["approvals", id] as const,
 };
 
 export const agentsQuery = () =>
@@ -106,4 +124,73 @@ export const haUsersQuery = () =>
     queryKey: keys.haUsers,
     queryFn: api.haUsers,
     staleTime: 60_000,
+  });
+
+export const invocationsQuery = (filters: InvocationFilters) =>
+  queryOptions({
+    queryKey: keys.invocations(filters),
+    queryFn: () => api.invocations(filters),
+  });
+
+export const traceQuery = (id: string) =>
+  queryOptions({ queryKey: keys.trace(id), queryFn: () => api.trace(id) });
+
+export const auditQuery = (filters: { agent_id?: string; decision?: string }) =>
+  queryOptions({
+    queryKey: keys.audit(filters),
+    queryFn: () => api.audit(filters),
+  });
+
+export const schedulesQuery = (agentId: string) =>
+  queryOptions({
+    queryKey: keys.schedules(agentId),
+    queryFn: () => api.schedules(agentId || undefined),
+  });
+
+export const costQuery = (days: number, agentId: string) =>
+  queryOptions({
+    queryKey: keys.cost(days, agentId),
+    queryFn: () => api.cost(days, agentId || undefined),
+  });
+
+export const permissionsQuery = (agentId: string) =>
+  queryOptions({
+    queryKey: keys.permissions(agentId),
+    queryFn: () => api.permissions(agentId),
+  });
+
+export const rulesQuery = (agentId: string) =>
+  queryOptions({
+    queryKey: keys.agentRules(agentId),
+    queryFn: () => api.listRules(agentId),
+  });
+
+export const ruleQuery = (agentId: string, ruleId: string) =>
+  queryOptions({
+    queryKey: keys.rule(agentId, ruleId),
+    queryFn: () => api.getRule(agentId, ruleId),
+  });
+
+export const backtestsQuery = (agentId: string, ruleId: string) =>
+  queryOptions({
+    queryKey: [...keys.rule(agentId, ruleId), "backtests"],
+    queryFn: () => api.listBacktests(agentId, ruleId),
+  });
+
+export const trialsQuery = (agentId: string, ruleId: string) =>
+  queryOptions({
+    queryKey: [...keys.rule(agentId, ruleId), "trials"],
+    queryFn: () => api.listTrials(agentId, ruleId),
+  });
+
+export const approvalsQuery = (status: string) =>
+  queryOptions({
+    queryKey: keys.approvalList(status),
+    queryFn: () => api.approvals(status || undefined),
+  });
+
+export const approvalQuery = (id: string) =>
+  queryOptions({
+    queryKey: keys.approval(id),
+    queryFn: () => api.approval(id),
   });

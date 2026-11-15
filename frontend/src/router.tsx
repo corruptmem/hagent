@@ -14,6 +14,15 @@ import { Versions } from "./screens/Versions";
 import { Settings } from "./screens/Settings";
 import { KnowledgeList } from "./screens/knowledge/KnowledgeList";
 import { StoreView } from "./screens/knowledge/StoreView";
+import { InspectShell } from "./screens/inspect/common";
+import { Invocations } from "./screens/inspect/Invocations";
+import { Trace } from "./screens/inspect/Trace";
+import { RuleView, Rules } from "./screens/inspect/Rules";
+import { Schedules } from "./screens/inspect/Schedules";
+import { Permissions } from "./screens/inspect/Permissions";
+import { Changes } from "./screens/inspect/Changes";
+import { Cost } from "./screens/inspect/Cost";
+import { ApprovalView, Approvals } from "./screens/inspect/Approvals";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -106,6 +115,90 @@ const settingsRoute = createRoute({
   component: Settings,
 });
 
+const inspectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/inspect",
+  component: InspectShell,
+});
+
+const inspectIndexRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/",
+  beforeLoad: () => {
+    // eslint-disable-next-line @typescript-eslint/only-throw-error
+    throw redirect({ to: "/inspect/invocations" });
+  },
+});
+
+const invocationsRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/invocations",
+  component: Invocations,
+});
+
+const traceRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/invocations/$invocationId",
+  component: function TracePage() {
+    const { invocationId } = traceRoute.useParams();
+    return <Trace key={invocationId} invocationId={invocationId} />;
+  },
+});
+
+const rulesRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/rules",
+  component: Rules,
+});
+
+const ruleRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/rules/$agentId/$ruleId",
+  component: function RulePage() {
+    const { agentId, ruleId } = ruleRoute.useParams();
+    return <RuleView key={ruleId} agentId={agentId} ruleId={ruleId} />;
+  },
+});
+
+const schedulesRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/schedules",
+  component: Schedules,
+});
+
+const permissionsRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/permissions",
+  component: Permissions,
+});
+
+const changesRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/changes",
+  component: Changes,
+});
+
+const costRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/cost",
+  component: Cost,
+});
+
+const approvalsRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/approvals",
+  component: Approvals,
+});
+
+const approvalRoute = createRoute({
+  getParentRoute: () => inspectRoute,
+  path: "/approvals/$approvalId",
+  component: function ApprovalPage() {
+    const { approvalId } = approvalRoute.useParams();
+    return <ApprovalView key={approvalId} approvalId={approvalId} />;
+  },
+});
+
 export const routeTree = rootRoute.addChildren([
   indexRoute,
   agentsRoute,
@@ -117,6 +210,19 @@ export const routeTree = rootRoute.addChildren([
   ]),
   knowledgeRoute,
   storeRoute,
+  inspectRoute.addChildren([
+    inspectIndexRoute,
+    invocationsRoute,
+    traceRoute,
+    rulesRoute,
+    ruleRoute,
+    schedulesRoute,
+    permissionsRoute,
+    changesRoute,
+    costRoute,
+    approvalsRoute,
+    approvalRoute,
+  ]),
   settingsRoute,
 ]);
 
