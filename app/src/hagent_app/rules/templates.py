@@ -670,6 +670,25 @@ class _Sandbox(ImmutableSandboxedEnvironment):
             return _check_size(left % right)
         return left % right
 
+    def wrap_str_format(self, value: Any) -> Callable[..., str] | None:
+        """Block ``str.format`` and ``str.format_map``.
+
+        A format width can build a very large value in one call. Templates
+        use the ``format`` filter, which checks the width first.
+        """
+        owner = getattr(value, "__self__", None)
+        if isinstance(owner, str) and getattr(value, "__name__", "") in (
+            "format",
+            "format_map",
+        ):
+
+            def blocked(*_args: Any, **_kwargs: Any) -> str:
+                msg = f"{value!r} is not safely callable"
+                raise SecurityError(msg)
+
+            return blocked
+        return None
+
     def is_safe_callable(self, obj: Any) -> bool:
         owner = getattr(obj, "__self__", None)
         if isinstance(owner, str):

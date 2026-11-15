@@ -279,6 +279,7 @@ REVIEW_8_CASES = [
     Case("memory.rule_stats", {"rule_id": "r1"}, "check_failed", setup="boom"),
 ]
 
+
 def _rule(**parts: Any) -> dict[str, Any]:
     """A rule spec for ``self.create``, with the given parts."""
     spec: dict[str, Any] = {
@@ -337,9 +338,7 @@ RULE_CASES = [
     # Statistics of an entity outside the read scope.
     Case(
         "self.create",
-        _rule(
-            context=[{"type": "history", "name": "h", "entity_ids": ["lock.front"]}]
-        ),
+        _rule(context=[{"type": "history", "name": "h", "entity_ids": ["lock.front"]}]),
         "out_of_scope",
         SELF_READ_HALL,
     ),
