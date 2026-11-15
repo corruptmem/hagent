@@ -344,7 +344,14 @@ class RuleEngine:
             else:
                 values.append(request.inputs.get(key))
         return json.dumps(
-            [rule.id, rule.version, request.request.source_key, values],
+            [
+                rule.id,
+                rule.version,
+                # A new definition version (scope, approval) starts empty.
+                request.agent.version,
+                request.request.source_key,
+                values,
+            ],
             sort_keys=True,
             default=str,
         )

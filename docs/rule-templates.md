@@ -117,14 +117,27 @@ invocation to an agent turn.
 
 ## Limits
 
-- A template has at most 10,000 characters.
-- The output has at most 256 KiB.
-- A render stops after 1 second (option `rules.render_seconds`).
-- `*`, `**`, `%`, `join`, `replace`, `center`, `indent` and `format` check
-  the size of their result first.
+A rule template is text from a model, so the sandbox limits its cost:
 
-The time limit cannot stop one slow call inside Python, for example one
-very slow regular expression. The size checks limit the usual causes.
+- A template has at most 10,000 characters.
+- The rendered output has at most 256 KiB.
+- Each `{{ }}` value, and each argument of every filter, test and function,
+  passes a size check first. The check counts every reference, so nested
+  lists that share references cannot grow without a limit.
+- `*`, `**`, `+`, `%`, `~`, `join`, `replace`, `regex_replace`, `indent`,
+  `center` and `format` check the size of their result before or while they
+  build it.
+- `batch` takes a size of 10,000 or less. `sum` adds numbers only.
+- A render stops after 1 second (option `rules.render_seconds`). A trace
+  function stops a loop in the template.
+- The runtime waits at most 1 second more for a render. It then records
+  `rule_error`, and the invocation goes on to an agent turn.
+
+Residual risk: one slow call in C, for example a regular expression that
+backtracks, cannot be stopped. The wait ends, but the thread runs on until
+the call ends. Renders use a pool of 4 threads of their own. If all 4 are
+stuck, later renders wait, fail at the time limit, and the rules record
+`rule_error`. Other app work does not use this pool.
 
 ## Evidence against HA
 

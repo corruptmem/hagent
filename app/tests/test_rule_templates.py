@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -253,3 +255,57 @@ def test_parse_result_follows_ha(text: str, expected: Any) -> None:
 )
 def test_is_true(value: Any, expected: bool) -> None:
     assert is_true(value) is expected
+
+
+# ------------------------------------------- size limits cannot be bypassed
+
+S = "{% set s = 'x' * 200000 %}"
+NESTED = (
+    "{% set l = range(1000) | list %}{% set a = [l, l, l, l] %}"
+    "{% set b = [a, a, a, a] %}{% set c = [b, b, b, b] %}"
+    "{% set d = [c, c, c, c] %}"
+)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        S + "{{ (s + s) | length }}",
+        S + "{% set t = s ~ s %}{{ t | length }}",
+        S + "{{ s ~ s }}",
+        NESTED + "{{ d | string | length }}",
+        NESTED + "{{ d }}",
+        NESTED + "{{ d | to_json | length }}",
+        NESTED + "{{ d | tojson | length }}",
+        NESTED + "{{ d | lower | length }}",
+        NESTED + "{{ [d] | join | length }}",
+        NESTED + "{{ '%s' % (d,) }}",
+        NESTED + "{{ d | regex_replace('x', 'y') | length }}",
+        "{{ [1] | batch(300000, 0) | first | length }}",
+        "{{ ([[0] * 1000] * 1000) | sum(start=[]) | length }}",
+        S + "{{ s | regex_replace('x', 'yy') | length }}",
+        S + "{{ ('a\\n' * 100000) | indent(s) | length }}",
+    ],
+)
+async def test_size_limits_hold_for_every_path(source: str) -> None:
+    with pytest.raises(TemplateError):
+        await engine(seconds=5).render(source, {})
+
+
+async def test_a_stuck_render_ends_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One slow call in C cannot be stopped; the outer time limit ends the
+    wait, so the invocation ends."""
+    release = threading.Event()
+
+    def stuck(self: TemplateEngine, source: str, variables: Any) -> str:
+        release.wait(5)
+        return ""
+
+    monkeypatch.setattr(TemplateEngine, "_render_sync", stuck)
+    try:
+        started = time.monotonic()
+        with pytest.raises(TemplateError, match="took longer"):
+            await engine(seconds=0.1).render("x", {})
+        assert time.monotonic() - started < 3
+    finally:
+        release.set()

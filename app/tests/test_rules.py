@@ -486,9 +486,12 @@ async def test_the_cache_returns_the_previous_result(env: Env) -> None:
     assert (await env.invoke(agent, {"room": "b", "n": 3})).result == 3
     env.clock.now += 61
     assert (await env.invoke(agent, {"room": "a", "n": 4})).result == 4
+    # A definition change starts with an empty cache.
+    agent = await env.edit(agent, instructions="Changed.")
+    assert (await env.invoke(agent, {"room": "a", "n": 5})).result == 5
     stats = await env.store.rule_stats(agent.id, rule_id)
     assert stats["versions"][0]["cache_hits"] == 1
-    assert stats["versions"][0]["answered"] == 4
+    assert stats["versions"][0]["answered"] == 5
 
 
 # ---------------------------------------------------- AC4: context items

@@ -30,6 +30,7 @@ template can cost:
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import math
 import re
@@ -38,13 +39,17 @@ import sys
 import time
 from ast import literal_eval
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, tzinfo
 from types import FrameType
 from typing import Any
 
-from jinja2 import TemplateSyntaxError, meta, nodes
+from jinja2 import TemplateSyntaxError, meta, nodes, pass_environment
+from jinja2.compiler import CodeGenerator, Frame
 from jinja2.exceptions import SecurityError, UndefinedError
+from jinja2.filters import do_batch as jinja_batch
+from jinja2.filters import make_attrgetter
 from jinja2.runtime import Context
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -54,6 +59,8 @@ MAX_TEMPLATE = 10_000
 MAX_OUTPUT = 256 * 1024
 MAX_VALUE = 256 * 1024
 MAX_WIDTH = 1000
+MAX_DEEP = 1024 * 1024
+RENDER_THREADS = 4
 MAX_BITS = 4096
 RENDER_SECONDS = 1.0
 
@@ -80,6 +87,13 @@ _NO_VALUE = frozenset({"unknown", "unavailable"})
 # template). "01" stays text, "1.0" becomes a float.
 _IS_NUMERIC = re.compile(r"^[+-]?(?!0\d)\d*(?:\.\d*)?$")
 _FORMAT_WIDTH = re.compile(r"%[-+ #0]*(\d+)?(?:\.(\d+))?")
+
+
+# A small pool of its own, so that a stuck render never blocks the default
+# executor of the event loop.
+_RENDER_POOL = ThreadPoolExecutor(
+    max_workers=RENDER_THREADS, thread_name_prefix="rule-template"
+)
 
 
 class TemplateError(Exception):
@@ -429,9 +443,19 @@ def _regex_replace(
     if not isinstance(value, str):
         value = str(value)
     flags = re.IGNORECASE if ignorecase else 0
-    result = re.compile(find, flags).sub(replace, value, count=MAX_WIDTH * 10)
-    _check_size(result)
-    return result
+    pattern = re.compile(find, flags)
+    total = len(value)
+
+    def piece(match: re.Match[str]) -> str:
+        nonlocal total
+        text = match.expand(replace)
+        total += len(text) - (match.end() - match.start())
+        if total > MAX_VALUE:
+            msg = f"a replaced value is longer than {MAX_VALUE}"
+            raise TemplateError(msg)
+        return text
+
+    return pattern.sub(piece, value)
 
 
 def _regex_findall(value: Any, find: str = "", ignorecase: bool = False) -> list[Any]:
@@ -457,6 +481,56 @@ def _contains(value: Any, item: Any) -> bool:
 # ----------------------------------------------------------- size checks
 
 
+def deep_size(value: Any, limit: int = MAX_DEEP) -> int:
+    """An estimate of the text length of ``value``, with every reference
+    counted. Raise ``TemplateError`` as soon as it passes ``limit``.
+
+    Nested lists that share references can be small in memory but very
+    large as text. The walk counts each reference again, so it finds them.
+    """
+    total = 0
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            total += len(item) + 2
+        elif isinstance(item, Context):
+            # Jinja passes the render context to some filters.
+            total += 24
+        elif isinstance(item, Mapping):
+            total += 2 + 2 * len(item)
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, (list, tuple, set, frozenset)):
+            total += 2 + 2 * len(item)
+            stack.extend(item)
+        else:
+            total += 24
+        if total > limit:
+            msg = f"a template value is larger than {limit}"
+            raise TemplateError(msg)
+    return total
+
+
+def _guard(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Check the size of every argument before ``fn`` runs.
+
+    Many filters turn their input into text in one call. The check stops a
+    value that is too large before that call.
+    """
+
+    @functools.wraps(fn)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        for arg in (*args, *kwargs.values()):
+            if isinstance(
+                arg, (str, Mapping, list, tuple, set, frozenset)
+            ) and not isinstance(arg, Context):
+                deep_size(arg)
+        return fn(*args, **kwargs)
+
+    return guarded
+
+
 def _check_size(value: Any) -> Any:
     if isinstance(value, (str, list, tuple, dict)) and len(value) > MAX_VALUE:
         msg = f"a template value is longer than {MAX_VALUE}"
@@ -478,6 +552,10 @@ def _join(value: Iterable[Any], d: str = "", attribute: Any = None) -> str:
     parts: list[str] = []
     total = 0
     for item in value:
+        total += deep_size(item) + len(d)
+        if total > MAX_VALUE:
+            msg = f"a joined value is longer than {MAX_VALUE}"
+            raise TemplateError(msg)
         text = str(item)
         total += len(text) + len(d)
         if total > MAX_VALUE:
@@ -506,12 +584,55 @@ def _indent(s: Any, width: int | str = 4, first: bool = False) -> str:
     pad = width if isinstance(width, str) else " " * min(int(width), MAX_WIDTH)
     _check_size(pad)
     lines = str(s).splitlines(keepends=True)
+    if len(str(s)) + len(pad) * len(lines) > MAX_VALUE:
+        msg = f"an indented value is longer than {MAX_VALUE}"
+        raise TemplateError(msg)
     out = "".join(
         (pad + line if (i or first) and line.strip() else line)
         for i, line in enumerate(lines)
     )
     _check_size(out)
     return out
+
+
+@pass_environment
+def _batch(environment: Any, value: Any, linecount: int, fill_with: Any = None) -> Any:
+    if not isinstance(linecount, int) or not 1 <= linecount <= MAX_WIDTH * 10:
+        msg = f"batch takes a size from 1 to {MAX_WIDTH * 10}"
+        raise TemplateError(msg)
+    return jinja_batch(value, linecount, fill_with)
+
+
+@pass_environment
+def _sum(environment: Any, iterable: Any, attribute: Any = None, start: Any = 0) -> Any:
+    items = list(iterable)
+    if attribute is not None:
+        getter = make_attrgetter(environment, attribute)
+        items = [getter(item) for item in items]
+    for item in (start, *items):
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            msg = "sum adds numbers only"
+            raise TemplateError(msg)
+    return sum(items, start)
+
+
+def _checked_concat(values: Iterable[Any]) -> str:
+    """The ``~`` operator, with a size check before each part."""
+    parts: list[str] = []
+    total = 0
+    for value in values:
+        total += deep_size(value)
+        if total > MAX_VALUE:
+            msg = f"a joined value is longer than {MAX_VALUE}"
+            raise TemplateError(msg)
+        parts.append(str(value))
+    return "".join(parts)
+
+
+def _finalize(value: Any) -> Any:
+    """Check each ``{{ }}`` value before Jinja turns it into text."""
+    deep_size(value, MAX_OUTPUT)
+    return value
 
 
 def _format(value: Any, *args: Any, **kwargs: Any) -> str:
@@ -643,10 +764,23 @@ _KEEP_GLOBALS = frozenset({"dict", "namespace", "range"})
 # -------------------------------------------------------------- the sandbox
 
 
+class _CodeGenerator(CodeGenerator):
+    """Compiles ``~`` to a join with a size check."""
+
+    def visit_Concat(self, node: nodes.Concat, frame: Frame) -> None:  # noqa: N802
+        self.write("environment.checked_concat((")
+        for arg in node.nodes:
+            self.visit(arg, frame)
+            self.write(", ")
+        self.write("))")
+
+
 class _Sandbox(ImmutableSandboxedEnvironment):
     """The sandbox with size checks on operators and method calls."""
 
-    intercepted_binops = frozenset({"*", "**", "%"})
+    intercepted_binops = frozenset({"*", "**", "%", "+"})
+    code_generator_class = _CodeGenerator
+    checked_concat = staticmethod(_checked_concat)
 
     def call_binop(self, context: Context, operator: str, left: Any, right: Any) -> Any:
         if operator == "**":
@@ -671,8 +805,18 @@ class _Sandbox(ImmutableSandboxedEnvironment):
                     msg = f"a repeated value is longer than {MAX_VALUE}"
                     raise TemplateError(msg)
             return left * right
+        if operator == "+":
+            if (
+                isinstance(left, (str, list, tuple))
+                and isinstance(right, (str, list, tuple))
+                and len(left) + len(right) > MAX_VALUE
+            ):
+                msg = f"an added value is longer than {MAX_VALUE}"
+                raise TemplateError(msg)
+            return left + right
         if isinstance(left, str):
             _check_format(left)
+            deep_size(right)
             return _check_size(left % right)
         return left % right
 
@@ -720,7 +864,7 @@ class TemplateClock:
 
 
 def _make_env() -> _Sandbox:
-    env = _Sandbox(autoescape=False, keep_trailing_newline=False)
+    env = _Sandbox(autoescape=False, keep_trailing_newline=False, finalize=_finalize)
     for name in list(env.filters):
         if name not in _KEEP_FILTERS:
             del env.filters[name]
@@ -755,6 +899,8 @@ def _make_env() -> _Sandbox:
             "center": _center,
             "indent": _indent,
             "format": _format,
+            "batch": _batch,
+            "sum": _sum,
         }
     )
     env.tests.update(
@@ -767,7 +913,14 @@ def _make_env() -> _Sandbox:
             "datetime": lambda v: isinstance(v, datetime),
         }
     )
+    _guard_all(env.filters)
+    _guard_all(env.tests)
     return env
+
+
+def _guard_all(table: dict[str, Any]) -> None:
+    for name, fn in list(table.items()):
+        table[name] = _guard(fn)
 
 
 _PLAIN_GLOBALS: dict[str, Any] = {
@@ -1034,10 +1187,12 @@ class TemplateEngine:
         check_template(source, variables.keys() | VARIABLES)
         env = _make_env()
         funcs, filters, tests = _bound(self.view, self.clock)
-        env.globals.update(_PLAIN_GLOBALS)
-        env.globals.update(funcs)
-        env.filters.update(filters)
-        env.tests.update(tests)
+        env.globals.update({k: _guard(v) for k, v in _PLAIN_GLOBALS.items()})
+        env.globals.update(
+            {k: v if k == "states" else _guard(v) for k, v in funcs.items()}
+        )
+        env.filters.update({k: _guard(v) for k, v in filters.items()})
+        env.tests.update({k: _guard(v) for k, v in tests.items()})
         template = env.from_string(source)
         deadline = time.monotonic() + self.seconds
 
@@ -1071,8 +1226,23 @@ class TemplateEngine:
         return text.strip()
 
     async def render(self, source: str, variables: Mapping[str, Any]) -> str:
-        """Render a template to text, in a worker thread with a time limit."""
-        return await asyncio.to_thread(self._render_sync, source, variables)
+        """Render a template to text, in a worker thread with a time limit.
+
+        The trace function stops a slow render inside Python code. One slow
+        call in C, for example a regular expression that backtracks, cannot
+        be stopped. The outer time limit then ends the wait, so that the
+        invocation ends. The thread runs on until the call ends, and keeps
+        one of the ``RENDER_THREADS`` threads.
+        """
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            _RENDER_POOL, self._render_sync, source, dict(variables)
+        )
+        try:
+            return await asyncio.wait_for(future, self.seconds + 1)
+        except TimeoutError:
+            msg = f"the template took longer than {self.seconds} s"
+            raise TemplateError(msg) from None
 
     async def render_value(self, source: str, variables: Mapping[str, Any]) -> Any:
         """Render a template and parse the text into a native value."""
