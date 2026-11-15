@@ -24,6 +24,7 @@ SIGINT.
 | `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
 | `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
+| `src/hagent_app/rules/` | The rule spec, the template sandbox, the rule store and the rule engine (task-13). See "Rules" below. |
 | `src/hagent_app/router/` | The router, the persistent invocation queue, the fallback, chat retries and the test invocation route (task-12). See "How to invoke an agent" below. |
 | `src/hagent_app/scheduler/` | `SchedulerComponent`: timers, cron schedules, reviews, event subscriptions and own-write filtering (task-15). See "Schedules and subscriptions" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
@@ -382,8 +383,7 @@ Rules of the HA check (`tools/scope.py`):
 Rules of the `self` tools: each spec kind has a strict model, and unknown
 keys fail (`invalid_spec`). A state subscription must name entities in the
 read scope. A schedule spec is a timer or a cron schedule (see "Schedules
-and subscriptions"). Rule specs fail with `not_supported` until task-13 adds
-its model and checks to `SPEC_CHECKS` (`tools/store_tools.py`).
+and subscriptions"). A rule spec has the checks in "Rules" below.
 
 The admin tools accept only the WebSocket commands in `tools/admin.py`.
 Each change command has a reader for the previous version, which the audit
@@ -697,18 +697,18 @@ error codes are stable: `agent_not_found`, `agent_off`, `busy`,
 
 ### The rule stage (task-13)
 
-`RouterComponent.rules` is a `RuleStage`. Set it in `default_components()`
-before the app starts. Until task-13, `NoRules` returns `NO_RULE_MATCHED`.
-`try_rules(RuleRequest)` gets the invocation ID, the agent snapshot, the
-request and the inputs. It returns a `RuleOutcome`:
+`RouterComponent.rules` is a `RuleStage`. `default_components()` sets it to
+`RulesComponent` (see "Rules"). `NoRules` is the stage for tests that need
+no rules. `try_rules(RuleRequest)` gets the invocation ID, the agent
+snapshot, the request and the inputs. It returns a `RuleOutcome`:
 
 - `answered=True` with `result`, `rule_id` and `rule_version`: the router
   records the path `rule` and starts no turn.
 - `answered=False` with a `reason` (`no_rule_matched`, `declined`,
   `rule_error`): the router starts an agent turn. It records `rule_id` and
-  `rule_version` of a rule that declined.
-- Read the rule set once, at the start of `try_rules`, so that a rule
-  change takes effect only between invocations.
+  `rule_version` of a rule that declined or failed.
+- The stage reads the rule set once, at the start of `try_rules`, so that a
+  rule change takes effect only between invocations.
 - A stage that raises counts as `rule_error`.
 
 ### Queue and restart
@@ -756,6 +756,97 @@ it (see `docs/api.md`). The sample states go to the turn through
 
 The `router` section of `options.json` holds the keys in `RouterConfig`
 (`src/hagent_app/router/config.py`).
+
+## Rules
+
+The `rules` package holds the rule engine (design section 10).
+`RulesComponent` owns the rule store and the rule engine. List it after
+`tools` and before `router`, because the router runs queued invocations as
+soon as it starts.
+
+Terms:
+
+- **Rule spec**: the strict model of one rule version (`rules/spec.py`).
+  Unknown keys fail.
+- **Rule version**: one spec that never changes. A change adds a version.
+- **Rule template**: a sandboxed HA-style template. See
+  `docs/rule-templates.md` for the supported subset and the limits.
+
+### Spec
+
+| Key | Content |
+|---|---|
+| `name`, `description` | Text. |
+| `match` | A template. The rule applies when it renders true. |
+| `context` | Up to 10 items: `history` (entity statistics over `hours`), `action_response` (an action that only returns data), `store_file` (a file of an attached store) or `invocation_history` (recent invocations from the same source). Each item has a `name` and `cache_seconds`. |
+| `action` | `{"type": "template", "template": ...}`, or `{"type": "decision", "questions": [...], "include": {...}}`. A question has `type` (`yes_no`, `choice` or `score`), `name` and `text`, plus `yes`/`no`, `options` or `levels`. `include` selects the inputs, the caller data and the context items for the request (default: all). |
+| `result` | A template. `decline` passes the invocation to an agent turn. Without it, the result is the action output. |
+| `writes` | Up to 10 service calls: `service`, `entity_id` and `data` (each value a template that gets `result`). |
+| `cache` | `seconds` and `keys` (input entity IDs, or `data.<key>`). |
+| `agreement`, `trial` | Stored for backtests and trials (task-14). |
+
+### Checks
+
+At create and update time (`rules/checks.py`, the `SPEC_CHECKS` entry for
+`rule`):
+
+- Each template is in the subset (`invalid_template`).
+- A decision action needs `models.decision` (`no_decision_model`).
+- A `history` item names entities in the read scope.
+- An `action_response` service declares `"response": {"optional": false}`
+  in HA (`not_response_only`), passes `check_service_call` with
+  `return_response`, and needs no approval.
+- A `store_file` item names an attached store and a safe path.
+- Each write passes `check_service_call` with placeholder data values and
+  needs no approval (`approval_required`). Rules cannot wait for approval.
+
+When the rule runs:
+
+- The write checks run again before any part of the rule runs.
+- Context items and writes run through `ToolExecutor.without_approval()`.
+  A call that needs approval is denied (`approval_unavailable`) and has an
+  audit row. Writes go through `ha.call_service`, so they have an audit row
+  and reach `ToolEnv.calls`, the own-write observer of the scheduler.
+- The executor checks the rendered write data again.
+- A cached context item gets its scope check again before use. The check
+  does not reach HA or a store.
+
+### Run
+
+`RuleEngine.try_rules` tests the active rules in order. The first rule whose
+match is true runs. A decline goes to the agent turn, not to the next rule.
+A rule that fails records the error and the router starts an agent turn. A
+decision call retries with backoff on a connection error, a rate limit or a
+server error. If it still fails, the rule declines.
+
+- Template rules need neither HA nor the internet. While HA restarts, the
+  templates use the last state cache and the last registry. Writes fail
+  closed (`states_unavailable`), and the rule records `rule_error`.
+- The result cache and the context cache are in memory. They are empty
+  after an app start.
+
+### Store and versions
+
+Migration `0700` holds `rules`, `rule_versions` and `rule_stats`.
+
+- `self.create` writes version 1 in the state `draft`. `self.update`
+  writes the next version, makes it current and sets `draft`.
+  `self.set_enabled` sets `active` or `off`. Only active rules answer.
+- `self.rollback_rule` makes an older version current. Its statistics
+  continue. `self.reorder_rules` takes each rule ID of the agent once.
+- `self.delete` marks the rule as deleted. Its versions and statistics stay
+  for history.
+- `rule_stats` counts `matched`, `answered`, `declined`, `cache_hits`,
+  `errors` and `cost_pusd` for each version. `memory.rule_stats` reads
+  them through `TurnHistory.rules`.
+
+Every SQL statement for an agent's rules filters by the agent ID.
+
+### Options
+
+The `rules` section of `options.json` holds the keys in `RulesConfig`
+(`src/hagent_app/rules/config.py`): decision retries, the render time limit
+and the cache size.
 
 ## Schedules and subscriptions
 
@@ -870,8 +961,9 @@ records each submitted run and its result.
 ### Agent state store
 
 `SchedulerStateStore` is `ToolsComponent.agent_state`. It handles the kinds
-`schedule` and `subscription`. Task-13 sets `scheduler.state_store.rules`
-to its rule store. Until then, rule calls fail with `not_supported`.
+`schedule` and `subscription`. `default_components()` sets
+`scheduler.state_store.rules` to `RulesComponent.agent_state`, which
+handles the kind `rule`.
 
 The component follows `agents` change events. A change of the review
 schedule moves the review job. A deleted agent loses its jobs, schedules

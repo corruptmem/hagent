@@ -1,8 +1,9 @@
 """The rule stage of the router (design sections 9.4 and 10).
 
-The router asks a ``RuleStage`` before it starts an agent turn. Task-13
-supplies the real stage. Until then, ``NoRules`` answers "no rule matched"
-for every invocation, and the router starts an agent turn.
+The router asks a ``RuleStage`` before it starts an agent turn.
+``RulesComponent`` (task-13, ``hagent_app.rules``) is the real stage.
+``NoRules`` answers "no rule matched" for every invocation. The router uses
+it when no stage is set, for example in tests.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ class RuleStage(Protocol):
 
 
 class NoRules:
-    """The rule stage until task-13: no rule ever matches."""
+    """A rule stage with no rules: no rule ever matches."""
 
     async def try_rules(self, request: RuleRequest) -> RuleOutcome:
         """Return "no rule matched"."""

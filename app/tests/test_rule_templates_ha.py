@@ -17,7 +17,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from hagent_app.rules.templates import (
     ScopedStates,
     TemplateClock,
