@@ -79,16 +79,13 @@ To test the build with the app, run `npm run build`. The app serves
 | `knowledge/<id>` | `StoreView`     | One store: its settings, its agents and its items. Upload, replace and delete documents. Create, edit and delete files. See the history of a path, also of a deleted file, and restore a version. |
 | `settings`       | `Settings`      | API keys, the embedding model, budgets, approvers, price overrides, the genai-prices auto-update and decision models.                                                                             |
 
-## Packaging (task-21)
+## Packaging
 
-Git does not hold the build. The app image must build it:
+Git does not hold the build. The app image builds it (`hagent/Dockerfile`):
 
-1. Run `npm ci` and `npm run build` in `frontend/`, with the Node version
-   from `mise.toml`. A multi-stage Docker build can do this in a Node
-   stage.
-2. Copy `frontend/dist/` into the app image, for example to
-   `/opt/hagent/ui`.
-3. Set the `ingress.ui_dir` option to that directory, or give it that
-   default in the app option schema.
+1. A Node stage runs `npm ci` and `npm run build` in `frontend/`.
+2. The app stage copies `frontend/dist/` to `/opt/hagent/frontend/dist`.
+   `/opt/hagent` keeps the layout of the repository, so the default
+   `ingress.ui_dir` (empty: `frontend/dist` next to `app/`) finds it.
 
 The app image does not need Node at run time.

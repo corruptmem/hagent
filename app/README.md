@@ -1046,8 +1046,8 @@ Rules:
 - `set_enabled` uses `AgentService`. The link is a management surface, not
   an agent tool.
 - Inside an app container, the link posts its host, port and secret to the
-  Supervisor (`POST /discovery`, service `hagent`). Task-21 must list
-  `hagent` under `discovery` in the app configuration.
+  Supervisor (`POST /discovery`, service `hagent`). `hagent/config.yaml`
+  lists `hagent` under `discovery`.
 
 The `link` section of `options.json` holds the keys in `LinkConfig`
 (`src/hagent_app/link/config.py`).
@@ -1137,8 +1137,11 @@ config = ctx.config.section("scheduler", SchedulerConfig)
 ```
 
 Missing keys take the defaults of the dataclass. Unknown keys cause
-`ConfigError`. Task-21 adds the keys to the app option schema when it
-packages the app.
+`ConfigError`. The Supervisor writes only the keys of the option schema
+in `hagent/config.yaml`. To let the user set a key on the Configuration
+tab, add it to `options`/`schema` there and to
+`hagent/translations/en.yaml`. `test_app_package.py` checks that each
+schema key is a field of the section dataclass.
 
 ## Providers and cost
 

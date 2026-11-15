@@ -1,0 +1,7 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# Start the hagent app. with-contenv supplies the container environment,
+# which holds SUPERVISOR_TOKEN and TZ.
+bashio::log.info "Starting hagent"
+cd /opt/hagent || exit 1
+exec python -m hagent_app

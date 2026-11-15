@@ -1,0 +1,11 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# When the app stops with an error, stop the container. The Supervisor then
+# shows the app as stopped (or restarts it, if the watchdog is on).
+# s6 gives the exit code in $1 and the signal number in $2.
+if [[ "${1}" -ne 0 ]] && [[ "${1}" -ne 256 ]]; then
+  bashio::log.warning "hagent stopped with exit code ${1}"
+  echo "${1}" > /run/s6-linux-init-container-results/exitcode
+  exec /run/s6/basedir/bin/halt
+fi
+bashio::log.info "hagent stopped"
