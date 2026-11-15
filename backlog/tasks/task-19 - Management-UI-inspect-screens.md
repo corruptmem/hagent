@@ -1,11 +1,11 @@
 ---
 id: TASK-19
 title: 'Management UI: inspect screens'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:35'
+updated_date: '2026-11-15 02:37'
 labels:
   - ui
 dependencies:
@@ -69,6 +69,8 @@ Decisions:
 - Secrets: payloads pass scheduler.redact (approval action IDs); every response also replaces the stored API keys and the link secret with [redacted]. ::test_no_route_returns_a_secret seeds both into returned fields and fails without the scrub.
 - Rules and approvals data are read only through their existing API routes; inspection/ never reads the rules tables.
 Proposed follow-ups (not created): per-case backtest results view (GET .../backtests/{id} exists, unused by the UI); an invocation queue listener for a queued event; run a backtest from the UI.
+
+Lead: merged; mise run check passes on impl (app 1103, integration 53, frontend 62).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
