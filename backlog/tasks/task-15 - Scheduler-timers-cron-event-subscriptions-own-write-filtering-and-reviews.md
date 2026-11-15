@@ -1,11 +1,11 @@
 ---
 id: TASK-15
 title: 'Scheduler: timers, cron, event subscriptions, own-write filtering and reviews'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 01:23'
+updated_date: '2026-11-15 01:24'
 labels:
   - app
 dependencies:
@@ -78,6 +78,8 @@ Cross-area edits for review:
 - pyproject.toml (root): mypy override for apscheduler.
 
 Validation: mise run check passes (ruff, mypy strict, 656 pytest tests, frontend checks).
+
+Lead: AC #4 accepted as scoped: origin (agent/external) is recorded for the state changes delivered to an agent (scheduler_events, changes[].origin). The agent's history is what an agent sees, so this meets design section 12.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
