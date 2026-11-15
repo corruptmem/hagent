@@ -1,11 +1,11 @@
 ---
 id: TASK-8
 title: Tool executor with scope enforcement and audit log
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-15 00:49'
+updated_date: '2026-11-15 00:50'
 labels:
   - app
   - security
@@ -109,6 +109,8 @@ Review-8 fixes (security review of task-8, 7 findings):
 Test codes that changed on purpose: mqtt.publish and recorder.purge with scope all now give indirect_service (no_target case now uses conversation.process). self.update on a rule now gives not_supported before the owner check. The fixture home now has realistic service descriptions (recorder, zwave_js and group follow HA Core 2026.6 services.yaml).
 Evidence: mise run check passes (ruff, mypy strict, 447 tests, frontend). The 10 review-8 probes all fail now (each bypass is denied). New regressions: REVIEW_8_CASES in test_tool_executor.py (31 cases; each asserts the denial code, no FakeHA command, no store call and a denied audit row), test_subscription_stores_the_checked_spec, test_admin_event_subscription_is_strict, test_admin_scan_failure_needs_approval_only_with_entity_approval, test_admin_group_target_asks_the_approver, test_state_cache_resync_permits_calls_again, test_check_failure_is_logged_and_audited; in test_tool_scope.py the review-8 section (cross domain, outputs, recorder, zwave, unknown fields, metadata, group object_id, trailing newline, admin_entities, description parsing); test_failed_notification_keeps_the_old_baseline in test_tool_monitor.py.
 Known limit: stored definitions are validated again on load. A stored definition with a wildcard for a newly indirect domain (for example mqtt.*) no longer loads.
+
+Lead: an independent security review found 1 critical, 3 medium and 3 low issues. task-8-fix fixed all 7. The lead re-ran the 10 original bypass probes against impl: all are now denied (indirect_service, outside the scope, no metadata, or check_failed). Accepted: stored wildcard scopes for newly indirect domains no longer load (no stored definitions exist yet).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
