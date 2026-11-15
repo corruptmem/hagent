@@ -78,6 +78,14 @@ class IngressGuard:
         self._exempt = tuple(exempt_prefixes)
         self._networks: tuple[Network, ...] | None = None
 
+    def _exempt_path(self, path: str) -> bool:
+        # A prefix matches whole path segments: "/link" exempts "/link" and
+        # "/link/ws", not "/linkx".
+        return any(
+            path == prefix or path.startswith(prefix.rstrip("/") + "/")
+            for prefix in self._exempt
+        )
+
     async def start(self, ctx: AppContext) -> None:
         """Read the allowed addresses from the ``ingress`` options."""
         config = ctx.config.section("ingress", IngressConfig)
@@ -97,7 +105,7 @@ class IngressGuard:
         self, request: web.Request, handler: Handler
     ) -> web.StreamResponse:
         """Refuse the request if the peer address is not allowed."""
-        if self._exempt and request.path.startswith(self._exempt):
+        if self._exempt_path(request.path):
             return await handler(request)
         networks = self._networks
         if networks is None:

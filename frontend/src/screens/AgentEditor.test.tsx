@@ -167,6 +167,20 @@ describe("agent editor", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
+  it("enables the save again when a JSON field is turned off", async () => {
+    fakeApi();
+    renderApp(`/agents/${AGENT_ID}`);
+    await userEvent.type(await screen.findByDisplayValue("Test agent"), " 2");
+    const type = screen.getByLabelText("Result type");
+    await userEvent.selectOptions(type, "structured");
+    const schema = screen.getByLabelText("Result schema (JSON)");
+    await userEvent.clear(schema);
+    await userEvent.type(schema, "{{");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    await userEvent.selectOptions(type, "text");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
   it("creates a new agent from the defaults", async () => {
     const created = makeAgent({ version: 1 });
     const api = fakeApi((call) =>

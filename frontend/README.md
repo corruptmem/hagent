@@ -18,12 +18,12 @@ app.
 Run the commands in `frontend/`. `mise run setup` installs the
 dependencies with `npm ci`.
 
-| Command | Effect |
-|---|---|
-| `npm run dev` | Starts the Vite development server. It forwards `/api` to the app. |
-| `npm run build` | Checks the types and writes the build to `dist/`. |
-| `npm run check` | Runs eslint, prettier, tsc and vitest. `mise run check` runs it too. |
-| `npm run format` | Applies the prettier format. |
+| Command          | Effect                                                               |
+| ---------------- | -------------------------------------------------------------------- |
+| `npm run dev`    | Starts the Vite development server. It forwards `/api` to the app.   |
+| `npm run build`  | Checks the types and writes the build to `dist/`.                    |
+| `npm run check`  | Runs eslint, prettier, tsc and vitest. `mise run check` runs it too. |
+| `npm run format` | Applies the prettier format.                                         |
 
 ## Development with a local app
 
@@ -31,10 +31,11 @@ dependencies with `npm ci`.
    `$HAGENT_DATA_DIR/options.json`:
 
    ```json
-   {"ingress": {"allowed_addresses": ["127.0.0.1", "::1"]}}
+   { "ingress": { "allowed_addresses": ["127.0.0.1", "::1"] } }
    ```
 
    The default allows only the Supervisor address, `172.30.32.2`.
+
 2. Start the app: `uv run python -m hagent_app`. See `app/README.md` for
    the environment variables.
 3. Start the UI: `npm run dev`. The development server forwards `/api` and

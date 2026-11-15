@@ -165,6 +165,8 @@ export function DefinitionForm({
             value={d.result.type}
             options={RESULT_TYPES}
             onChange={(type) => {
+              // The schema field restarts from the stored value, which is valid JSON.
+              onJsonValidity("result.schema", true);
               const schema =
                 type === "structured"
                   ? (d.result.schema ?? { type: "object", properties: {} })
@@ -434,6 +436,7 @@ export function DefinitionForm({
             value={d.fallback.mode}
             options={FALLBACK}
             onChange={(mode) => {
+              onJsonValidity("fallback.value", true);
               onChange(
                 setPath(d, "fallback", {
                   mode,

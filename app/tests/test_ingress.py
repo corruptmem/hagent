@@ -137,6 +137,10 @@ async def test_guard_exempt_prefix() -> None:
     )
     request = make_mocked_request("GET", "/link/ws", transport=transport)
     assert (await guard.middleware(request, _ok)).status == 200
+    request = make_mocked_request("GET", "/linkx", transport=transport)
+    with pytest.raises(Exception) as info:
+        await guard.middleware(request, _ok)
+    assert getattr(info.value, "status", None) == 403
 
 
 async def test_default_app_refuses_local_clients(
