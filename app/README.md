@@ -29,6 +29,7 @@ SIGINT.
 | `src/hagent_app/backtest/` | Invocation records, backtests, trials and the rule routes of the management API (task-14). See "Backtests and trials" below. |
 | `src/hagent_app/router/` | The router, the persistent invocation queue, the fallback, chat retries and the test invocation route (task-12). See "How to invoke an agent" below. |
 | `src/hagent_app/scheduler/` | `SchedulerComponent`: timers, cron schedules, reviews, event subscriptions and own-write filtering (task-15). See "Schedules and subscriptions" below. |
+| `src/hagent_app/inspection/` | `InspectComponent`: the read-only inspect routes (invocations, traces, history search, audit log, permissions, schedules, cost) and the `invocations` change events (task-19). See "Inspect routes" below. |
 | `src/hagent_app/link/` | `LinkComponent`: the integration link WebSocket, its shared secret and the Supervisor discovery (task-17). See "The integration link" below and `docs/link.md`. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
@@ -1123,6 +1124,29 @@ The `scheduler` section of `options.json` holds the keys in
 `SchedulerConfig` (`src/hagent_app/scheduler/config.py`). Rows of
 `scheduler_runs` and `scheduler_events` older than `retention_days` are
 deleted on start and each hour.
+## Inspect routes
+
+`InspectComponent` (`inspection/`) serves the read-only routes of the
+inspect area (design section 7.2). `docs/api.md`, section "Inspect",
+describes them.
+
+- The component reads the tables of other areas with plain SQL in
+  `inspection/queries.py`. It never writes.
+- It never reads the `rules` and `rule_versions` tables. The UI reads
+  rules through the rule routes of `backtest/api.py`.
+- Each payload passes `scheduler.redact.redact`, so that an approval
+  action ID never reaches the UI.
+- Each response replaces the current API keys and the link secret with
+  `[redacted]`. `default_components()` gives the component a function
+  that returns these values. Values shorter than 8 characters are not
+  replaced.
+- Permissions resolve the scope with `tools.scope.agent_scope` and the
+  last registry snapshot. The entity list comes from the state cache.
+- The component registers a result listener and an activity listener on
+  the router. It publishes `invocations` / `finished` and
+  `invocations` / `activity`. A queued invocation sends no event until it
+  starts.
+
 ## The integration link
 
 The `link` package serves the WebSocket for the HA integration (design

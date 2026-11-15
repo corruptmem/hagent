@@ -1,6 +1,19 @@
 import { appUrl } from "../base";
 import type {
   Agent,
+  ApprovalRequest,
+  AuditEntry,
+  Backtest,
+  CostReport,
+  InvocationFilters,
+  InvocationSummary,
+  Permissions,
+  RuleDetail,
+  RuleState,
+  RuleSummary,
+  Schedules,
+  Trace,
+  Trial,
   AgentDefinition,
   AgentSummary,
   Catalog,
@@ -262,4 +275,105 @@ export const api = {
     request<SettingsResponse>("PUT", `api/settings/keys/${provider}`, { key }),
   deleteKey: (provider: Provider) =>
     request<SettingsResponse>("DELETE", `api/settings/keys/${provider}`),
+
+  // Inspect
+  invocations: (filters: InvocationFilters) =>
+    request<{ invocations: InvocationSummary[] }>(
+      "GET",
+      `api/inspect/invocations${query({ ...filters })}`,
+    ).then((r) => r.invocations),
+  trace: (id: string) =>
+    request<Trace>("GET", `api/inspect/invocations/${encodeURIComponent(id)}`),
+  audit: (filters: { agent_id?: string; decision?: string }) =>
+    request<{ entries: AuditEntry[] }>(
+      "GET",
+      `api/inspect/audit${query({ ...filters })}`,
+    ).then((r) => r.entries),
+  schedules: (agentId?: string) =>
+    request<Schedules>(
+      "GET",
+      `api/inspect/schedules${query({ agent_id: agentId })}`,
+    ),
+  cost: (days: number, agentId?: string) =>
+    request<CostReport>(
+      "GET",
+      `api/inspect/cost${query({ days: String(days), agent_id: agentId })}`,
+    ),
+  permissions: (agentId: string) =>
+    request<Permissions>(
+      "GET",
+      `api/inspect/agents/${encodeURIComponent(agentId)}/permissions`,
+    ),
+
+  // Rules
+  listRules: (agentId: string) =>
+    request<{ rules: RuleSummary[] }>("GET", rulesPath(agentId)).then(
+      (r) => r.rules,
+    ),
+  getRule: (agentId: string, ruleId: string) =>
+    request<RuleDetail>("GET", rulesPath(agentId, ruleId)),
+  getRuleVersion: (agentId: string, ruleId: string, version: number) =>
+    request<{ rule_id: string; version: number; spec: unknown }>(
+      "GET",
+      `${rulesPath(agentId, ruleId)}/versions/${version}`,
+    ),
+  setRuleState: (agentId: string, ruleId: string, state: RuleState) =>
+    request<{ id: string; version: number; state: RuleState }>(
+      "POST",
+      `${rulesPath(agentId, ruleId)}/state`,
+      { state },
+    ),
+  deleteRule: (agentId: string, ruleId: string) =>
+    request<{ deleted: string }>("DELETE", rulesPath(agentId, ruleId)),
+  rollbackRule: (agentId: string, ruleId: string, version: number) =>
+    request<{ id: string; version: number }>(
+      "POST",
+      `${rulesPath(agentId, ruleId)}/rollback`,
+      { version },
+    ),
+  listBacktests: (agentId: string, ruleId: string) =>
+    request<{ backtests: Backtest[] }>(
+      "GET",
+      `${rulesPath(agentId, ruleId)}/backtests`,
+    ).then((r) => r.backtests),
+  getBacktest: (agentId: string, ruleId: string, backtestId: string) =>
+    request<Backtest>(
+      "GET",
+      `${rulesPath(agentId, ruleId)}/backtests/${encodeURIComponent(backtestId)}`,
+    ),
+  listTrials: (agentId: string, ruleId: string) =>
+    request<{ trials: Trial[] }>(
+      "GET",
+      `${rulesPath(agentId, ruleId)}/trials`,
+    ).then((r) => r.trials),
+
+  // Approvals
+  approvals: (status?: string) =>
+    request<{ approvals: ApprovalRequest[]; can_answer: boolean }>(
+      "GET",
+      `api/approvals${query({ status })}`,
+    ),
+  approval: (id: string) =>
+    request<ApprovalRequest>("GET", `api/approvals/${encodeURIComponent(id)}`),
+  answerApproval: (id: string, decision: "accept" | "reject") =>
+    request<ApprovalRequest>(
+      "POST",
+      `api/approvals/${encodeURIComponent(id)}/answer`,
+      { decision },
+    ),
 };
+
+/** A query string from the set values, or "". */
+function query(params: Record<string, string | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value) search.set(key, value);
+  }
+  const text = search.toString();
+  return text ? `?${text}` : "";
+}
+
+function rulesPath(agentId: string, ruleId?: string): string {
+  const base = `api/agents/${encodeURIComponent(agentId)}/rules`;
+  return ruleId ? `${base}/${encodeURIComponent(ruleId)}` : base;
+}

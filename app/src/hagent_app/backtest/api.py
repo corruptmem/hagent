@@ -69,6 +69,8 @@ class RulesApi:
             web.post("/api/rules/check-template", self.check),
             web.get(_BASE, self.list_rules),
             web.get(f"{_BASE}/{_RULE}", self.get_rule),
+            web.delete(f"{_BASE}/{_RULE}", self.delete_rule),
+            web.post(f"{_BASE}/{_RULE}/state", self.set_state),
             web.get(f"{_BASE}/{_RULE}/versions/{_VERSION}", self.get_version),
             web.post(f"{_BASE}/{_RULE}/rollback", self.rollback),
             web.get(f"{_BASE}/{_RULE}/backtests", self.list_backtests),
@@ -162,6 +164,50 @@ class RulesApi:
             "updated", rule_id, {"agent_id": agent.id, "version": version}
         )
         return web.json_response(result)
+
+    async def set_state(self, request: web.Request) -> web.Response:
+        """Turn a rule off, or turn an ``off`` rule on again (design 7.2).
+
+        The user cannot activate a ``draft``: the agent activates a draft
+        after its backtest (design 10.7).
+        """
+        agent = await self._agent(request)
+        body = await _object(request)
+        state = body.get("state")
+        if state not in {"active", "off"}:
+            raise ApiError(400, "invalid_body", "state must be 'active' or 'off'")
+        stats = await self._rule(request, agent)
+        rule_id = stats["rule_id"]
+        if state == "active" and stats["state"] == "draft":
+            msg = "the agent activates a draft rule after a backtest"
+            raise ApiError(409, "rule_is_draft", msg)
+        component = self._component()
+        assert component.rules is not None  # noqa: S101 - set when running
+        try:
+            await component.rules.store.set_enabled(
+                agent.id, "rule", rule_id, state == "active"
+            )
+        except StoreError as err:
+            raise ApiError(404, "rule_not_found", err.message) from err
+        version = int(stats["current_version"])
+        component.publish(
+            "updated", rule_id, {"agent_id": agent.id, "version": version}
+        )
+        return web.json_response({"id": rule_id, "version": version, "state": state})
+
+    async def delete_rule(self, request: web.Request) -> web.Response:
+        """Delete a rule. Its versions and statistics stay for history."""
+        agent = await self._agent(request)
+        stats = await self._rule(request, agent)
+        rule_id = stats["rule_id"]
+        component = self._component()
+        assert component.rules is not None  # noqa: S101 - set when running
+        try:
+            await component.rules.store.delete(agent.id, "rule", rule_id)
+        except StoreError as err:
+            raise ApiError(404, "rule_not_found", err.message) from err
+        component.publish("deleted", rule_id, {"agent_id": agent.id})
+        return web.json_response({"deleted": rule_id})
 
     async def backtest(self, request: web.Request) -> web.Response:
         """Run one backtest and return it with its cases."""

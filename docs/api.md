@@ -1049,7 +1049,8 @@ The `link` section of the app options has these keys:
 
 A **rule** is a fast path that an agent writes with the `self` tools
 (design section 10). The agent owns its rules. The user can read them, roll
-them back, and run backtests in the management UI. Rule IDs, like other IDs,
+them back, turn them off, delete them and run backtests in the management
+UI. Rule IDs, like other IDs,
 are 32 hexadecimal characters.
 
 Terms:
@@ -1078,6 +1079,7 @@ Errors of the rule routes:
 | 404 | `version_not_found` | The rule has no version with this number. |
 | 404 | `backtest_not_found` | The rule has no backtest with this ID. |
 | 409 | `backtest_running` | A backtest of this rule runs already. |
+| 409 | `rule_is_draft` | The user tried to activate a draft rule. |
 | 422 | `invalid_rule` | The stored spec of the version is not valid any more. |
 | 503 | `not_ready` | The rule engine is not running. |
 
@@ -1144,6 +1146,32 @@ of each version (design section 10.4):
 The version becomes the current version. Its statistics continue. The state
 of the rule does not change. The response is
 `{"id": "<rule ID>", "version": 1, "state": "active"}`.
+
+### Turn a rule off or on
+
+`POST api/agents/{id}/rules/{rule_id}/state`
+
+```json
+{"state": "off"}
+```
+
+`state` is `off` or `active`. `off` stops the rule: the router does not
+test it, so the agent turn answers. `active` turns an `off` rule on again.
+The user cannot activate a `draft` rule. The agent activates a draft after
+its backtest (design section 10.7). The current version does not change.
+The response is `{"id": "<rule ID>", "version": 2, "state": "off"}`.
+
+Errors: 400 `invalid_body` for another `state`, 404 `rule_not_found` for
+a rule of another agent or a deleted rule, and 409 `rule_is_draft` for
+`active` on a draft rule.
+
+### Delete a rule
+
+`DELETE api/agents/{id}/rules/{rule_id}`
+
+The rule stops at once and leaves the rule list. Its versions and their
+statistics stay for history. The response is `{"deleted": "<rule ID>"}`.
+A deleted rule gives 404 `rule_not_found` for a later change.
 
 ### Run a backtest
 
@@ -1265,6 +1293,211 @@ statements. It does not render it. The response is
 `{"ok": true, "error": null}`, or `{"ok": false, "error": "<message>"}`
 with status 200.
 
+## Inspect
+
+The inspect routes are read-only (design section 7.2, "Inspect"). They
+read the records that the runtime writes: invocations, agent turns, the
+tool audit log, provider calls, schedules and subscriptions. The UI reads
+rules, backtests and trials through the rule routes, and approval requests
+through the approval routes.
+
+Terms:
+
+- **Invocation**: one request to an agent, from any source (design section
+  9). The router writes one record for each invocation.
+- **Trace**: the full record of one invocation: the request, the agent
+  turns with their messages, each tool call with its scope decision, each
+  compaction, the result and the cost.
+- **Scope decision**: `allowed` or `denied`. The executor writes an audit
+  row for each denied call and each change to HA. A tool call without an
+  audit row passed the scope check, so its decision is `allowed`.
+- **Effective scope**: the HA scope of an agent, resolved to entity IDs
+  with the current HA registries and states.
+
+Rules for all inspect routes:
+
+- No route returns an API key, the link secret or an approval action ID.
+  The app replaces each approval action ID and approval tag with
+  `[redacted]`. It also replaces each stored API key and the link secret
+  with `[redacted]` in every response, also inside error text and tool
+  results.
+- `limit` is 1 to 500. The default is 100.
+- `agent_id` is optional where this section does not put it in the path.
+  It must be 32 hexadecimal characters.
+- A query parameter that is not valid gives 400 `invalid_query`.
+- Before the app is ready, each route gives 503 `not_ready`.
+- Money fields end in `_usd` and hold US dollars as JSON numbers.
+
+### List invocations
+
+`GET api/inspect/invocations?agent_id=&source=&path=&status=&q=&before=&dry_run=&limit=`
+
+Returns the newest invocations first:
+
+```json
+{"invocations": [{"id": "<32 hex>", "agent_id": "<32 hex>",
+  "source": "invoke", "source_key": "invoke", "conversation_id": null,
+  "dry_run": false, "created_at": "...", "started_at": "...",
+  "finished_at": "...", "status": "ok", "path": "agent_turn",
+  "fallback_reason": null, "error_code": null, "agent_version": 3,
+  "rule_id": null, "rule_version": null, "turn_id": "<turn ID>",
+  "cost_usd": 0.0021}]}
+```
+
+| Parameter | Content |
+|---|---|
+| `source` | The source of the invocation, for example `invoke`, `schedule` or `assist`. |
+| `path` | `rule`, `agent_turn` or `fallback`. |
+| `status` | `queued`, `running`, `ok`, `fallback`, `error` or `cancelled`. |
+| `q` | The history search. A text match that ignores case, on the request, the result and the error of the invocation, and on the input and the result of its agent turns. At most 200 characters. |
+| `before` | An ISO time. Only invocations created before it. Use the `created_at` of the last item to load the next page. |
+| `dry_run` | `true` adds test invocations. The default is `false`. |
+
+`cost_usd` is the cost that the router recorded when the invocation ended.
+The trace sums the provider calls, which can include later background
+cost.
+
+### Read an invocation trace
+
+`GET api/inspect/invocations/{invocation_id}`
+
+```json
+{"invocation": {"...": "the list fields", "request": {}, "result": 21.5,
+                "error": null},
+ "turns": [{"id": "<turn ID>", "status": "ok", "stop_reason": null,
+   "input": {}, "prompt": "...", "result": 21.5, "messages": [],
+   "usage": {"requests": 2, "tool_calls": 1, "input_tokens": 900,
+             "cache_read_tokens": 600, "cache_write_tokens": 0,
+             "output_tokens": 40},
+   "tool_calls": [{"seq": 1, "tool": "ha.call_service", "arguments": {},
+     "ok": true, "error_code": null, "result": {}, "result_chars": 2,
+     "cut": false, "scope_decision": "allowed", "audit": <audit entry>}],
+   "compactions": [{"id": 1, "kind": "tool_result_cut", "detail": {},
+                    "summary": null}]}],
+ "audit": [<audit entry>],
+ "provider_calls": [{"id": 1, "call_type": "chat", "provider": "openai",
+   "model": "...", "status": "ok", "input_tokens": 900,
+   "cache_read_tokens": 600, "cache_write_tokens": 0, "output_tokens": 40,
+   "cost_usd": 0.0021, "cost_source": "price_table"}],
+ "trials": [{"id": "<32 hex>", "rule_id": "<32 hex>", "version": 2,
+   "status": "agreed", "rule_result": 21.5, "agent_result": 21.5,
+   "cost_usd": 0.0012}],
+ "approvals": [{"id": "<32 hex>", "tool": "ha.call_service",
+                "status": "accepted"}],
+ "cost": {"total_usd": 0.0021, "input_tokens": 900,
+          "cache_read_tokens": 600, "cache_write_tokens": 0,
+          "output_tokens": 40}}
+```
+
+- `turns` lists every agent turn of the invocation, also trial turns. A
+  rule answer has no turn.
+- `audit` lists every audit row of the invocation, also the writes of a
+  rule action.
+- `invocation.rule_id` and `invocation.rule_version` name the rule
+  version that answered. Read its spec with "Read a version" in "Rules".
+- `tool_calls[].audit` is the audit row of the call, or `null`.
+
+Error: 404 `invocation_not_found`.
+
+### Audit log
+
+`GET api/inspect/audit?agent_id=&decision=&tool=&before=&limit=`
+
+Returns `{"entries": [<audit entry>]}`, newest first. This is the "Changes
+to HA" log. `decision=allowed` lists the changes only, `decision=denied`
+the denied calls only. `before` is an audit row ID: only older rows.
+
+```json
+{"id": 12, "created_at": "...", "finished_at": "...",
+ "agent_id": "<32 hex>", "agent_version": 3, "invocation_id": "<32 hex>",
+ "tool": "ha.admin_change", "level": "admin", "request": {},
+ "decision": "allowed", "reason_code": null, "reason": null,
+ "status": "ok", "error": null, "context_id": "...",
+ "previous": {"...": "the item before the change"}, "previous_note": null}
+```
+
+- `status` is `pending`, `ok`, `error`, `denied` or `dry_run`.
+- `previous` is the previous version of the item of an `admin` change.
+  `previous_note` says why `previous` is empty, if it is.
+
+### Permissions of an agent
+
+`GET api/inspect/agents/{id}/permissions?limit=`
+
+Returns the effective scope of the current definition and the newest
+denied calls of the agent (`limit`, default 100):
+
+```json
+{"agent_id": "<32 hex>", "version": 3, "registry_stale": false,
+ "ha": {"level": "control", "services": [], "outputs": [],
+        "read": {"all": false, "entities": ["light.<room>"],
+                 "domains": ["weather"]},
+        "control": {"all": false, "entities": ["light.<room>"],
+                    "domains": []}},
+ "tools": [{"name": "ha.call_service", "group": "ha"}],
+ "knowledge": [{"store_id": "<32 hex>", "access": "read"}],
+ "approval": {"tools": [], "services": [], "entities": []},
+ "denied": [<audit entry>]}
+```
+
+- `entities` lists each entity that the scope permits now, also each
+  entity of a permitted domain.
+- `all` is true for the `admin` level. Then `entities` is empty.
+- The read scope includes the inputs and the outputs.
+- `registry_stale` is true when the app uses the last known HA registries.
+  When the scope needs registries that the app never loaded, `ha` has
+  `unavailable` with a reason, and no `read` or `control`.
+
+Error: 404 `agent_not_found`.
+
+### Schedules and subscriptions
+
+`GET api/inspect/schedules?agent_id=`
+
+```json
+{"items": [{"id": "<item ID>", "agent_id": "<32 hex>",
+   "kind": "schedule", "spec": {}, "enabled": true, "run_at": null,
+   "created_at": "...", "updated_at": "...",
+   "last_run": {"due_at": "...", "at": "...", "status": "submitted",
+                "missed_count": 1, "invocation_id": "<32 hex>",
+                "result_status": "ok", "result_code": null},
+   "last_event": null}],
+ "reviews": [{"agent_id": "<32 hex>", "at": "...", "due_at": "...",
+              "status": "submitted", "invocation_id": "<32 hex>"}],
+ "runs": [], "events": []}
+```
+
+- `kind` is `schedule` or `subscription`. `last_run` is for a schedule,
+  `last_event` for a subscription.
+- `reviews` gives the last run of the review schedule of each agent.
+- `runs` and `events` list the newest 50 schedule runs and subscription
+  events (design section 12).
+
+### Cost
+
+`GET api/inspect/cost?days=&agent_id=`
+
+Returns the provider cost of the last `days` days (1 to 366, default 30),
+by local day of HA, with today included:
+
+```json
+{"since": "2026-10-17",
+ "total": {"calls": 40, "cost_usd": 0.42, "embedding_cost_usd": 0.01,
+           "input_tokens": 50000, "cache_read_tokens": 30000,
+           "cache_write_tokens": 0, "output_tokens": 2000},
+ "by_agent": [{"agent_id": "<32 hex>", "...": "the total fields"}],
+ "by_day": [{"day": "2026-11-15", "...": "the total fields"}],
+ "by_path": [{"path": "agent_turn", "...": "the total fields"}],
+ "by_type": [{"call_type": "chat", "...": "the total fields"}]}
+```
+
+- `by_agent` has `agent_id` `null` for cost that belongs to no agent, for
+  example a document embedding.
+- `path` is the path of the linked invocation: `rule`, `agent_turn` or
+  `fallback`. A call without an invocation has `embedding` or `other`. An
+  invocation that did not finish has `none`.
+- `call_type` is `chat`, `decision` or `embedding`.
+
 ## Change events
 
 `GET api/events` opens a WebSocket. The app sends one JSON object for each
@@ -1289,8 +1522,11 @@ Each later message has this form:
 | `knowledge` | `file_changed`, `file_deleted`, `item_deleted`, `document_changed` | `path`. `id` is the store ID. |
 | `knowledge` | `settings_changed` | none. `id` is `settings`. |
 | `settings` | `updated` | none. `id` is `settings`. The app sends it after each change of the settings or of an API key. |
-| `rules` | `updated` | `agent_id`, `version`. The app sends it after a rollback through the API. `id` is the rule ID. |
+| `rules` | `updated` | `agent_id`, `version`. The app sends it after a rollback or a state change through the API. `id` is the rule ID. |
+| `rules` | `deleted` | `agent_id`. The app sends it after a delete through the API. `id` is the rule ID. |
 | `rules` | `backtest_finished` | `agent_id`, `backtest_id`. `id` is the rule ID. |
+| `invocations` | `activity` | `running`: the number of invocations of the agent that run now. The app sends it when an invocation starts or ends. `id` is the agent ID. |
+| `invocations` | `finished` | `agent_id`, `status`, `path`. The app sends it when an invocation ends. `id` is the invocation ID. |
 | `tools` | `scope_grown` | `version`, `added_read`, `added_control`: lists of entity IDs. The app sends it when an HA registry change makes the scope of an agent grow. `id` is the agent ID. |
 
 Rules for the UI:

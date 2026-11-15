@@ -10,6 +10,7 @@ To add a component, add it to ``default_components``. See ``app/README.md``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import sqlite3
 import uuid
@@ -55,7 +56,7 @@ class Component(Protocol):
         """Stop the component and release its resources."""
 
 
-def default_components() -> list[Component]:
+def default_components() -> list[Component]:  # noqa: PLR0915 - one wiring list
     """The components that a normal app start runs, in start order.
 
     Build ``HttpServer`` first, so that each component can add its routes
@@ -68,9 +69,11 @@ def default_components() -> list[Component]:
     serves the UI files on every path that does not start with ``api/``.
     """
     from hagent_app.backtest import BacktestComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.inspection import InspectComponent  # noqa: PLC0415 - import cycle
     from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
     from hagent_app.link import LinkComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.providers.config import PROVIDERS  # noqa: PLC0415 - import cycle
     from hagent_app.router import (  # noqa: PLC0415 - import cycle
         RetryingChatModels,
         RouterComponent,
@@ -78,6 +81,9 @@ def default_components() -> list[Component]:
     from hagent_app.rules import RulesComponent  # noqa: PLC0415 - import cycle
     from hagent_app.scheduler import SchedulerComponent  # noqa: PLC0415 - import cycle
     from hagent_app.settings import SettingsComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.settings.component import (  # noqa: PLC0415 - import cycle
+        SettingsNotStartedError,
+    )
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -136,6 +142,23 @@ def default_components() -> list[Component]:
 
     link = LinkComponent(http.events, router, cost=agent_cost)
     http.add_routes(link.routes())
+
+    def inspect_secrets() -> list[str]:
+        values = [link.secret]
+        with contextlib.suppress(SettingsNotStartedError):
+            for provider in PROVIDERS:
+                key = settings.keys.key(provider)
+                if key:
+                    values.append(key.reveal())
+        return values
+
+    # The inspect area reads the tables of other areas and publishes the
+    # invocations change events from the router listeners. Its responses
+    # never hold an API key or the link secret.
+    inspect_area = InspectComponent(
+        http.events, tools=tools, router=router, secrets=inspect_secrets
+    )
+    http.add_routes(inspect_area.routes())
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
@@ -153,6 +176,7 @@ def default_components() -> list[Component]:
         backtest,
         router,
         scheduler,
+        inspect_area,
         link,
         catalog,
         ui,

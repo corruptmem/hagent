@@ -53,6 +53,16 @@ export function useChangeEvents(): EventsStatus {
           void client.invalidateQueries({ queryKey: keys.knowledge });
         } else if (event.topic === "settings") {
           void client.invalidateQueries({ queryKey: keys.settings });
+        } else if (event.topic === "invocations") {
+          // New and finished invocations change the lists, the traces and
+          // the cost.
+          void client.invalidateQueries({ queryKey: keys.inspect });
+        } else if (event.topic === "rules") {
+          void client.invalidateQueries({ queryKey: keys.rules });
+        } else if (event.topic === "approvals") {
+          void client.invalidateQueries({ queryKey: keys.approvals });
+        } else if (event.topic === "tools") {
+          void client.invalidateQueries({ queryKey: keys.inspect });
         }
       };
       socket.onclose = () => {

@@ -151,6 +151,7 @@ async def test_default_components_serve_the_api(
         "backtest",
         "router",
         "scheduler",
+        "inspect",
         "link",
         "ha_catalog",
         "ui",

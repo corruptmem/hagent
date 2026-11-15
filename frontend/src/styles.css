@@ -412,3 +412,29 @@ textarea.content {
 .field.key p {
   margin: 4px 0;
 }
+
+/* Inspect area */
+pre.json {
+  max-height: 320px;
+  margin: 4px 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.field.inline {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge.error {
+  background: color-mix(in srgb, var(--error) 20%, transparent);
+  color: var(--error);
+}

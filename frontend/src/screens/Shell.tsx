@@ -16,6 +16,9 @@ export function Shell() {
         <Link to="/knowledge" activeProps={{ className: "active" }}>
           Knowledge
         </Link>
+        <Link to="/inspect" activeProps={{ className: "active" }}>
+          Inspect
+        </Link>
         <Link to="/settings" activeProps={{ className: "active" }}>
           Settings
         </Link>
