@@ -137,6 +137,12 @@ class FakeAgentState:
         self.calls.append(("rollback_rule", agent_id, rule_id, version))
         return {"id": rule_id, "version": version}
 
+    async def backtest_rule(
+        self, agent: Any, rule_id: str, options: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        self.calls.append(("backtest_rule", agent.id, rule_id))
+        return {"id": "b" * 32, "rule_id": rule_id, "cases": []}
+
 
 class RecordingGate:
     """An approval gate that answers with a fixed value."""

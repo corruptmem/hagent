@@ -38,6 +38,20 @@ While HA restarts, the view uses the last known state cache and the last
 known registry. If the app has no registry data yet, a scope that uses
 devices, areas, floors or labels shrinks to its listed entities and domains.
 
+## Backtests
+
+A backtest renders the templates of a rule against a past invocation
+(design section 10.7). It changes two things:
+
+- `now()` and `today_at()` use the time of the past invocation. `utcnow()`
+  uses the real time. Write rules with `now()` so that backtests are
+  correct.
+- The input entities have their recorded states, with attributes. Other
+  entities in the view have their current states.
+
+The `agreement` template receives `rule_result` and `agent_result`, and the
+variables of the invocation. It renders true when the two results agree.
+
 A state object has `entity_id`, `domain`, `object_id`, `name`, `state`,
 `attributes`, `last_changed` and `last_updated`. It has no `context`,
 because the HA context holds user IDs.
