@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:41'
+updated_date: '2026-11-15 00:55'
 labels:
   - app
   - security
@@ -90,6 +90,21 @@ AC evidence (uv run pytest app/tests/test_approvals.py: 49 passed):
 - AC #1: test_answers_from_other_users_have_no_effect (other user, no user, app user), test_wrong_phone_cannot_approve, test_legacy_and_malformed_events_are_ignored, test_api_refuses_non_approvers (no header, other user, app user), test_held_call_reaches_ha_only_after_a_valid_accept.
 - AC #2: test_timeout_fails_closed_and_clears (approval_timeout, no light.turn_on in FakeHA commands), test_time_limit_counts_from_the_request, test_late_answer_after_timeout_is_only_logged, test_cancelled_turn_clears_and_ignores_later_accept, test_restart_expires_pending_requests.
 - AC #3: test_api_lists_and_answers_pending_requests (list with status=pending, read, accept through POST, call reaches HA after it, second answer 409), test_api_errors.
+
+## Security review fixes (2026-11-15)
+
+Merged impl into task-16 first (task-8-fix, task-10, task-11). Kept the task-8-fix executor behaviour: catch-all check_failed, states_unavailable, strict self.* specs. Conflicts in docs/api.md, app/README.md, app/pyproject.toml and app.py: both sides kept. uv.lock regenerated.
+
+Fixes:
+- M1: after an accept, the gate loads the agent again (AgentReader). It denies with approval_stale if the agent is deleted, off or has another version. The reason column records why. An agents change event ends that agent's pending requests with status cancelled, so the turn gets approval_stale at once. Remaining window: a change between the post-accept check and tool.run (one audit write) is not checked again.
+- M2: the admin_change summary names the command type (only if it is in CHANGE_COMMANDS) and fixed ID keys (entity_id, device_id, area_id, floor_id, label_id, dashboard_id, url_path, <helper>_id) whose value matches [a-z0-9_.-]{1,100}.
+- M3: tools/store_tools.py denies subscriptions to call_service at every level (DENIED_EVENT_TYPES). Task-15 can still add redaction.
+- L1: the executor writes a denial row approval_cancelled under asyncio.shield when the invocation is cancelled during the gate, then raises again. The approval step is now ToolExecutor._approve.
+- L2: the API trusts X-Remote-User-Id only from peer 172.30.32.2. Option approvals.dev_trust_user_header turns this off for development, with a warning at start.
+- L3: a dry run returns before the approval hook for every tool that needs approval, also read tools.
+- L4: an answer UPDATE also needs expires_at > now; otherwise the answer is late.
+
+Regression tests (test_approvals.py, test_review_*): one per probe p1, p1b, p2, p3, p3b, p4, p5, p6, plus agent-change cancel, unrelated change, admin summary without free text, call_service at read/control/admin, dev option warning. test_tool_executor.py::test_admin_event_subscription_is_strict now uses automation_triggered. The 8 original probes all fail against the new code. mise run check: 580 passed, lint, mypy and frontend pass.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
