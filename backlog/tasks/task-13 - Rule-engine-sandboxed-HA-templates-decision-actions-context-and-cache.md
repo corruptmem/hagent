@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 01:38'
+updated_date: '2026-11-15 02:09'
 labels:
   - app
   - rules
@@ -49,6 +49,15 @@ Design: docs/design.md sections 10.1 to 10.6.
 7. Tool seams: ServiceInfo.response_only, ToolExecutor.without_approval() and .env, self.reorder_rules and self.rollback_rule with CASES entries.
 8. AC2: record HA render_template output for 71 synthetic templates (record.py, read only, no real entity) and compare in tests. No homeassistant dev dependency.
 9. Tests: test_rules.py, test_rule_templates.py, test_rule_templates_ha.py, test_rules_component.py, RULE_CASES in test_tool_executor.py. Docs: docs/rule-templates.md, app/README.md section Rules.
+
+Security review fixes (task-13-fix):
+10. Render rule templates in a separate worker process (rules/render_worker.py, pool in rules/render_pool.py). The worker starts with an empty environment (TZ only), cwd /, python -I. It sets RLIMIT_AS after its imports and a soft RLIMIT_CPU before each render. The parent kills and replaces a worker that passes the wall-clock limit. The parent sends plain data only (scoped state snapshot, time zone key, variables). The worker answers with JSON, not pickle. This closes H1, H2, H3, M1 and L1 as a hard limit.
+11. rules/__init__.py imports lazily, so that the worker does not load the app (about 120 MB and 0.9 s per worker otherwise).
+12. In-process first line: _Deadline is a BaseException and a removed tracer fails the render (H1). deep_size walks Namespace, dict views and TemplateState (H2). A counting concat stops the output at MAX_OUTPUT (H3). The format check rejects * width and precision (M2). int * int checks the bit length (L1).
+13. L2: the result cache key holds a digest of the visible entity IDs. check_writes runs before the cache lookup.
+14. Regression tests from the review probes p1 to p9.
+
+15. M1: one agent uses at most 2 of the 4 workers at a time (parallel mode and Assist lanes run invocations of one agent at the same time). The worker read uses poll, not select.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -91,6 +100,34 @@ AC evidence (tests pass in mise run check):
 - AC5: RULE_CASES approval_required (create time), test_a_write_that_needs_approval_never_reaches_ha, test_the_rule_executor_denies_approval_calls_without_a_gate (fire time).
 - AC6: test_each_change_creates_a_version_with_its_own_statistics, test_rollback_to_an_unknown_version_fails.
 - AC7: test_template_rules_work_while_ha_restarts_and_offline, test_the_router_answers_with_a_rule_while_ha_restarts, test_an_area_scope_uses_the_last_registry_while_ha_restarts.
+
+Security review fixes (task-13 security review, findings H1 to L2). Commits 57bfdb4 and 7428b11.
+
+Structural fix: each rule template renders in a separate worker process (rules/render_pool.py, rules/render_worker.py). A worker is one Python process (python -I -m hagent_app.rules.render_worker).
+- The worker starts with an empty environment (TZ only) and the working directory /. Thus it does not get the HA token from the environment.
+- It sets RLIMIT_AS (its address space after the imports plus 256 MiB), RLIMIT_CORE 0, and before each render a soft RLIMIT_CPU of the CPU time used plus the time limit plus 2 s.
+- The app kills and replaces a worker that does not answer within the time limit plus 0.5 s. A worker that reports a memory error is not used again.
+- The app sends a pickle of plain data only (the scoped state snapshot, the time zone key, the variables through plain_data). The worker answers with JSON in length-prefixed frames, so the app never reads a pickle from a worker.
+- The pool has up to 4 workers. One agent uses at most 2 at a time. The pool runs its blocking work in its own threads, so it does not depend on one event loop.
+- rules/__init__.py now imports lazily (PEP 562). A worker then uses about 25 MB RSS and starts in about 60 ms. With the eager package import, a worker loaded most of the app (about 120 MB, about 0.9 s).
+
+In-process first line, and the regression tests (app/tests/test_rule_render_pool.py unless named):
+- H1: _Deadline is a BaseException. A render whose trace function was removed fails. Tests: test_h1_a_caught_deadline_never_yields_a_result, test_h1_the_worker_ends_an_escaped_render.
+- H2: deep_size reads Namespace content and dict views; _guard sizes them. Tests: test_h2_the_size_walk_sees_namespaces_and_dict_views (8 cases), test_the_worker_has_a_memory_limit.
+- H3: _Sandbox.concat counts the length and stops at MAX_OUTPUT before the join (also for set blocks). Tests: test_h3_the_output_limit_holds_while_jinja_joins, test_h3_many_small_parts_stay_within_the_limit.
+- M1: Tests: test_m1_a_stuck_c_call_is_killed_and_the_pool_recovers (5 stuck regex renders, then {{ 1 + 1 }} renders), test_m1_one_agent_cannot_hold_every_worker.
+- M2: the format check refuses a * width or precision. Tests: test_m2_a_star_width_fails (5 cases), test_m2_a_normal_format_still_works.
+- L1: int * int checks the bit length of the product against MAX_BITS. Test: test_l1_integer_multiplication_has_a_size_limit.
+- L2: the result cache key holds ScopedStates.fingerprint() (a digest of the visible entity IDs). Test: test_rules.py::test_a_cached_result_does_not_outlive_a_scope_change (it fails without the fix). check_writes now runs before the cache lookup, as defence in depth.
+- Other tests: test_the_worker_does_not_get_the_app_environment, test_a_template_error_keeps_the_worker, test_plain_data_holds_no_objects_with_methods. The old monkeypatch test of the thread pool is removed.
+
+This supersedes the known limit 'one slow C call cannot be stopped; the thread runs on in a pool of 4'. The app now kills such a worker.
+
+Residual risks:
+- The worker runs as the app user with no file system or seccomp sandbox. A template that escaped the Jinja sandbox could read the files of the app.
+- The lazy rules/__init__.py can conflict with task-14 if task-14 adds exports there.
+
+Validation: mise run check passes (ruff, mypy strict, 1011 app tests, integration tests, frontend checks). In this worktree, integration/.venv-ha2611 had a damaged pytz (no __init__.py). uv sync --reinstall-package pytz fixed it. This was an environment fault, not a code fault.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -107,4 +144,6 @@ Proposed follow-ups (not created): (1) management API routes to list rules with 
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
 Built the rule engine (design 10.1-10.6): package rules/ with a strict RuleSpec, a sandboxed Jinja engine with a documented HA subset (docs/rule-templates.md) that reads a state view filtered to the agent's scope, context items (history, action_response, store_file, invocation_history) with cache times, template and decision actions (one decision request with all questions), result templates with decline, writes through the tool executor (scope check, audit row, own-write observer, no approval gate), a result cache, immutable versions with statistics per version, rollback and reorder (migration 0700). The rule spec check is SPEC_CHECKS['rule']; the engine is the router's rule stage; the store serves the rule kind of the scheduler state store. Verified with mise run check (891 tests): scope tests for templates and every context item and write, approval denial at create and fire time, versions and rollback, cache, decision request shape, HA-restart and offline behaviour at engine and router level, sandbox limit probes, and 71 cases compared with HA 2026.11.1 render_template output.
+
+Security review fixes (H1 to L2): rule templates now render in worker processes with memory, CPU and wall-clock limits, an empty environment and a JSON reply. The app kills and replaces a stuck worker, and one agent uses at most 2 of the 4 workers. In-process checks now also cover a caught deadline, namespaces and dict views, the joined output, * format widths and int * int. The result cache key holds a digest of the visible entity IDs. Verified with mise run check (1011 app tests), including a regression test for each review probe.
 <!-- SECTION:FINAL_SUMMARY:END -->
