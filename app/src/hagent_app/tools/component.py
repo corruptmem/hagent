@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from hagent_app.agents import AgentReader
 from hagent_app.http.events import ChangeEvents
 from hagent_app.tools.audit import AuditLog
-from hagent_app.tools.base import ToolEnv
+from hagent_app.tools.base import ServiceCallObserver, ToolEnv
 from hagent_app.tools.executor import ApprovalGate, ToolExecutor
 from hagent_app.tools.monitor import ScopeMonitor
 from hagent_app.tools.registry import HARegistry
@@ -33,7 +33,8 @@ class ToolsComponent:
     Task-10 calls ``executor()`` in each agent turn. Task-11, task-10 and
     task-13 to task-15 set ``knowledge``, ``history`` and ``agent_state``
     before the app starts. Task-11 also sets ``entities``, the ranked entity
-    search of ``ha.find_entities``. Task-16 sets ``approval``.
+    search of ``ha.find_entities``. Task-16 sets ``approval``. Task-15 sets
+    ``calls``, which sees each agent service call (own-write detection).
     """
 
     name = "tools"
@@ -45,6 +46,7 @@ class ToolsComponent:
         self.agent_state: AgentStateStore | None = None
         self.entities: EntitySearch | None = None
         self.approval: ApprovalGate | None = None
+        self.calls: ServiceCallObserver | None = None
         self.registry: HARegistry | None = None
         self.audit: AuditLog | None = None
         self.monitor: ScopeMonitor | None = None
@@ -77,6 +79,7 @@ class ToolsComponent:
             history=self.history,
             agent_state=self.agent_state,
             entities=self.entities,
+            calls=self.calls,
         )
         self._executor = ToolExecutor(env, self.audit, approval=self.approval)
         await self.registry.start()

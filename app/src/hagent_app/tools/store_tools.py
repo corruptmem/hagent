@@ -14,14 +14,18 @@ Scope rules:
   entities in the read scope. Other event types need the ``admin`` level,
   because events carry data about entities outside the scope. No level can
   subscribe to ``call_service``: its data holds the action IDs of approval
-  notifications. Rule and schedule specs are not supported yet: their consumers
-  (task-13 and task-15) must add validated models and scope checks first.
+  notifications. Schedule specs are a timer or a cron schedule; the
+  scheduler store also checks the definition limits (task-15). Rule specs
+  are not supported yet: task-13 must add a validated model and scope checks
+  first.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -32,9 +36,10 @@ from pydantic import (
     JsonValue,
     StringConstraints,
     ValidationError,
+    model_validator,
 )
 
-from hagent_app.agents.definition import KnowledgeAttachment
+from hagent_app.agents.definition import Cron, KnowledgeAttachment
 from hagent_app.tools.base import (
     Args,
     Prepared,
@@ -416,6 +421,103 @@ def _subscription_spec(ctx: ToolContext, env: ToolEnv, spec: Spec) -> dict[str, 
     return checked.model_dump(exclude_none=True)
 
 
+# ------------------------------------------------------------- schedules
+
+MAX_TIMER_DELAY = 366 * 86_400
+MAX_SCHEDULE_DATA_CHARS = 4000
+Note = Annotated[str, StringConstraints(max_length=500)]
+
+
+def _aware_iso(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as err:
+        msg = "at must be an ISO 8601 date and time"
+        raise ValueError(msg) from err
+    if parsed.tzinfo is None:
+        msg = "at must include a UTC offset, for example +00:00"
+        raise ValueError(msg)
+    return value
+
+
+def _cron_days(value: str) -> str:
+    fields = value.split()
+    if fields[2] != "*" and fields[4] != "*":
+        msg = "set the day of the month or the day of the week, not both"
+        raise ValueError(msg)
+    return value
+
+
+AwareTime = Annotated[str, StringConstraints(max_length=40), AfterValidator(_aware_iso)]
+ScheduleCron = Annotated[Cron, AfterValidator(_cron_days)]
+
+
+class _ScheduleSpec(_SpecModel):
+    review: bool = False
+    note: Note | None = None
+    data: dict[str, JsonValue] | None = None
+
+    @model_validator(mode="after")
+    def _check_data(self) -> _ScheduleSpec:
+        if self.data is not None:
+            size = len(json.dumps(self.data, ensure_ascii=False))
+            if size > MAX_SCHEDULE_DATA_CHARS:
+                msg = f"data must be at most {MAX_SCHEDULE_DATA_CHARS} characters"
+                raise ValueError(msg)
+        return self
+
+
+class TimerScheduleSpec(_ScheduleSpec):
+    """A timer: one invocation after ``delay_seconds``, or at ``at``.
+
+    ``review`` makes the invocation an extra review (design section 14).
+    ``note`` and ``data`` go to the invocation as caller data.
+    """
+
+    type: Literal["timer"]
+    delay_seconds: Annotated[int, Field(ge=1, le=MAX_TIMER_DELAY)] | None = None
+    at: AwareTime | None = None
+
+    @model_validator(mode="after")
+    def _check_time(self) -> TimerScheduleSpec:
+        if (self.delay_seconds is None) == (self.at is None):
+            msg = "set exactly one of delay_seconds and at"
+            raise ValueError(msg)
+        return self
+
+
+class CronScheduleSpec(_ScheduleSpec):
+    """A cron schedule: a 5-field cron expression in the local time zone."""
+
+    type: Literal["cron"]
+    cron: ScheduleCron
+
+
+def _schedule_spec(ctx: ToolContext, env: ToolEnv, spec: Spec) -> dict[str, Any]:
+    """Check a schedule spec. The store checks the time limits again."""
+    kind = spec.get("type")
+    model: type[_ScheduleSpec]
+    if kind == "timer":
+        model = TimerScheduleSpec
+    elif kind == "cron":
+        model = CronScheduleSpec
+    else:
+        raise ScopeDeniedError("invalid_spec", 'spec.type: must be "timer" or "cron"')
+    try:
+        checked = model.model_validate(spec)
+    except ValidationError as err:
+        raise ScopeDeniedError("invalid_spec", _spec_message(err)) from err
+    minimum = ctx.definition.scheduling.min_interval_seconds
+    if isinstance(checked, TimerScheduleSpec) and (
+        checked.delay_seconds is not None and checked.delay_seconds < minimum
+    ):
+        raise ScopeDeniedError(
+            "min_interval",
+            f"a timer must be at least {minimum} seconds in the future",
+        )
+    return checked.model_dump(exclude_none=True)
+
+
 def _spec_message(err: ValidationError) -> str:
     parts = []
     for item in err.errors(include_url=False, include_context=False)[:5]:
@@ -425,10 +527,14 @@ def _spec_message(err: ValidationError) -> str:
 
 
 # The seam for the spec kinds. A kind without an entry is not supported yet.
-# task-13 (rules) and task-15 (schedules) add strict models here, with a
-# check of trigger entities against the read scope and of actions with
-# check_service_call, at create time and again at fire time.
-SPEC_CHECKS: dict[StateKind, SpecCheck] = {"subscription": _subscription_spec}
+# task-13 (rules) adds a strict model here, with a check of trigger entities
+# against the read scope and of actions with check_service_call, at create
+# time and again at fire time. The scheduler runs the subscription check
+# again before each delivery.
+SPEC_CHECKS: dict[StateKind, SpecCheck] = {
+    "subscription": _subscription_spec,
+    "schedule": _schedule_spec,
+}
 
 
 def _require_supported(kind: StateKind) -> SpecCheck:

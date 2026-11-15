@@ -72,6 +72,7 @@ def default_components() -> list[Component]:
         RetryingChatModels,
         RouterComponent,
     )
+    from hagent_app.scheduler import SchedulerComponent  # noqa: PLC0415 - import cycle
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -100,6 +101,11 @@ def default_components() -> list[Component]:
     turns.knowledge_context = knowledge.turn_context
     router = RouterComponent(turns, tools=tools, models=models)
     http.add_routes(router.routes())
+    # The scheduler holds the agent state of the self tools and sees each
+    # agent service call, to find own writes (design section 12).
+    scheduler = SchedulerComponent(router, tools, http.events)
+    tools.agent_state = scheduler.state_store
+    tools.calls = scheduler.calls
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
@@ -113,6 +119,7 @@ def default_components() -> list[Component]:
         knowledge,
         turns,
         router,
+        scheduler,
         catalog,
         ui,
         http,
