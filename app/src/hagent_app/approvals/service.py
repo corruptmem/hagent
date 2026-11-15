@@ -251,11 +251,14 @@ class ApprovalService:
             delivery = await self._notifier.send(message, sorted(approvers))
             await self._set_delivery(request_id, delivery)
             if not delivery.targets:
-                await self._finish(
+                if await self._finish(
                     request_id, "failed", reason="no notification was sent"
-                )
-                return _unavailable("no approval notification reached an approver")
-            status = await self._wait(request_id, waiter)
+                ):
+                    return _unavailable("no approval notification reached an approver")
+                # An approver answered through the API during the send.
+                status = await self._status(request_id)
+            else:
+                status = await self._wait(request_id, waiter, expires)
         except asyncio.CancelledError:
             await asyncio.shield(
                 self._finish(request_id, "cancelled", reason="the agent turn stopped")
@@ -263,6 +266,7 @@ class ApprovalService:
             await asyncio.shield(self._notifier.clear(message, delivery.targets))
             raise
         except Exception:
+            # Fail closed, also if an answer already decided the row.
             _LOG.exception("approval request %s failed", request_id)
             await self._finish(request_id, "failed", reason="internal error")
             await self._notifier.clear(message, delivery.targets)
@@ -274,15 +278,21 @@ class ApprovalService:
             f"the approval request ended: {status}"
         )
 
-    async def _wait(self, request_id: str, waiter: _Waiter) -> str:
+    async def _wait(self, request_id: str, waiter: _Waiter, expires: datetime) -> str:
+        # The time limit counts from the creation of the request, so a slow
+        # send does not make the agent turn wait longer.
+        remaining = max(0.0, (expires - _now()).total_seconds())
         try:
-            async with asyncio.timeout(self._config.timeout_seconds):
+            async with asyncio.timeout(remaining):
                 return await asyncio.shield(waiter.future)
         except TimeoutError:
             pass
         if await self._finish(request_id, "timeout", reason="no answer in time"):
             return "timeout"
         # An answer won the race with the timeout. The row holds it.
+        return await self._status(request_id)
+
+    async def _status(self, request_id: str) -> str:
         record = await self.get(request_id)
         return record.status if record else "failed"
 

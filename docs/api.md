@@ -484,6 +484,11 @@ in. It removes a copy that the client sends. Only a user in
 `approvals.approvers` can answer. The HA user of the app token can never
 answer.
 
+The app can trust this header only with the default
+`ingress.allowed_addresses`. With another value, each client at an allowed
+address can set the header and answer as any approver. Use another value
+only for local development.
+
 ### List approval requests
 
 `GET api/approvals?status=<status>&limit=<n>`

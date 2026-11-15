@@ -698,3 +698,41 @@ def test_executor_accepts_only_an_explicit_accept(
     assert outcome.accepted is accepted
     if code is not None:
         assert outcome.code == code
+
+
+async def test_time_limit_counts_from_the_request(tmp_path: Path) -> None:
+    async with approval_env(tmp_path, timeout_seconds=0.5) as env:
+        release = asyncio.Event()
+
+        async def slow_services(_ha: FakeHA, _msg: Message) -> Any:
+            await asyncio.sleep(0.4)
+            release.set()
+            return env.ha.services
+
+        env.ha.handlers["get_services"] = slow_services
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await env.h.call(await env.agent(), "ha.call_service", CALL)
+        elapsed = loop.time() - started
+        assert result.error_code == "approval_timeout"
+        assert release.is_set()
+        # The slow send ate most of the limit; the turn does not wait 0.5 s more.
+        assert elapsed < 0.85
+
+
+async def test_api_answer_during_a_failed_send_decides(tmp_path: Path) -> None:
+    async with approval_env(tmp_path) as env:
+        service = env.approvals.service()
+        answered: list[str] = []
+
+        async def answer_then_fail(_ha: FakeHA, _msg: Message) -> Any:
+            record = (await service.list_requests())[0]
+            answered.append(await service.answer(record.id, "reject", APPROVER, "api"))
+            return {}  # No notify services: the send reaches no one.
+
+        env.ha.handlers["get_services"] = answer_then_fail
+        result = await env.h.call(await env.agent(), "ha.call_service", CALL)
+        assert answered == ["applied"]
+        assert result.error_code == "approval_rejected"
+        assert (await env.record()).status == "rejected"
+        assert light_calls(env.ha) == []
