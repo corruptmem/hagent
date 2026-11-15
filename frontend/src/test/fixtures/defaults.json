@@ -52,7 +52,7 @@
       "enabled": false
     },
     "budget": {
-      "daily_usd": 0.5,
+      "daily_usd": null,
       "max_tool_calls": 20,
       "max_tokens": 200000
     },

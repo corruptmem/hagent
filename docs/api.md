@@ -119,7 +119,7 @@ every default value.
 | `approval.services` | list of service names | `[]` | See "Approval". |
 | `approval.entities` | list of entity IDs | `[]` | See "Approval". |
 | `assist.enabled` | true or false | `false` | |
-| `budget.daily_usd` | number | 0.50 | 0 to 1000. |
+| `budget.daily_usd` | number or `null` | `null` | 0 to 1000. The daily budget of the agent in USD. `null` uses the default agent budget of the settings (see "Settings"). |
 | `budget.max_tool_calls` | integer | 20 | 1 to 500. Limit for one agent turn. |
 | `budget.max_tokens` | integer | 200,000 | 1000 to 10,000,000. Limit for one agent turn. |
 | `concurrency.mode` | `queued`, `single`, `restart` or `parallel` | `queued` | `parallel` only for an agent with no outputs. |
@@ -318,7 +318,7 @@ Returns this object:
 
 ```json
 {"from": 1, "to": 2, "changes": [
-  {"path": "budget.daily_usd", "old": 0.5, "new": 2},
+  {"path": "budget.daily_usd", "old": null, "new": 2},
   {"path": "outputs", "old": [], "new": ["climate.<room>"]}
 ]}
 ```
@@ -342,7 +342,8 @@ current definition, the app adds no version. `base_version` works as in
 
 - `GET api/agents/schema` returns the JSON schema of a definition.
 - `GET api/agents/defaults` returns `{"definition": <definition>}` with
-  every default value, for a new-agent form.
+  every default value, for a new-agent form. `budget.daily_usd` is the
+  current default agent budget of the settings.
 
 ### Test invocation
 
@@ -463,6 +464,28 @@ This endpoint is not an agent tool. Only the UI uses it.
 - `stale` is true when the state cache may not match HA, or when a registry
   command failed. When HA is offline, the app returns the last data that it
   has. A list is empty if the app never received it.
+
+### HA users
+
+`GET api/ha/users` lists the HA users for the approver picker of the
+settings:
+
+```json
+{"source": "auth", "reason": null,
+ "users": [
+   {"id": "<HA user ID>", "name": "User A", "username": "a_user",
+    "is_admin": true}
+ ]}
+```
+
+- The app sends the read command `config/auth/list` to HA. HA accepts it
+  only from an administrator token. The list has the active users that HA
+  did not create for itself. It holds no credentials or groups.
+- If HA refuses the command or is offline, the app lists the users that
+  `person` entities link to (`source` is `persons`). `username` and
+  `is_admin` are then `null`, and `reason` says why.
+- With no source, `source` is `null` and `users` is empty. The route does
+  not fail because of HA.
 
 ## Knowledge stores
 
@@ -771,7 +794,7 @@ The settings:
 | Setting | Content |
 |---|---|
 | `installation_daily_budget_usd` | The daily budget of the installation in USD, 0 to 10000. |
-| `agent_daily_budget_usd` | The daily budget of an agent in USD, 0 to 10000. The `agent_budgets_usd` option still sets budgets for single agents. |
+| `agent_daily_budget_usd` | The default daily budget of an agent in USD, 0 to 10000. It applies to an agent whose definition has `budget.daily_usd` set to `null`, and it is the budget of a new agent in `GET api/agents/defaults`. |
 | `price_overrides` | Prices in USD per million tokens, keyed by `"<price provider>:<model>"`, for example `"openai:gpt-6"`. Each value has `input`, and can have `output`, `cache_read` and `cache_write`. An override wins over the other price sources. |
 | `genai_prices_auto_update` | `true` lets genai-prices fetch its newest price data from GitHub once an hour. The default is `false`. |
 | `decision_models` | Extra decision models, as `{"provider": ..., "model": ...}` objects. They extend `built_in_decision_models`. |

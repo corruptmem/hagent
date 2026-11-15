@@ -190,7 +190,7 @@ describe("settings", () => {
       call.method === "PATCH" ? reply : undefined,
     );
     await openSettings();
-    await userEvent.type(screen.getByLabelText("Approver user IDs"), USER);
+    await userEvent.type(screen.getByLabelText("Other user IDs"), USER);
     await userEvent.type(
       screen.getByLabelText(/Notify services for/),
       "notify.mobile_app_test_phone",
@@ -286,5 +286,61 @@ describe("settings", () => {
         },
       });
     });
+  });
+
+  it("picks approvers from the HA users list", async () => {
+    const other = "e".repeat(32);
+    const api = settingsApi((call) => {
+      if (call.method === "GET" && call.path === "/api/ha/users")
+        return ok({
+          source: "auth",
+          reason: null,
+          users: [
+            { id: USER, name: "User A", username: "a_user", is_admin: true },
+            { id: other, name: "User B", username: "b_user", is_admin: false },
+          ],
+        });
+      if (call.method === "PATCH") return ok(makeSettings());
+      return undefined;
+    });
+    await openSettings();
+    const list = await screen.findByRole("list", { name: "HA users" });
+    await userEvent.click(
+      within(list).getByLabelText("User A (a_user, administrator)"),
+    );
+    expect(
+      screen.getByLabelText("Notify services for User A"),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Save approvers" }),
+    );
+    await waitFor(() => {
+      expect(api.calls).toContainEqual({
+        method: "PATCH",
+        path: "/api/settings",
+        body: {
+          approvals: {
+            approvers: [USER],
+            timeout_seconds: 300,
+            notify_services: {},
+          },
+        },
+      });
+    });
+  });
+
+  it("says when the HA users cannot be listed", async () => {
+    settingsApi((call) =>
+      call.path === "/api/ha/users"
+        ? ok({ source: null, reason: "HA is not connected", users: [] })
+        : undefined,
+    );
+    await openSettings();
+    expect(
+      await screen.findByText(
+        /cannot list the HA users \(HA is not connected\)/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Other user IDs")).toBeInTheDocument();
   });
 });

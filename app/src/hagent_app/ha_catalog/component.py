@@ -10,6 +10,13 @@ read HA only through the tool executor, which checks the scope.
 
 The component keeps the registry data for ``REGISTRY_TTL`` seconds. When HA
 is offline, it returns the last data that it has, with ``stale`` set.
+
+``api/ha/users`` lists the HA users for the approver picker (task-20). It
+sends only the fixed read command ``USERS_COMMAND``, which needs an HA
+administrator token. If HA refuses it or is offline, the route uses the
+``person`` entities of the state cache, which carry a ``user_id``
+attribute. It never fails because of HA: with no source, it returns an
+empty list and the reason.
 """
 
 from __future__ import annotations
@@ -41,6 +48,8 @@ REGISTRY_COMMANDS: Mapping[str, str] = {
     "services": "get_services",
 }
 CATALOG_PATH = "/api/ha/catalog"
+USERS_PATH = "/api/ha/users"
+USERS_COMMAND = "config/auth/list"
 
 
 @dataclass
@@ -62,7 +71,10 @@ class CatalogComponent:
 
     def routes(self) -> list[web.RouteDef]:
         """The routes for ``HttpServer.add_routes``."""
-        return [web.get(CATALOG_PATH, self._catalog)]
+        return [
+            web.get(CATALOG_PATH, self._catalog),
+            web.get(USERS_PATH, self._users),
+        ]
 
     async def start(self, ctx: AppContext) -> None:
         """Bind to the HA client and the state cache."""
@@ -80,6 +92,26 @@ class CatalogComponent:
         body = build_catalog(ctx, registries.data)
         body["stale"] = ctx.states.stale or not registries.complete
         return web.json_response(body)
+
+    async def _users(self, _request: web.Request) -> web.Response:
+        ctx = self._ctx
+        if ctx is None:
+            raise ApiError(503, "not_ready", "the catalog component is not running")
+        reason = "HA is not connected"
+        if ctx.ha.connected:
+            try:
+                raw = await ctx.ha.command({"type": USERS_COMMAND})
+            except (HAError, TimeoutError) as err:
+                _LOG.warning("HA command %s failed: %s", USERS_COMMAND, err)
+                reason = f"HA refused {USERS_COMMAND}"
+            else:
+                return web.json_response(
+                    {"source": "auth", "reason": None, "users": auth_users(raw)}
+                )
+        users = person_users(ctx)
+        return web.json_response(
+            {"source": "persons" if users else None, "reason": reason, "users": users}
+        )
 
     async def _load(self, ctx: AppContext) -> _Registries:
         async with self._lock:
@@ -102,6 +134,54 @@ class CatalogComponent:
                     complete = False
             self._registries = _Registries(data, time.monotonic(), complete)
             return self._registries
+
+
+def auth_users(raw: Any) -> list[dict[str, Any]]:
+    """Active people from ``config/auth/list``. Drop system users.
+
+    Only the ID, the name, the user name and the administrator flag leave
+    the app. Credentials and groups stay out.
+    """
+    users = []
+    for user in _items(raw):
+        user_id = user.get("id")
+        if (
+            not isinstance(user_id, str)
+            or user.get("system_generated")
+            or user.get("is_active") is False
+        ):
+            continue
+        username = user.get("username")
+        users.append(
+            {
+                "id": user_id,
+                "name": str(user.get("name") or username or user_id),
+                "username": username if isinstance(username, str) else None,
+                "is_admin": bool(user.get("is_admin"))
+                if "is_admin" in user
+                else "system-admin" in (user.get("group_ids") or []),
+            }
+        )
+    return sorted(users, key=lambda u: (u["name"].lower(), u["id"]))
+
+
+def person_users(ctx: AppContext) -> list[dict[str, Any]]:
+    """Users linked to ``person`` entities in the state cache."""
+    users: dict[str, dict[str, Any]] = {}
+    for state in ctx.states:
+        if not state.entity_id.startswith("person."):
+            continue
+        user_id = state.attributes.get("user_id")
+        if not isinstance(user_id, str) or not user_id:
+            continue
+        name = state.attributes.get("friendly_name") or state.entity_id
+        users[user_id] = {
+            "id": user_id,
+            "name": str(name),
+            "username": None,
+            "is_admin": None,
+        }
+    return sorted(users.values(), key=lambda u: (u["name"].lower(), u["id"]))
 
 
 def _items(value: Any) -> list[dict[str, Any]]:

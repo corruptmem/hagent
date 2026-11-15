@@ -15,6 +15,7 @@ import {
   JsonField,
   ModelField,
   NumberInput,
+  OptionalNumberInput,
   Select,
   TextInput,
 } from "./fields";
@@ -370,12 +371,13 @@ export function DefinitionForm({
             label="Daily budget (USD)"
             issues={is("budget.daily_usd")}
           >
-            <NumberInput
+            <OptionalNumberInput
               path="budget.daily_usd"
               value={d.budget.daily_usd}
               step={0.01}
               min={0}
               max={1000}
+              placeholder="Settings default"
               onChange={set("budget.daily_usd")}
             />
           </Field>

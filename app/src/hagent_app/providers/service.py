@@ -39,7 +39,7 @@ from hagent_app.providers.decisions import (
 )
 from hagent_app.providers.embeddings import EmbeddingAdapter
 from hagent_app.providers.http import DEFAULT_TIMEOUT, ProviderHTTP
-from hagent_app.providers.meter import Clock, Meter, local_now
+from hagent_app.providers.meter import BudgetLookup, Clock, Meter, local_now
 from hagent_app.providers.openrouter_prices import (
     FIRST_CHECK_DELAY,
     OpenRouterPriceRefresher,
@@ -117,6 +117,7 @@ class ProvidersComponent:
         prices = PriceTable(config.price_overrides, stored, version)
         self._prices = prices
         self._meter = Meter(ctx.db, config, prices, self._keys, self._clock)
+        self._meter.budget_lookup = _definition_budgets(ctx)
         cleared = await self._meter.clear_reservations()
         if cleared:
             _LOG.info("cleared %d budget reservations from the last run", cleared)
@@ -209,3 +210,20 @@ class ProvidersComponent:
             agent_id=agent_id,
             max_output_tokens=self._config.chat_max_output_tokens,
         )
+
+
+def _definition_budgets(ctx: AppContext) -> BudgetLookup:
+    """Read ``budget.daily_usd`` from the current definition of an agent.
+
+    A deleted or unknown agent gives ``None``, so the meter uses the
+    default budget.
+    """
+    from hagent_app.agents import AgentReader  # noqa: PLC0415 - import cycle
+
+    reader = AgentReader(ctx.db)
+
+    async def lookup(agent_id: str) -> float | None:
+        agent = await reader.get(agent_id)
+        return None if agent is None else agent.definition.budget.daily_usd
+
+    return lookup

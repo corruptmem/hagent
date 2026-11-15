@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aiohttp import web
@@ -20,10 +21,16 @@ class AgentsComponent:
 
     name = "agents"
 
-    def __init__(self, events: ChangeEvents) -> None:
+    def __init__(
+        self,
+        events: ChangeEvents,
+        *,
+        default_budget: Callable[[], float | None] | None = None,
+    ) -> None:
+        """``default_budget`` gives the settings default agent budget (task-20)."""
         self._events = events
         self._service: AgentService | None = None
-        self._api = AgentsApi(self.service)
+        self._api = AgentsApi(self.service, default_budget)
 
     def service(self) -> AgentService:
         """The running service. Raise ``ApiError`` 503 before start."""

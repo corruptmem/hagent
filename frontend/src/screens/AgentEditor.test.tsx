@@ -259,4 +259,21 @@ describe("agent editor", () => {
     );
     expect(screen.getByLabelText("Store ID 2")).toBeInTheDocument();
   });
+
+  it("leaves the daily budget empty to use the settings default", async () => {
+    const api = fakeApi((call) =>
+      call.method === "PUT"
+        ? { status: 200, body: makeAgent({ version: 3 }) }
+        : undefined,
+    );
+    renderApp(`/agents/${AGENT_ID}`);
+    const field = await screen.findByLabelText("Daily budget (USD)");
+    expect(field).toHaveValue(null);
+    expect(field).toHaveAttribute("placeholder", "Settings default");
+    await userEvent.type(field, "1.5");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(putBody(api.calls)?.definition.budget.daily_usd).toBe(1.5);
+    });
+  });
 });

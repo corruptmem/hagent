@@ -99,8 +99,8 @@ async def test_installation_budget_covers_all_agents_and_none(
 async def test_per_agent_budget_override(providers_env: StartEnv) -> None:
     env = await providers_env(agent_budgets_usd={"big": 2.0})
     meter = env.component.meter
-    assert meter.agent_budget_usd("big") == Decimal("2.0")
-    assert meter.agent_budget_usd("other") == Decimal("0.5")
+    assert await meter.agent_budget_usd("big") == Decimal("2.0")
+    assert await meter.agent_budget_usd("other") == Decimal("0.5")
     meter.set_agent_budgets({"other": 0.1})
     with pytest.raises(BudgetExceededError) as info:
         async with meter.call(_spec("other"), MILLION_INPUT):

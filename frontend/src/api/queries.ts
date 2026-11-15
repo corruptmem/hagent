@@ -11,6 +11,7 @@ export const keys = {
     ["agents", id, "diff", from, to] as const,
   defaults: ["defaults"] as const,
   catalog: ["catalog"] as const,
+  haUsers: ["ha", "users"] as const,
   knowledge: ["knowledge"] as const,
   stores: ["knowledge", "stores"] as const,
   store: (id: string) => ["knowledge", "stores", id] as const,
@@ -99,3 +100,10 @@ export const knowledgeSettingsQuery = () =>
 
 export const settingsQuery = () =>
   queryOptions({ queryKey: keys.settings, queryFn: api.settings });
+
+export const haUsersQuery = () =>
+  queryOptions({
+    queryKey: keys.haUsers,
+    queryFn: api.haUsers,
+    staleTime: 60_000,
+  });

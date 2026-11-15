@@ -78,10 +78,14 @@ def default_components() -> list[Component]:
     http = HttpServer()
     guard = IngressGuard()
     http.add_middleware(guard.middleware)
-    agents = AgentsComponent(http.events)
-    http.add_routes(agents.routes())
     settings = SettingsComponent(http.events)
     http.add_routes(settings.routes())
+    # A new agent takes its daily budget from the settings (task-20).
+    agents = AgentsComponent(
+        http.events,
+        default_budget=lambda: settings.providers_config().agent_daily_budget_usd,
+    )
+    http.add_routes(agents.routes())
     providers = ProvidersComponent(settings=settings)
     approvals = ApprovalsComponent(http.events, settings=settings)
     http.add_routes(approvals.routes())

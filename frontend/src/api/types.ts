@@ -53,7 +53,12 @@ export interface AgentDefinition {
   retrieval: { mode: RetrievalMode; result_count: number; token_limit: number };
   approval: { tools: string[]; services: string[]; entities: string[] };
   assist: { enabled: boolean };
-  budget: { daily_usd: number; max_tool_calls: number; max_tokens: number };
+  budget: {
+    /** null: the default agent budget of the settings. */
+    daily_usd: number | null;
+    max_tool_calls: number;
+    max_tokens: number;
+  };
   concurrency: { mode: ConcurrencyMode; queue_size: number };
   fallback: { mode: FallbackMode; value: unknown };
   scheduling: {
@@ -291,4 +296,17 @@ export interface SettingsResponse {
   settings: SettingValues;
   defaults: SettingValues;
   built_in_decision_models: ModelRef[];
+}
+
+export interface HaUser {
+  id: string;
+  name: string;
+  username: string | null;
+  is_admin: boolean | null;
+}
+
+export interface HaUsers {
+  source: "auth" | "persons" | null;
+  reason: string | null;
+  users: HaUser[];
 }

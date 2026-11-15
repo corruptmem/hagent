@@ -7,6 +7,7 @@ import type {
   DeleteChoice,
   Diff,
   EmbeddingModel,
+  HaUsers,
   Item,
   ItemContent,
   ItemVersion,
@@ -169,6 +170,7 @@ export const api = {
   testInvocation: (id: string, body: TestRequest) =>
     request<TestResponse>("POST", `${agentPath(id)}/test`, body),
   catalog: () => request<Catalog>("GET", "api/ha/catalog"),
+  haUsers: () => request<HaUsers>("GET", "api/ha/users"),
 
   // Knowledge stores
   listStores: () =>

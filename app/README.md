@@ -924,6 +924,12 @@ Rules:
 - With a `SettingsComponent`, the budgets, the price overrides, the
   decision models and `genai_prices_auto_update` come from the settings,
   with the options as defaults. A change takes effect without a restart.
+- The daily budget of an agent is `budget.daily_usd` of its current
+  definition. The meter reads it through `Meter.budget_lookup` on each
+  reservation, so an edit applies to the next call. When the value is
+  `null`, or the agent does not exist, the meter uses the
+  `agent_budgets_usd` option for that agent, then the default agent budget
+  (settings, else the option).
 - The daily OpenRouter price refresh starts 60 seconds after app start.
   Tests set `refresh_openrouter_prices` to `false`.
 

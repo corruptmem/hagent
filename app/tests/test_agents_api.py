@@ -67,7 +67,7 @@ class Api:
 async def api(fake_ha: FakeHA, tmp_path: Path) -> AsyncIterator[Api]:
     config = Config(ha_url=fake_ha.url, ha_token=fake_ha.token, data_dir=tmp_path)
     http = HttpServer(host="127.0.0.1", port=0)
-    agents = AgentsComponent(http.events)
+    agents = AgentsComponent(http.events, default_budget=lambda: 0.75)
     http.add_routes(agents.routes())
     events: list[ChangeEvent] = []
     http.events.subscribe(events.append)
@@ -159,8 +159,9 @@ async def test_list_schema_and_defaults(api: Api) -> None:
     status, schema = await api.call("GET", "/api/agents/schema")
     assert status == 200
     assert "budget" in schema["properties"]
+    # A new agent takes the default agent budget of the settings.
     status, defaults = await api.call("GET", "/api/agents/defaults")
-    assert defaults["definition"]["budget"]["daily_usd"] == 0.5
+    assert defaults["definition"]["budget"]["daily_usd"] == 0.75
 
 
 # ----------------------------------------------------- edit, versions
@@ -181,7 +182,8 @@ async def test_edit_creates_versions(api: Api) -> None:
 
     status, old = await api.call("GET", f"/api/agents/{agent['id']}/versions/1")
     assert status == 200
-    assert old["definition"]["budget"]["daily_usd"] == 0.5
+    # The definition named no budget: it follows the settings default.
+    assert old["definition"]["budget"]["daily_usd"] is None
     status, data = await api.call("GET", f"/api/agents/{agent['id']}/versions/9")
     assert status == 404
     assert data["error"]["code"] == "version_not_found"
@@ -230,7 +232,7 @@ async def test_diff_and_restore(api: Api) -> None:
     )
     assert status == 200
     assert data["changes"] == [
-        {"path": "budget.daily_usd", "old": 0.5, "new": 2},
+        {"path": "budget.daily_usd", "old": None, "new": 2},
         {"path": "outputs", "old": [], "new": ["climate.x"]},
     ]
     status, _ = await api.call("GET", f"/api/agents/{agent['id']}/diff", to="2")

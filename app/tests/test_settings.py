@@ -18,11 +18,15 @@ from typing import Any
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from hagent_app.agents import AgentDefinition, AgentService
+from hagent_app.agents.definition import ModelRef, Models
 from hagent_app.app import AppContext
 from hagent_app.config import Config
 from hagent_app.ha import HAClient, StateCache
 from hagent_app.http import ChangeEvent, ChangeEvents, HttpServer
 from hagent_app.providers import (
+    BudgetExceededError,
+    CallSpec,
     DecisionModel,
     DecisionRequest,
     PriceUnknownError,
@@ -252,7 +256,7 @@ async def test_settings_survive_a_restart(tmp_path: Path) -> None:
 async def test_budgets_follow_the_settings(env: Env) -> None:
     meter = env.providers.meter
     assert meter.installation_budget_usd() == Decimal("5.0")
-    assert meter.agent_budget_usd("x" * 32) == Decimal("0.5")
+    assert await meter.agent_budget_usd("x" * 32) == Decimal("0.5")
     status, body = await env.request(
         "PATCH",
         "/api/settings",
@@ -262,11 +266,11 @@ async def test_budgets_follow_the_settings(env: Env) -> None:
     assert body["settings"]["installation_daily_budget_usd"] == 2.5
     assert body["defaults"]["installation_daily_budget_usd"] == 5.0
     assert meter.installation_budget_usd() == Decimal("2.5")
-    assert meter.agent_budget_usd("x" * 32) == Decimal("0.25")
+    assert await meter.agent_budget_usd("x" * 32) == Decimal("0.25")
     # null returns to the option value.
     await env.request("PATCH", "/api/settings", {"installation_daily_budget_usd": None})
     assert meter.installation_budget_usd() == Decimal("5.0")
-    assert meter.agent_budget_usd("x" * 32) == Decimal("0.25")
+    assert await meter.agent_budget_usd("x" * 32) == Decimal("0.25")
 
 
 async def test_price_overrides_follow_the_settings(env: Env) -> None:
@@ -375,3 +379,44 @@ async def test_not_ready_before_start() -> None:
         assert resp.status == 503
         assert (await resp.json())["error"]["code"] == "not_ready"
     await asyncio.sleep(0)
+
+
+async def test_meter_enforces_the_definition_budget(tmp_path: Path) -> None:
+    """budget.daily_usd of the definition wins; None uses the settings default."""
+    env, db = await _start(tmp_path, {}, {})
+    try:
+        service = AgentService(db, ChangeEvents())
+        sample = AgentDefinition(
+            name="Budget agent",
+            instructions="Test.",
+            models=Models(chat=ModelRef(provider="openai", model="gpt-4o-mini")),
+        )
+        agent = await service.create(sample)
+        meter = env.providers.meter
+        # No budget in the definition: the settings default applies.
+        assert agent.definition.budget.daily_usd is None
+        assert await meter.agent_budget_usd(agent.id) == Decimal("0.5")
+        await env.request("PATCH", "/api/settings", {"agent_daily_budget_usd": 0.3})
+        assert await meter.agent_budget_usd(agent.id) == Decimal("0.3")
+
+        # A definition budget wins over the default, from the next call on.
+        current = agent.definition
+        changed = current.model_copy(
+            update={"budget": current.budget.model_copy(update={"daily_usd": 0.01})}
+        )
+        updated = await service.update(agent.id, changed, agent.version)
+        assert await meter.agent_budget_usd(agent.id) == Decimal("0.01")
+        state = await meter.budget_state(agent.id)
+        assert state.budget_usd == Decimal("0.01")
+        # USD 0.15 for one million input tokens is above USD 0.01.
+        spec = CallSpec(agent.id, "openai", "chat", "gpt-4o-mini", "openai")
+        with pytest.raises(BudgetExceededError) as info:
+            async with meter.call(spec, TokenUsage(input_tokens=1_000_000)):
+                pass
+        assert info.value.scope == "agent"
+
+        # A deleted agent uses the default budget again.
+        await service.delete(updated.id, "delete")
+        assert await meter.agent_budget_usd(agent.id) == Decimal("0.3")
+    finally:
+        await _stop(env, db)

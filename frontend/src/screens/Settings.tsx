@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, api } from "../api/client";
 import {
+  haUsersQuery,
   keys,
   knowledgeSettingsQuery,
   knowledgeStatusQuery,
@@ -11,6 +12,7 @@ import {
   PROVIDERS,
   type ApprovalSettings,
   type EmbeddingModel,
+  type HaUser,
   type ModelRef,
   type PriceOverride,
   type Provider,
@@ -444,12 +446,19 @@ function splitList(text: string): string[] {
     .filter(Boolean);
 }
 
+function userLabel(user: HaUser): string {
+  const parts = [user.username, user.is_admin ? "administrator" : null].filter(
+    Boolean,
+  );
+  return parts.length ? `${user.name} (${parts.join(", ")})` : user.name;
+}
+
 function Approvals({ data }: { data: SettingsResponse }) {
   const patch = usePatch();
+  const users = useQuery(haUsersQuery());
   const stored = data.settings.approvals;
-  const [approvers, setApprovers] = useState(
-    (stored?.approvers ?? []).join("\n"),
-  );
+  const [checked, setChecked] = useState<string[]>(stored?.approvers ?? []);
+  const [others, setOthers] = useState("");
   const [timeout, setTimeoutText] = useState(
     String(stored?.timeout_seconds ?? 300),
   );
@@ -461,7 +470,10 @@ function Approvals({ data }: { data: SettingsResponse }) {
       ]),
     ),
   );
-  const ids = splitList(approvers);
+  const known = users.data?.users ?? [];
+  const knownIds = new Set(known.map((u) => u.id));
+  const ids = [...new Set([...checked, ...splitList(others)])];
+  const names = new Map(known.map((u) => [u.id, u.name]));
   const value: ApprovalSettings = {
     approvers: ids,
     timeout_seconds: Number(timeout),
@@ -471,32 +483,90 @@ function Approvals({ data }: { data: SettingsResponse }) {
         .filter(([, list]) => list.length > 0),
     ),
   };
+  const toggle = (id: string, on: boolean) => {
+    setChecked(on ? [...checked, id] : checked.filter((c) => c !== id));
+    if (!on) {
+      setOthers(
+        splitList(others)
+          .filter((c) => c !== id)
+          .join("\n"),
+      );
+    }
+  };
+  // Approvers that the HA user list does not show (for example a user that
+  // HA refused to list) stay visible as IDs.
+  const unknown = checked.filter((id) => !knownIds.has(id));
   return (
     <fieldset>
       <legend>Approvers</legend>
       <p className="help">
-        The HA users who can accept or reject tool calls that need approval.
-        Enter one HA user ID (32 hexadecimal characters) on each line. Find the
-        ID in HA under Settings, People, Users.{" "}
+        The HA users who can accept or reject tool calls that need approval.{" "}
         {stored === null
           ? "No approvers are set here: the app uses the approvals app option."
           : ""}
       </p>
+      {known.length > 0 ? (
+        <ul className="attached" aria-label="HA users">
+          {known.map((user) => (
+            <li key={user.id}>
+              <label className="checkbox">
+                <input
+                  type="checkbox"
+                  checked={ids.includes(user.id)}
+                  onChange={(e) => {
+                    toggle(user.id, e.target.checked);
+                  }}
+                />
+                {userLabel(user)}
+              </label>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">
+          The app cannot list the HA users
+          {users.data?.reason ? ` (${users.data.reason})` : ""}. Enter the user
+          IDs below.
+        </p>
+      )}
+      {unknown.length > 0 ? (
+        <p className="muted">
+          Approvers not in the list:{" "}
+          {unknown.map((id) => (
+            <span key={id} className="chip">
+              <code>{id}</code>
+              <button
+                type="button"
+                aria-label={`Remove ${id}`}
+                onClick={() => {
+                  toggle(id, false);
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </p>
+      ) : null}
       <div className="field">
-        <label htmlFor="approvers">Approver user IDs</label>
+        <label htmlFor="approvers">Other user IDs</label>
         <textarea
           id="approvers"
-          rows={3}
-          value={approvers}
+          rows={2}
+          value={others}
           onChange={(e) => {
-            setApprovers(e.target.value);
+            setOthers(e.target.value);
           }}
         />
+        <span className="help">
+          One HA user ID (32 hexadecimal characters) on each line. Find the ID
+          in HA under Settings, People, Users.
+        </span>
       </div>
       {ids.map((id) => (
         <div className="field" key={id}>
           <label htmlFor={`notify-${id}`}>
-            Notify services for <code>{id}</code>
+            Notify services for {names.get(id) ?? <code>{id}</code>}
           </label>
           <input
             id={`notify-${id}`}
