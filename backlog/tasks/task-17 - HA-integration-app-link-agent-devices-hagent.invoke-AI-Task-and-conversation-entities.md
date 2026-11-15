@@ -3,11 +3,11 @@ id: TASK-17
 title: >-
   HA integration: app link, agent devices, hagent.invoke, AI Task and
   conversation entities
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:07'
+updated_date: '2026-11-15 02:08'
 labels:
   - integration
 dependencies:
@@ -77,6 +77,8 @@ Evidence: mise run check passes (app 991 tests, integration 43 phcc tests on HA 
 Not changed (info findings I1-I5): repr(err) in internal_error, ws:// link, no per-connection command limit, encode cost on the HA loop, discovery secret visibility.
 
 Follow-up commit a03afbc: data.text (the AI Task instructions or the Assist message) was inside the marked caller data, so the marker told the model not to follow its own request. The prompt now shows 'Request text: ...' on its own line and marks only the other caller data (test_invocation_keeps_the_request_apart_from_the_marked_data). Checked against HA 2026.11.1: the satellite pipeline uses 'context or Context()' (no user unless one is passed); script actions pass the script context to service calls. mise run check passes (app 992 tests, integration 43 + 10).
+
+Lead: an independent review found 0 critical, 0 high, 1 medium and 4 low issues; task-17-fix fixed all five. Trade-off for the user: hagent.invoke, AI Task and conversation are admin-only (automations still work); non-admin users cannot use hagent agents through Assist.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
