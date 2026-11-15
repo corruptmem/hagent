@@ -15,6 +15,9 @@ dependencies = [
     # 0.x: the interface can change between minor releases, so pin it.
     "pydantic-ai-harness==0.68.0",
     "jsonschema==4.26.0",
+    "apscheduler==3.11.3",
+    "sqlalchemy==2.1.8",
+    "tzlocal==5.4.5",
 ]
 
 [build-system]

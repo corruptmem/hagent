@@ -9,6 +9,7 @@ only through the ``Agent`` snapshot in ``ToolContext``. No tool receives
 from hagent_app.tools.audit import AuditEntry, AuditLog
 from hagent_app.tools.base import (
     Prepared,
+    ServiceCallObserver,
     StateView,
     Tool,
     ToolContext,
@@ -35,6 +36,7 @@ __all__ = [
     "Prepared",
     "RegistrySnapshot",
     "ScopeDeniedError",
+    "ServiceCallObserver",
     "StateView",
     "Tool",
     "ToolContext",

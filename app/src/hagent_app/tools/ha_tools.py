@@ -387,13 +387,22 @@ class CallService(Tool):
 
     async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
         call: PreparedCall = prepared.payload
-        result = await env.ha.call_service(
-            call.domain,
-            call.service,
-            call.data,
-            target=call.target,
-            return_response=call.return_response,
-        )
+        observer = env.calls
+        token = None if observer is None else observer.call_started(ctx.agent.id)
+        context_id: str | None = None
+        try:
+            result = await env.ha.call_service(
+                call.domain,
+                call.service,
+                call.data,
+                target=call.target,
+                return_response=call.return_response,
+            )
+            context_id = result.context_id
+        finally:
+            # Also on failure, so that the observer never waits for this call.
+            if observer is not None and token is not None:
+                observer.call_finished(token, context_id)
         return {"context_id": result.context_id, "response": result.response}
 
 
