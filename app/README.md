@@ -869,6 +869,13 @@ server error. If it still fails, the rule declines.
   closed (`states_unavailable`), and the rule records `rule_error`.
 - The result cache and the context cache are in memory. They are empty
   after an app start.
+- The result cache key holds a digest of the visible entity IDs. When a
+  registry change moves an entity out of the scope, the cache starts empty
+  for that rule. The write checks run before the cache lookup, so a cache
+  hit also passes them.
+- Templates render in worker processes with memory, CPU and wall-clock
+  limits (`rules/render_pool.py`). See `docs/rule-templates.md`, section
+  "Worker processes".
 
 ### Store and versions
 

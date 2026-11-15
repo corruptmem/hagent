@@ -494,6 +494,27 @@ async def test_the_cache_returns_the_previous_result(env: Env) -> None:
     assert stats["versions"][0]["answered"] == 5
 
 
+async def test_a_cached_result_does_not_outlive_a_scope_change(env: Env) -> None:
+    """Review finding L2: a registry change that moves an entity out of the
+    scope must not let the cache answer with its old value."""
+    agent = await env.agent(**CONTROL_KITCHEN)
+    await env.rule(
+        agent,
+        action={"type": "template", "template": "{{ states('switch.kettle') }}"},
+        cache={"seconds": 86400, "keys": []},
+    )
+    assert (await env.invoke(agent)).result == "off"
+    assert (await env.invoke(agent)).result == "off"
+    # Move switch.kettle out of the kitchen area: it leaves the scope.
+    for entry in env.h.ha.registry["entity"]:
+        if entry["entity_id"] == "switch.kettle":
+            entry["area_id"] = None
+    count = env.h.registry.reload_count
+    await env.h.ha.registry_updated("entity")
+    await wait_until(lambda: env.h.registry.reload_count > count)
+    assert (await env.invoke(agent)).result == "unknown"
+
+
 # ---------------------------------------------------- AC4: context items
 
 

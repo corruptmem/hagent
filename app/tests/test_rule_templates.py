@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import threading
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -290,22 +288,3 @@ NESTED = (
 async def test_size_limits_hold_for_every_path(source: str) -> None:
     with pytest.raises(TemplateError):
         await engine(seconds=5).render(source, {})
-
-
-async def test_a_stuck_render_ends_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One slow call in C cannot be stopped; the outer time limit ends the
-    wait, so the invocation ends."""
-    release = threading.Event()
-
-    def stuck(self: TemplateEngine, source: str, variables: Any) -> str:
-        release.wait(5)
-        return ""
-
-    monkeypatch.setattr(TemplateEngine, "_render_sync", stuck)
-    try:
-        started = time.monotonic()
-        with pytest.raises(TemplateError, match="took longer"):
-            await engine(seconds=0.1).render("x", {})
-        assert time.monotonic() - started < 3
-    finally:
-        release.set()
