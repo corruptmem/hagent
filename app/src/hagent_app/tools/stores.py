@@ -18,6 +18,32 @@ type StateKind = Literal["rule", "schedule", "subscription"]
 type WriteMode = Literal["create", "append", "replace"]
 
 
+class StoreError(Exception):
+    """A store refused a call, for example on a version conflict.
+
+    The executor returns ``code`` to the model as the ``error_code``.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class EntitySearch(Protocol):
+    """Ranked search over the HA entity catalogue (design section 13.3)."""
+
+    async def rank_entities(
+        self, query: str, entity_ids: Sequence[str], limit: int
+    ) -> list[str]:
+        """The IDs from ``entity_ids`` that match ``query``, best first.
+
+        The caller passes only entities in the agent's scope. The result
+        holds no other ID.
+        """
+        ...
+
+
 class KnowledgeStore(Protocol):
     """Knowledge store content (design section 13.4)."""
 

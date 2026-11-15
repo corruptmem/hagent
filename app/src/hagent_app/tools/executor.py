@@ -45,6 +45,7 @@ from hagent_app.tools.ha_tools import HA_TOOLS
 from hagent_app.tools.registry import RegistryUnavailableError
 from hagent_app.tools.scope import ScopeDeniedError
 from hagent_app.tools.store_tools import STORE_TOOLS
+from hagent_app.tools.stores import StoreError
 
 _LOG = logging.getLogger(__name__)
 
@@ -215,6 +216,9 @@ class ToolExecutor:
         except (HAError, TimeoutError) as err:
             await self._finish(audit_id, "error", str(err))
             return ToolResult(False, error_code="ha_error", error=str(err))
+        except StoreError as err:
+            await self._finish(audit_id, "error", err.message)
+            return ToolResult(False, error_code=err.code, error=err.message)
         except Exception as err:
             _LOG.exception("tool %s failed", name)
             await self._finish(audit_id, "error", repr(err))

@@ -65,6 +65,7 @@ def default_components() -> list[Component]:
     section 6.1). ``UiComponent`` serves the UI files on every path that
     does not start with ``api/``.
     """
+    from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -73,11 +74,16 @@ def default_components() -> list[Component]:
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
     tools = ToolsComponent(http.events)
+    providers = ProvidersComponent()
+    knowledge = KnowledgeComponent(http.events, providers=providers, tools=tools)
+    tools.knowledge = knowledge.tools_store
+    tools.entities = knowledge.entity_search
+    http.add_routes(knowledge.routes())
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
     http.add_routes(ui.routes())
-    return [ProvidersComponent(), guard, agents, tools, catalog, ui, http]
+    return [providers, guard, agents, tools, knowledge, catalog, ui, http]
 
 
 class App:
