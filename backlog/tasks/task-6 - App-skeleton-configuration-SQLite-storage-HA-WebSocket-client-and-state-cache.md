@@ -3,11 +3,11 @@ id: TASK-6
 title: >-
   App skeleton: configuration, SQLite storage, HA WebSocket client and state
   cache
-status: Done
+status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:03'
-updated_date: '2026-11-14 23:32'
+updated_date: '2026-11-15 02:40'
 labels:
   - app
 dependencies:
@@ -95,6 +95,8 @@ mise run check passes: ruff, mypy strict (23 files), pytest 47 passed. The suite
 - task-1 follow-up still open: pin sqlite-vec when task-11 starts.
 
 Lead: live check against a real HA 2026.11.1 over its direct WebSocket URL (not the Supervisor proxy): connected, ran migration 0001, loaded the full state cache. AC #1 stays open for the Supervisor proxy path and a real HA restart; task-21 verifies them when the app is installed.
+
+Lead: moved back to In Progress. AC #1 waits on the user's manual install (task-21 README checklist), like task-21.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
