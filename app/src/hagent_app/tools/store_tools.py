@@ -12,8 +12,9 @@ Scope rules:
   subscriptions. A change needs an item that the agent owns. Each spec kind
   has a strict model: unknown keys fail. A state subscription must name
   entities in the read scope. Other event types need the ``admin`` level,
-  because events such as ``call_service`` carry data about entities outside
-  the scope. Rule and schedule specs are not supported yet: their consumers
+  because events carry data about entities outside the scope. No level can
+  subscribe to ``call_service``: its data holds the action IDs of approval
+  notifications. Rule and schedule specs are not supported yet: their consumers
   (task-13 and task-15) must add validated models and scope checks first.
 """
 
@@ -372,6 +373,13 @@ class StateSubscriptionSpec(_SpecModel):
     include_own_writes: bool = False
 
 
+# Event types that no agent can subscribe to, at any level. A call_service
+# event carries the full service data of every call, also the action IDs of
+# the app's approval notifications. An agent that saw them could send its
+# own notification with a real accept action (task-16 review, M3).
+DENIED_EVENT_TYPES = frozenset({"call_service"})
+
+
 class EventSubscriptionSpec(_SpecModel):
     """A subscription to another HA event type (``admin`` only)."""
 
@@ -385,6 +393,11 @@ type SpecCheck = Callable[[ToolContext, ToolEnv, Spec], dict[str, Any]]
 def _subscription_spec(ctx: ToolContext, env: ToolEnv, spec: Spec) -> dict[str, Any]:
     event_type = spec.get("event_type", "state_changed")
     model: type[_SpecModel]
+    if event_type in DENIED_EVENT_TYPES:
+        raise ScopeDeniedError(
+            "event_not_permitted",
+            f"no agent can subscribe to {event_type} events",
+        )
     if event_type == "state_changed":
         model = StateSubscriptionSpec
     elif ctx.definition.tools.ha.level != "admin":

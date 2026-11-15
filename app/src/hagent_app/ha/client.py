@@ -248,12 +248,16 @@ class HAClient:
 
         If the client is connected, it subscribes in HA now. Otherwise it
         subscribes after the next connect. ``event_type=None`` means all
-        events.
+        events. If the connection closes during the subscribe, the client
+        subscribes after the next connect, and this method does not raise.
         """
         sub = Subscription(self, handler, event_type)
         self._subs.append(sub)
         if self._ws is not None and not self._ws.closed:
-            await self._send_subscribe(sub)
+            try:
+                await self._send_subscribe(sub)
+            except HAConnectionError as err:
+                _LOG.info("subscribe deferred to the next connect: %s", err)
         return sub
 
     async def unsubscribe(self, sub: Subscription) -> None:

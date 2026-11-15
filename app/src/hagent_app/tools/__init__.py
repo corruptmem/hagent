@@ -9,13 +9,19 @@ only through the ``Agent`` snapshot in ``ToolContext``. No tool receives
 from hagent_app.tools.audit import AuditEntry, AuditLog
 from hagent_app.tools.base import Prepared, Tool, ToolContext, ToolEnv, ToolResult
 from hagent_app.tools.component import ToolsComponent
-from hagent_app.tools.executor import ALL_TOOLS, ApprovalGate, ToolExecutor
+from hagent_app.tools.executor import (
+    ALL_TOOLS,
+    ApprovalGate,
+    ApprovalOutcome,
+    ToolExecutor,
+)
 from hagent_app.tools.registry import HARegistry, RegistrySnapshot
 from hagent_app.tools.scope import ScopeDeniedError
 
 __all__ = [
     "ALL_TOOLS",
     "ApprovalGate",
+    "ApprovalOutcome",
     "AuditEntry",
     "AuditLog",
     "HARegistry",

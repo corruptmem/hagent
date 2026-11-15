@@ -54,7 +54,13 @@ REGISTRIES: dict[str, Any] = {
     "get_services": {"light": {"turn_on": {}, "turn_off": {}}, "notify": {"x": {}}},
 }
 
-READ_COMMANDS = {"get_states", "subscribe_events", *REGISTRY_COMMANDS.values()}
+# auth/current_user: the approvals component reads the HA user of the app.
+READ_COMMANDS = {
+    "get_states",
+    "subscribe_events",
+    "auth/current_user",
+    *REGISTRY_COMMANDS.values(),
+}
 
 
 def _reply(result: Any) -> Any:

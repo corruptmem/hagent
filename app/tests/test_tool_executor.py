@@ -1042,10 +1042,11 @@ async def test_subscription_stores_the_checked_spec(h: Harness) -> None:
 
 async def test_admin_event_subscription_is_strict(h: Harness) -> None:
     agent = await h.agent(tools__self=True, tools__ha={"level": "admin"})
-    spec = {"event_type": "call_service", "debounce_seconds": 5}
+    # call_service is denied at every level (task-16 review, M3).
+    spec = {"event_type": "automation_triggered", "debounce_seconds": 5}
     result = await h.call(agent, "self.create", {"kind": "subscription", "spec": spec})
     assert result.ok, result.error
-    spec = {"event_type": "call_service", "entity_globs": ["*"]}
+    spec = {"event_type": "automation_triggered", "entity_globs": ["*"]}
     result = await h.call(agent, "self.create", {"kind": "subscription", "spec": spec})
     assert result.error_code == "invalid_spec"
 

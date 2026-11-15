@@ -18,7 +18,11 @@ def test_api_doc_names_every_route() -> None:
     for path in paths:
         # The doc writes paths relative to the Ingress base, with {id} and
         # {version} in place of the route patterns.
-        doc_path = path.lstrip("/").replace("{agent_id}", "{id}")
+        doc_path = (
+            path.lstrip("/")
+            .replace("{agent_id}", "{id}")
+            .replace("{request_id}", "{id}")
+        )
         if doc_path not in text:
             missing.append(doc_path)
     assert not missing
