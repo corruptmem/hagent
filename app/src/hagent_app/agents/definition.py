@@ -311,9 +311,14 @@ class Assist(_Model):
 
 
 class Budget(_Model):
-    """The daily cost limit and the limits for one agent turn."""
+    """The daily cost limit and the limits for one agent turn.
 
-    daily_usd: float = Field(default=0.50, ge=0, le=1000)
+    ``daily_usd`` ``None`` means the default agent budget of the settings
+    (USD 0.50 unless the user changes it). ``GET api/agents/defaults`` fills
+    in the current settings value for a new agent.
+    """
+
+    daily_usd: float | None = Field(default=None, ge=0, le=1000)
     max_tool_calls: int = Field(default=20, ge=1, le=500)
     max_tokens: int = Field(default=200_000, ge=1000, le=10_000_000)
 

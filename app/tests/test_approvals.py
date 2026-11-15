@@ -25,6 +25,7 @@ from hagent_app.approvals.notifier import ha_slug
 from hagent_app.approvals.service import ACTION_EVENT
 from hagent_app.config import Config, ConfigError
 from hagent_app.http import ChangeEvents, HttpServer
+from hagent_app.settings import SettingsComponent
 from hagent_app.tools import ApprovalOutcome, ToolResult
 from helpers.fake_ha import APP_USER_ID, FakeHA, Message
 from helpers.tools import Harness, harness
@@ -153,13 +154,17 @@ def actions(data: Message) -> tuple[str, str]:
 
 @asynccontextmanager
 async def approval_env(
-    tmp_path: Path, *, phone: bool = True, **options: Any
+    tmp_path: Path,
+    *,
+    phone: bool = True,
+    settings: SettingsComponent | None = None,
+    **options: Any,
 ) -> AsyncIterator[Env]:
     """Start the harness, a phone of APPROVER and the approvals component."""
     options.setdefault("approvers", [APPROVER])
     options.setdefault("timeout_seconds", 5)
     events = ChangeEvents()
-    approvals = ApprovalsComponent(events)
+    approvals = ApprovalsComponent(events, settings=settings)
     async with harness(tmp_path, approval=approvals.gate) as h:
         if phone:
             task = add_phone(
@@ -176,6 +181,8 @@ async def approval_env(
             options={"approvals": options},
         )
         ctx = AppContext(config, h.db, h.client, h.states, "test")
+        if settings is not None:
+            await settings.start(ctx)
         await approvals.start(ctx)
         try:
             await wait_until(lambda: approvals._app_user is not None)
@@ -978,4 +985,69 @@ async def test_review_l4_answer_after_expires_at_is_late(
         assert outcome == "late"
         monkeypatch.setattr(svc, "_now", real_now)
         assert (await task).error_code == "approval_timeout"
+        assert light_calls(env.ha) == []
+
+
+# ------------------------------------------------- settings (task-20)
+
+
+async def test_settings_approvers_replace_the_option_section(tmp_path: Path) -> None:
+    settings = SettingsComponent()
+    async with approval_env(tmp_path, settings=settings, approvers=[]) as env:
+        service = env.approvals.service()
+        # No approval settings: the option section (no approvers) applies.
+        result = await env.h.call(await env.agent(), "ha.call_service", CALL)
+        assert result.error_code == "approval_unavailable"
+        assert notify_calls(env.ha) == []
+
+        await settings.service().update(
+            {
+                "approvals": {
+                    "approvers": [APPROVER],
+                    "notify_services": {},
+                    "timeout_seconds": 30.0,
+                }
+            }
+        )
+        assert service.current_approvers() == frozenset({APPROVER})
+        task = env.start_call(await env.agent())
+        data = await env.sent()
+        accept, _ = actions(data)
+        await env.tap(accept, APPROVER)
+        assert (await task).ok
+        assert light_calls(env.ha)
+
+        # Back to the option section: no approvers again.
+        await settings.service().update({"approvals": None})
+        assert service.current_approvers() == frozenset()
+
+
+async def test_settings_timeout_and_override_apply(tmp_path: Path) -> None:
+    settings = SettingsComponent()
+    async with approval_env(tmp_path, settings=settings, timeout_seconds=5) as env:
+        await settings.service().update(
+            {
+                "approvals": {
+                    "approvers": [APPROVER],
+                    "notify_services": {APPROVER: ["mobile_app_other_phone"]},
+                    "timeout_seconds": 0.5,
+                }
+            }
+        )
+        add_phone(
+            env.ha,
+            user_id=APPROVER,
+            person="unused",
+            device_id="dev_o",
+            name="Other Phone",
+            link=False,
+        )
+        task = env.start_call(await env.agent())
+        await wait_until(lambda: len(notify_calls(env.ha, clear=False)) >= 1)
+        # The override names the notify service, not the person chain.
+        assert notify_calls(env.ha, clear=False)[0]["service"] == (
+            "mobile_app_other_phone"
+        )
+        result = await task
+        assert not result.ok
         assert light_calls(env.ha) == []

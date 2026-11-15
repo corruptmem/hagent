@@ -25,7 +25,8 @@ def test_defaults_match_the_design() -> None:
     assert d.retrieval.result_count == 5
     assert d.retrieval.token_limit == 1000
     assert d.assist.enabled is False
-    assert d.budget.daily_usd == 0.50
+    # None: the default agent budget of the settings (task-20).
+    assert d.budget.daily_usd is None
     assert d.budget.max_tool_calls == 20
     assert d.concurrency.mode == "queued"
     assert d.concurrency.queue_size == 10

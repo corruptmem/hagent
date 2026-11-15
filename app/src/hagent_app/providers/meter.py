@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -62,6 +62,8 @@ current_invocation: ContextVar[str | None] = ContextVar(
 )
 
 Clock = Callable[[], datetime]
+# An async function: agent ID -> budget.daily_usd of its definition, or None.
+type BudgetLookup = Callable[[str], Awaitable[float | None]]
 
 
 def local_now() -> datetime:
@@ -155,13 +157,30 @@ class Meter:
         self._keys = keys
         self._clock = clock
         self._agent_budgets: dict[str, float] = dict(config.agent_budgets_usd)
+        # Gives budget.daily_usd of an agent definition, or None (task-20).
+        self.budget_lookup: BudgetLookup | None = None
 
     # Budgets
 
-    def agent_budget_usd(self, agent_id: str) -> Decimal:
-        """The daily budget of ``agent_id``."""
-        value = self._agent_budgets.get(agent_id, self._config.agent_daily_budget_usd)
+    async def agent_budget_usd(self, agent_id: str) -> Decimal:
+        """The daily budget of ``agent_id``.
+
+        The order: ``budget.daily_usd`` of the current agent definition (from
+        ``budget_lookup``), then the ``agent_budgets_usd`` option, then the
+        default agent budget (settings, else the option).
+        """
+        value: float | None = None
+        if self.budget_lookup is not None:
+            value = await self.budget_lookup(agent_id)
+        if value is None:
+            value = self._agent_budgets.get(
+                agent_id, self._config.agent_daily_budget_usd
+            )
         return Decimal(str(value))
+
+    def set_config(self, config: ProvidersConfig) -> None:
+        """Replace the budgets and limits (a settings change)."""
+        self._config = config
 
     def set_agent_budgets(self, budgets: Mapping[str, float]) -> None:
         """Replace the per-agent budgets (for the agent definitions)."""
@@ -182,7 +201,7 @@ class Meter:
         budget = (
             self.installation_budget_usd()
             if agent_id is None
-            else self.agent_budget_usd(agent_id)
+            else await self.agent_budget_usd(agent_id)
         )
         return BudgetState(day, from_pusd(spent), from_pusd(reserved), budget)
 
@@ -211,7 +230,7 @@ class Meter:
         agent_budget = (
             None
             if spec.agent_id is None
-            else to_pusd(self.agent_budget_usd(spec.agent_id))
+            else to_pusd(await self.agent_budget_usd(spec.agent_id))
         )
         install_budget = to_pusd(self.installation_budget_usd())
         now = self._clock().isoformat()

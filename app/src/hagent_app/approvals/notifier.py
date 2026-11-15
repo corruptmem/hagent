@@ -113,6 +113,10 @@ class MobileAppNotifier:
         self._states = states
         self._overrides = {k: tuple(v) for k, v in (overrides or {}).items()}
 
+    def set_overrides(self, overrides: Mapping[str, Sequence[str]]) -> None:
+        """Replace the explicit notify-service lists (settings change)."""
+        self._overrides = {k: tuple(v) for k, v in overrides.items()}
+
     async def resolve(self, approvers: Sequence[str]) -> Delivery:
         """The notify targets of the approvers, with the reasons for gaps."""
         entities = await self._ha.command({"type": "config/entity_registry/list"})

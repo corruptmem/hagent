@@ -9,6 +9,11 @@ starts::
 
 ``approvals.notifier`` replaces the app-side notifier, for example with a
 sender in HA Core (task-17). Set it before the app starts.
+
+``settings`` (task-20) supplies the approvers, the notify-service
+overrides and the time limit from the management UI. When the user set no
+approval settings, the component reads the ``approvals`` option section.
+A change in the settings takes effect for the next request.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from hagent_app.tools.executor import ApprovalOutcome
 
 if TYPE_CHECKING:
     from hagent_app.app import AppContext
+    from hagent_app.settings import SettingsComponent
 
 _LOG = logging.getLogger(__name__)
 
@@ -63,8 +69,15 @@ class ApprovalsComponent:
 
     name = "approvals"
 
-    def __init__(self, events: ChangeEvents | None = None) -> None:
+    def __init__(
+        self,
+        events: ChangeEvents | None = None,
+        settings: SettingsComponent | None = None,
+    ) -> None:
         self._events = events
+        self._settings = settings
+        self._options: ApprovalsConfig | None = None
+        self._unsubscribe_settings: Callable[[], None] | None = None
         self.gate = _Gate(self)
         self.notifier: Notifier | None = None
         self._service: ApprovalService | None = None
@@ -93,7 +106,8 @@ class ApprovalsComponent:
 
     async def start(self, ctx: AppContext) -> None:
         """Expire old requests, then listen for answers."""
-        config = ctx.config.section("approvals", ApprovalsConfig)
+        self._options = ctx.config.section("approvals", ApprovalsConfig)
+        config = self._effective()
         notifier = self.notifier or MobileAppNotifier(
             ctx.ha, ctx.states, config.notify_services
         )
@@ -124,7 +138,32 @@ class ApprovalsComponent:
             self._user_task = asyncio.create_task(self._on_connect())
         if self._events is not None:
             self._unsubscribe_agents = self._events.subscribe(self._on_change)
+        if self._settings is not None:
+            self._unsubscribe_settings = self._settings.subscribe(self._on_settings)
         self._service = service
+
+    def _effective(self) -> ApprovalsConfig:
+        """The approval settings, or else the option section."""
+        options = self._options or ApprovalsConfig()
+        stored = self._settings.approvals() if self._settings is not None else None
+        if stored is None:
+            return options
+        return ApprovalsConfig(
+            approvers=list(stored.approvers),
+            timeout_seconds=stored.timeout_seconds,
+            notify_services={k: list(v) for k, v in stored.notify_services.items()},
+            dev_trust_user_header=options.dev_trust_user_header,
+        )
+
+    def _on_settings(self, names: frozenset[str]) -> None:
+        """Apply a change of the approval settings."""
+        service = self._service
+        if service is None or "approvals" not in names:
+            return
+        config = self._effective()
+        service.set_config(config)
+        if isinstance(service.notifier, MobileAppNotifier):
+            service.notifier.set_overrides(config.notify_services)
 
     def _on_change(self, event: ChangeEvent) -> None:
         """End the pending requests of an agent that changed (review M1)."""
@@ -138,6 +177,9 @@ class ApprovalsComponent:
         if self._unsubscribe_agents is not None:
             self._unsubscribe_agents()
             self._unsubscribe_agents = None
+        if self._unsubscribe_settings is not None:
+            self._unsubscribe_settings()
+            self._unsubscribe_settings = None
         ctx, self._ctx = self._ctx, None
         if self._user_task is not None:
             self._user_task.cancel()

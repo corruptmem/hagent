@@ -47,6 +47,12 @@ export function useChangeEvents(): EventsStatus {
           first = false;
         } else if (event.topic === "agents") {
           void client.invalidateQueries({ queryKey: keys.agents });
+          // The store list shows which agents attach each store.
+          void client.invalidateQueries({ queryKey: keys.stores });
+        } else if (event.topic === "knowledge") {
+          void client.invalidateQueries({ queryKey: keys.knowledge });
+        } else if (event.topic === "settings") {
+          void client.invalidateQueries({ queryKey: keys.settings });
         }
       };
       socket.onclose = () => {

@@ -22,6 +22,7 @@ SIGINT.
 | `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
 | `src/hagent_app/knowledge/` | Knowledge stores, documents, the search index, the embedding queue and the knowledge management API (task-11). See "Knowledge stores and search". |
 | `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
+| `src/hagent_app/settings/` | `SettingsComponent`: the settings store, the API keys and the settings API (task-20). See "Settings" below. |
 | `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/router/` | The router, the persistent invocation queue, the fallback, chat retries and the test invocation route (task-12). See "How to invoke an agent" below. |
@@ -429,7 +430,10 @@ checks this.
 ## Approvals
 
 `ApprovalsComponent` (`approvals/`) supplies `ToolsComponent.approval`.
-`default_components()` sets it. The executor calls the gate for each call
+`default_components()` sets it. The approvers, the notify-service
+overrides and the time limit come from the settings (task-20). When the
+user set no approval settings, the component reads the `approvals` option
+section. A settings change applies to the next request. The executor calls the gate for each call
 that the definition marks for approval (design section 8).
 
 Terms:
@@ -474,10 +478,46 @@ Rules:
 `Notifier` is the send interface. `MobileAppNotifier` is the app-side
 implementation. The app cannot read the HA user or the webhook ID of a
 phone registration, so it uses the `person` entity of the approver and its
-mobile app device trackers, or the `notify_services` option. It refuses a
+mobile app device trackers, or the `notify_services` setting. It refuses a
 service that does not exist, or a device name that more than one mobile app
 device has. Set `approvals.notifier` before start to use another sender,
 for example one in HA Core (task-17).
+## Settings
+
+The `settings` package owns the settings that the user changes in the
+management UI (design section 7.2): API keys, budgets, price overrides,
+the genai-prices auto-update, decision models and approvers. Migration
+`1000` adds the table `app_settings`. Each row is one setting as JSON.
+
+Terms:
+
+- **Stored value**: the value in `app_settings`, or `None`.
+- **Default**: the value from the app options. A setting with no stored
+  value uses it, so an existing `options.json` keeps working.
+
+`SettingsComponent` must start before `ProvidersComponent` and
+`ApprovalsComponent`. Other areas use these parts:
+
+- `settings.keys`: the `KeySource` of the providers. It reads the key on
+  each call.
+- `settings.providers_config(base)`: the `providers` option section with
+  the stored values in place.
+- `settings.approvals()`: an `Approvals` object, or `None`.
+- `settings.subscribe(fn)`: `fn(names)` runs after each change, on the
+  event loop. It must be fast.
+
+Rules:
+
+- No response, error text, change event or log line holds an API key. The
+  API shows only a hint (the last four characters of a key with at least
+  20 characters).
+- `PATCH api/settings` validates every value before it stores any value.
+- The genai-prices auto-update fetches from GitHub. It is off by default.
+  Tests replace `UpdatePrices` with `ProvidersComponent(price_updater=...)`.
+
+The UI embedding model is not part of this package. The knowledge area
+owns it (`api/knowledge/settings`).
+
 ## How to run an agent turn
 
 The `turns` package runs agent turns (design sections 9.5, 11, 13.1 and
@@ -921,6 +961,7 @@ range of your area:
 | 0700–0799 | Rules | task-13, task-14 |
 | 0800–0899 | Scheduler | task-15 |
 | 0900–0999 | Approvals | task-16 |
+| 1000–1099 | Settings | task-20 |
 
 The ranges do not set the merge order. Version 0100 can merge before version
 0002. The runner therefore applies every version that is not in the
@@ -1002,11 +1043,21 @@ Rules:
   instead.
 - The adapters do not retry. They raise `ProviderHTTPError` with a
   `retryable` flag. The runtime decides on retries.
-- The keys are in the `providers` section of `options.json`, or in
-  `HAGENT_OPENAI_API_KEY` and `HAGENT_OPENROUTER_API_KEY`. Code reads them
-  through a `KeySource`. Task-20 replaces the source with the settings
-  store. A key goes only into the `Authorization` header of a provider
-  request. Error texts pass through `redact`.
+- Code reads the keys through a `KeySource`. In the app it is the
+  `SettingsKeySource` of the settings area: the key from the UI, then
+  `HAGENT_OPENAI_API_KEY` and `HAGENT_OPENROUTER_API_KEY`, then the
+  `providers` section of `options.json`. A key goes only into the
+  `Authorization` header of a provider request. Error texts pass through
+  `redact`.
+- With a `SettingsComponent`, the budgets, the price overrides, the
+  decision models and `genai_prices_auto_update` come from the settings,
+  with the options as defaults. A change takes effect without a restart.
+- The daily budget of an agent is `budget.daily_usd` of its current
+  definition. The meter reads it through `Meter.budget_lookup` on each
+  reservation, so an edit applies to the next call. When the value is
+  `null`, or the agent does not exist, the meter uses the
+  `agent_budgets_usd` option for that agent, then the default agent budget
+  (settings, else the option).
 - The daily OpenRouter price refresh starts 60 seconds after app start.
   Tests set `refresh_openrouter_prices` to `false`.
 

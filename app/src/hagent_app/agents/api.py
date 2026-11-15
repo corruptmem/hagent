@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -112,8 +113,13 @@ def _int_query(request: web.Request, key: str) -> int:
 class AgentsApi:
     """The routes of the agents area. They call ``AgentService``."""
 
-    def __init__(self, service: Callable[[], AgentService]) -> None:
+    def __init__(
+        self,
+        service: Callable[[], AgentService],
+        default_budget: Callable[[], float | None] | None = None,
+    ) -> None:
         self._service = service
+        self._default_budget = default_budget
 
     def routes(self) -> list[web.RouteDef]:
         """The route table. ``HttpServer.add_routes`` takes it."""
@@ -152,8 +158,16 @@ class AgentsApi:
         )
 
     async def defaults(self, _request: web.Request) -> web.Response:
-        """GET /api/agents/defaults: a definition with every default value."""
-        return web.json_response({"definition": default_definition_data()})
+        """GET /api/agents/defaults: a definition with every default value.
+
+        ``budget.daily_usd`` is the current default agent budget of the
+        settings. If the settings are not loaded, it stays ``None``.
+        """
+        data = default_definition_data()
+        if self._default_budget is not None:
+            with contextlib.suppress(RuntimeError):
+                data["budget"]["daily_usd"] = self._default_budget()
+        return web.json_response({"definition": data})
 
     async def index(self, _request: web.Request) -> web.Response:
         """GET /api/agents."""

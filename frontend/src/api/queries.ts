@@ -11,6 +11,18 @@ export const keys = {
     ["agents", id, "diff", from, to] as const,
   defaults: ["defaults"] as const,
   catalog: ["catalog"] as const,
+  haUsers: ["ha", "users"] as const,
+  knowledge: ["knowledge"] as const,
+  stores: ["knowledge", "stores"] as const,
+  store: (id: string) => ["knowledge", "stores", id] as const,
+  items: (id: string) => ["knowledge", "stores", id, "items"] as const,
+  item: (id: string, path: string, section: string) =>
+    ["knowledge", "stores", id, "item", path, section] as const,
+  history: (id: string, path: string) =>
+    ["knowledge", "stores", id, "history", path] as const,
+  knowledgeStatus: ["knowledge", "status"] as const,
+  knowledgeSettings: ["knowledge", "settings"] as const,
+  settings: ["settings"] as const,
 };
 
 export const agentsQuery = () =>
@@ -51,4 +63,47 @@ export const catalogQuery = () =>
     queryKey: keys.catalog,
     queryFn: api.catalog,
     staleTime: 30_000,
+  });
+
+export const storesQuery = () =>
+  queryOptions({ queryKey: keys.stores, queryFn: api.listStores });
+
+export const storeQuery = (id: string) =>
+  queryOptions({ queryKey: keys.store(id), queryFn: () => api.getStore(id) });
+
+export const itemsQuery = (id: string) =>
+  queryOptions({ queryKey: keys.items(id), queryFn: () => api.listItems(id) });
+
+export const itemQuery = (id: string, path: string, section = "") =>
+  queryOptions({
+    queryKey: keys.item(id, path, section),
+    queryFn: () => api.readItem(id, path, section || undefined),
+  });
+
+export const historyQuery = (id: string, path: string) =>
+  queryOptions({
+    queryKey: keys.history(id, path),
+    queryFn: () => api.history(id, path),
+  });
+
+export const knowledgeStatusQuery = () =>
+  queryOptions({
+    queryKey: keys.knowledgeStatus,
+    queryFn: api.knowledgeStatus,
+  });
+
+export const knowledgeSettingsQuery = () =>
+  queryOptions({
+    queryKey: keys.knowledgeSettings,
+    queryFn: api.knowledgeSettings,
+  });
+
+export const settingsQuery = () =>
+  queryOptions({ queryKey: keys.settings, queryFn: api.settings });
+
+export const haUsersQuery = () =>
+  queryOptions({
+    queryKey: keys.haUsers,
+    queryFn: api.haUsers,
+    staleTime: 60_000,
   });

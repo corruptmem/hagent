@@ -364,3 +364,51 @@ legend {
 .knowledge table {
   margin-bottom: 8px;
 }
+
+.attached {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+table.data tr.selected {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.warning-box {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+}
+
+.warning-box p {
+  margin: 4px 0;
+}
+
+form.inline {
+  display: inline-flex;
+  gap: 4px;
+}
+
+pre.content,
+textarea.content {
+  width: 100%;
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.item-panel h2 {
+  margin: 0;
+}
+
+.upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field.key p {
+  margin: 4px 0;
+}

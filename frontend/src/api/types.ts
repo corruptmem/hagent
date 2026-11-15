@@ -53,7 +53,12 @@ export interface AgentDefinition {
   retrieval: { mode: RetrievalMode; result_count: number; token_limit: number };
   approval: { tools: string[]; services: string[]; entities: string[] };
   assist: { enabled: boolean };
-  budget: { daily_usd: number; max_tool_calls: number; max_tokens: number };
+  budget: {
+    /** null: the default agent budget of the settings. */
+    daily_usd: number | null;
+    max_tool_calls: number;
+    max_tokens: number;
+  };
   concurrency: { mode: ConcurrencyMode; queue_size: number };
   fallback: { mode: FallbackMode; value: unknown };
   scheduling: {
@@ -168,3 +173,140 @@ export interface TestResponse {
 }
 
 export type DeleteChoice = "keep" | "delete";
+
+// Knowledge stores (docs/api.md, "Knowledge stores").
+
+export interface StoreAttachment {
+  agent_id: string;
+  agent_name: string;
+  access: StoreAccess;
+  inject_main: boolean;
+}
+
+export interface Store {
+  id: string;
+  name: string;
+  description: string;
+  private: boolean;
+  owner_agent_id: string | null;
+  size_limit: number;
+  size: number;
+  files: number;
+  documents: number;
+  created_at: string;
+  updated_at: string;
+  attached: StoreAttachment[];
+}
+
+export type ItemKind = "file" | "document";
+
+export interface Item {
+  path: string;
+  kind: ItemKind;
+  version: number;
+  size: number;
+  updated_at: string;
+  updated_by_agent_id: string | null;
+  media_type?: string;
+  pages?: number | null;
+}
+
+export interface ItemContent extends Item {
+  content: string;
+  part?: number;
+  parts?: number;
+  outline?: string[];
+  next_section?: string | null;
+}
+
+export interface ItemVersion {
+  version: number;
+  kind: ItemKind;
+  change: string;
+  deleted: boolean;
+  author: "agent" | "user";
+  author_agent_id: string | null;
+  size: number;
+  created_at: string;
+  content?: string | null;
+}
+
+export interface WriteResult {
+  store_id: string;
+  path: string;
+  version: number;
+  size: number;
+}
+
+export interface UploadResult extends WriteResult {
+  media_type: string;
+  pages: number | null;
+  sections: number;
+  passages: number;
+}
+
+export interface EmbeddingModel {
+  provider: Provider;
+  model: string;
+  dimensions?: number | null;
+}
+
+export interface KnowledgeStatus {
+  search_mode: "hybrid" | "keyword";
+  fallback_reason: string | null;
+  sqlite_vec: boolean;
+  embedding: EmbeddingModel | null;
+  pending_embeddings: number;
+  last_error: string | null;
+  entity_catalog: number;
+}
+
+// Settings (docs/api.md, "Settings").
+
+export interface KeyInfo {
+  set: boolean;
+  hint: string | null;
+  source: "settings" | "environment" | "options" | null;
+}
+
+export interface PriceOverride {
+  input: number;
+  output?: number;
+  cache_read?: number | null;
+  cache_write?: number | null;
+}
+
+export interface ApprovalSettings {
+  approvers: string[];
+  notify_services: Record<string, string[]>;
+  timeout_seconds: number;
+}
+
+export interface SettingValues {
+  installation_daily_budget_usd: number | null;
+  agent_daily_budget_usd: number | null;
+  price_overrides: Record<string, PriceOverride> | null;
+  genai_prices_auto_update: boolean | null;
+  decision_models: ModelRef[] | null;
+  approvals: ApprovalSettings | null;
+}
+
+export interface SettingsResponse {
+  keys: Record<Provider, KeyInfo>;
+  settings: SettingValues;
+  defaults: SettingValues;
+  built_in_decision_models: ModelRef[];
+}
+
+export interface HaUser {
+  id: string;
+  name: string;
+  username: string | null;
+  is_admin: boolean | null;
+}
+
+export interface HaUsers {
+  source: "auth" | "persons" | null;
+  reason: string | null;
+  users: HaUser[];
+}

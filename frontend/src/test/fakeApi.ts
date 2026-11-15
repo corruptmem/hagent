@@ -15,6 +15,9 @@ export interface Call {
   method: string;
   path: string;
   body: unknown;
+  /** A body that is not text, for example an uploaded file. */
+  raw?: unknown;
+  headers?: Record<string, string>;
 }
 
 type Reply = { status: number; body: unknown } | undefined;
@@ -126,6 +129,10 @@ export function fakeApi(handler: Handler = () => undefined, base = "") {
       path: url.pathname + url.search,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
     };
+    if (init?.body != null && typeof init.body !== "string") {
+      call.raw = init.body;
+      call.headers = init.headers as Record<string, string>;
+    }
     calls.push(call);
     const local = { ...call, path: call.path.slice(base.length) };
     const reply = call.path.startsWith(base)

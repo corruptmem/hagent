@@ -71,6 +71,57 @@ export function TextInput({
   );
 }
 
+/** A number field that can be empty. Empty means `null`. */
+export function OptionalNumberInput({
+  path,
+  value,
+  onChange,
+  disabled = false,
+  step = 1,
+  min,
+  max,
+  placeholder,
+}: Common<number | null> & {
+  step?: number;
+  min?: number;
+  max?: number;
+  placeholder?: string;
+}) {
+  const shown = value === null ? "" : String(value);
+  const [text, setText] = useState(shown);
+  const [last, setLast] = useState(value);
+  if (value !== last) {
+    setLast(value);
+    setText(shown);
+  }
+  return (
+    <input
+      id={path}
+      data-path={path}
+      type="number"
+      step={step}
+      min={min}
+      max={max}
+      placeholder={placeholder}
+      value={text}
+      disabled={disabled}
+      onChange={(e) => {
+        setText(e.target.value);
+        if (e.target.value.trim() === "") {
+          setLast(null);
+          onChange(null);
+          return;
+        }
+        const parsed = Number(e.target.value);
+        if (Number.isFinite(parsed)) {
+          setLast(parsed);
+          onChange(parsed);
+        }
+      }}
+    />
+  );
+}
+
 export function NumberInput({
   path,
   value,

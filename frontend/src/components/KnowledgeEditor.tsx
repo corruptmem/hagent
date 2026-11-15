@@ -7,8 +7,8 @@ interface KnowledgeEditorProps {
   /** The private store of the agent. It must stay attached with read_write. */
   privateStore: StoreRef | null;
   /**
-   * The stores that the user can attach. Without a list, the editor asks
-   * for a store ID. The knowledge stores API (task-11) supplies the list.
+   * The stores that the user can attach, from `api/knowledge/stores`.
+   * Without a list (the request failed), the editor asks for a store ID.
    */
   stores?: StoreRef[];
 }

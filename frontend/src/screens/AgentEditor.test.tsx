@@ -3,7 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import type { AgentDefinition } from "../api/types";
 import { leafPaths } from "../definition";
-import { AGENT_ID, DEFAULTS, fakeApi, makeAgent } from "../test/fakeApi";
+import {
+  AGENT_ID,
+  DEFAULTS,
+  STORE_ID,
+  fakeApi,
+  makeAgent,
+} from "../test/fakeApi";
 import { renderApp } from "../test/render";
 
 function putBody(calls: { method: string; body: unknown }[]) {
@@ -200,5 +206,74 @@ describe("agent editor", () => {
     expect(
       (post?.body as { definition: AgentDefinition }).definition.name,
     ).toBe("Heating");
+  });
+
+  it("attaches a store from the stores list", async () => {
+    const shared = "d".repeat(32);
+    const api = fakeApi((call) => {
+      if (call.method === "GET" && call.path === "/api/knowledge/stores") {
+        return {
+          status: 200,
+          body: {
+            stores: [
+              { id: shared, name: "heating", private: false },
+              { id: STORE_ID, name: "test_agent_private", private: true },
+            ],
+          },
+        };
+      }
+      return call.method === "PUT"
+        ? { status: 200, body: makeAgent({ version: 3 }) }
+        : undefined;
+    });
+    renderApp(`/agents/${AGENT_ID}`);
+    const picker = await screen.findByRole("combobox", {
+      name: "Attach a store",
+    });
+    // The attached private store is not in the list again.
+    await waitFor(() => {
+      expect(within(picker).getAllByRole("option")).toHaveLength(2);
+    });
+    expect(screen.queryByLabelText(/^Store ID/)).toBeNull();
+    await userEvent.selectOptions(picker, shared);
+    expect(screen.getByText("heating")).toBeInTheDocument();
+    await userEvent.selectOptions(
+      screen.getByLabelText("Access 2"),
+      "read_write",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(putBody(api.calls)?.definition.knowledge).toEqual([
+        { store_id: STORE_ID, access: "read_write", inject_main: true },
+        { store_id: shared, access: "read_write", inject_main: false },
+      ]);
+    });
+  });
+
+  it("falls back to a store ID field when the stores list fails", async () => {
+    fakeApi();
+    renderApp(`/agents/${AGENT_ID}`);
+    await screen.findByDisplayValue("Test agent");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Attach a store" }),
+    );
+    expect(screen.getByLabelText("Store ID 2")).toBeInTheDocument();
+  });
+
+  it("leaves the daily budget empty to use the settings default", async () => {
+    const api = fakeApi((call) =>
+      call.method === "PUT"
+        ? { status: 200, body: makeAgent({ version: 3 }) }
+        : undefined,
+    );
+    renderApp(`/agents/${AGENT_ID}`);
+    const field = await screen.findByLabelText("Daily budget (USD)");
+    expect(field).toHaveValue(null);
+    expect(field).toHaveAttribute("placeholder", "Settings default");
+    await userEvent.type(field, "1.5");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(putBody(api.calls)?.definition.budget.daily_usd).toBe(1.5);
+    });
   });
 });

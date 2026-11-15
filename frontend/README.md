@@ -55,10 +55,29 @@ To test the build with the app, run `npm run build`. The app serves
   (`src/events.ts`) invalidates the queries.
 - Each definition field has a control with a `data-path` attribute. A test
   checks this for each field of `src/test/fixtures/defaults.json`. A
-  Python test keeps that fixture equal to `GET api/agents/defaults`.
-- The knowledge editor (`KnowledgeEditor`) takes an optional `stores`
-  list. Without it, the user types a store ID. When the stores API exists
-  (task-11), pass the list from `Editor` in `src/screens/AgentEditor.tsx`.
+  Python test keeps that fixture equal to `GET api/agents/defaults`,
+  except `budget.daily_usd`, which the app takes from the settings.
+- The knowledge editor (`KnowledgeEditor`) takes a `stores` list.
+  `Editor` in `src/screens/AgentEditor.tsx` loads it from
+  `api/knowledge/stores`. If that request fails, the editor asks for a
+  store ID instead.
+- Never show an API key. The settings API returns only a hint. The key
+  field is a password field, and it is empty again after a save.
+- An item that arrives in parts (more than 20000 characters) is
+  read-only. A save sends the whole file, so a save of one part would lose
+  the other parts.
+- Encode each part of an item path with `itemPath` in `src/api/client.ts`.
+  Keep the `/` between parts.
+
+## Screens
+
+| Path             | Screen          | Content                                                                                                                                                                                           |
+| ---------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents`         | `AgentsList`    | The agents. Create, copy, turn on or off, delete.                                                                                                                                                 |
+| `agents/<id>`    | `AgentShell`    | The definition, the versions and the test panel of one agent.                                                                                                                                     |
+| `knowledge`      | `KnowledgeList` | The stores, their size and the agents that attach each store. Create a store.                                                                                                                     |
+| `knowledge/<id>` | `StoreView`     | One store: its settings, its agents and its items. Upload, replace and delete documents. Create, edit and delete files. See the history of a path, also of a deleted file, and restore a version. |
+| `settings`       | `Settings`      | API keys, the embedding model, budgets, approvers, price overrides, the genai-prices auto-update and decision models.                                                                             |
 
 ## Packaging (task-21)
 

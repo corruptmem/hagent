@@ -1,9 +1,9 @@
 """Configuration and API keys of the providers area.
 
-The keys are in the ``providers`` section of ``options.json``. Task-20 moves
-them to the management UI settings. Code that needs a key asks a
-``KeySource``, so that the source can change without a change to the
-adapters.
+The user enters the keys in the management UI settings (task-20,
+``hagent_app.settings``). The ``providers`` section of ``options.json`` and
+the environment are fallbacks. Code that needs a key asks a ``KeySource``,
+so that the source can change without a change to the adapters.
 
 A ``Secret`` holds a key. Its ``repr`` and ``str`` never show the value.
 """
@@ -66,7 +66,8 @@ class ProvidersConfig:
       ``output``, and can have ``cache_read`` and ``cache_write``.
     - ``agent_daily_budget_usd``: the default daily budget of each agent.
     - ``agent_budgets_usd``: daily budgets for single agents, keyed by agent
-      ID.
+      ID. They apply only when the definition of the agent has
+      ``budget.daily_usd`` set to ``null`` (task-20).
     - ``installation_daily_budget_usd``: the daily budget of the
       installation. It counts the costs of all agents and the costs that
       belong to no agent.
@@ -78,6 +79,12 @@ class ProvidersConfig:
       computed cost differ by more than this ratio.
     - ``refresh_openrouter_prices``: fetch the OpenRouter price lists once a
       day.
+    - ``genai_prices_auto_update``: let genai-prices fetch its newest price
+      data from GitHub once an hour. Off by default.
+
+    The settings store (task-20) replaces the budgets, the price overrides,
+    the decision models and ``genai_prices_auto_update`` with the values
+    that the user sets in the management UI.
     """
 
     openai_api_key: str = field(default="", repr=False)
@@ -92,6 +99,7 @@ class ProvidersConfig:
     chat_max_output_tokens: int = 4096
     drift_warn_ratio: float = 0.05
     refresh_openrouter_prices: bool = True
+    genai_prices_auto_update: bool = False
 
     def base_url(self, provider: Provider) -> str:
         """The API base URL of ``provider``, without a trailing slash."""
