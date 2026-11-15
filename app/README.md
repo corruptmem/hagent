@@ -17,6 +17,8 @@ SIGINT.
 | `src/hagent_app/ha/` | The connection to HA Core. `client.py` is the WebSocket client. `state_cache.py` is the HA state cache. |
 | `src/hagent_app/http/` | The HTTP server component (`HttpServer`), the JSON error format and the change events (task-7). |
 | `src/hagent_app/agents/` | Agent definitions, definition versions, private store records and the agents management API (task-7). |
+| `src/hagent_app/ingress/` | `IngressGuard`, the source-address check, and `UiComponent`, which serves the UI files (task-18). |
+| `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
@@ -96,10 +98,18 @@ def default_components() -> list[Component]:
 - Put routes under `/api/<area>`. Document each route in `docs/api.md`.
 - `http.add_middleware(mw)` adds a middleware that runs before every route.
   The JSON error middleware runs before it, so an `ApiError` from the
-  middleware becomes a JSON response. Task-18 adds the Ingress
-  source-address check (`172.30.32.2`, design section 6.1) here. The
-  integration link connects from HA Core, not from that address. The check
-  must therefore exempt the link path, or the link must use its own port.
+  middleware becomes a JSON response.
+- `IngressGuard` is the first middleware. It refuses each connection that
+  does not come from `172.30.32.2` (design section 6.1), also for the event
+  WebSocket. It uses the TCP peer address, never a header. Before it
+  starts, it refuses all requests with 503.
+- The integration link connects from HA Core, not from that address. The
+  link must therefore use its own port, or give its path to
+  `IngressGuard(exempt_prefixes=[...])` and authenticate each connection
+  itself.
+- `UiComponent` serves the UI on every path that does not start with
+  `api/`. Its route pattern excludes `api/`, so it never hides a route
+  that another component adds. Put new routes under `/api/<area>`.
 - `http.events` is the change-event hub. Call
   `http.events.publish(topic, action, record_id, data)` after a change.
   The `/api/events` WebSocket sends each event to the UI. An in-process
@@ -235,6 +245,21 @@ config = ctx.config.section("scheduler", SchedulerConfig)
 Missing keys take the defaults of the dataclass. Unknown keys cause
 `ConfigError`. Task-21 adds the keys to the app option schema when it
 packages the app.
+
+## Ingress options
+
+The `ingress` section of `options.json` has two keys (see
+`docs/api.md`, "Ingress options"):
+
+- `allowed_addresses`: the addresses and CIDR networks that can connect.
+  The default is `["172.30.32.2"]`. For local development, set it to
+  `["127.0.0.1", "::1"]`. The app logs a warning when the list differs
+  from the default.
+- `ui_dir`: the directory of the UI build. An empty value selects
+  `frontend/dist` in the source checkout. See `frontend/README.md`.
+
+Tests that connect to an app from `default_components()` must allow
+`127.0.0.1` in their `Config`. `test_ingress.py` shows the pattern.
 
 ## Development settings
 

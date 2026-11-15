@@ -28,3 +28,26 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+
+  # Front end. Run `mise run setup` first, so that frontend/node_modules
+  # exists.
+  - repo: local
+    hooks:
+      - id: frontend-eslint
+        name: eslint (frontend)
+        entry: npm --prefix frontend run lint
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+      - id: frontend-prettier
+        name: prettier (frontend)
+        entry: npm --prefix frontend run format:check
+        language: system
+        files: ^frontend/
+        pass_filenames: false
+      - id: frontend-tsc
+        name: tsc (frontend)
+        entry: npm --prefix frontend run typecheck
+        language: system
+        files: ^frontend/
+        pass_filenames: false

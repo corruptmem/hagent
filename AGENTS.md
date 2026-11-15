@@ -38,7 +38,8 @@ use case. Agents build use-case logic from the generic primitives.
 All Python code targets Python 3.14, the version that HA Core requires. The
 app uses the same version, so that the app and the integration can share code
 and tooling.
-- `frontend/`: the management UI (React, TanStack, Vite). Not created yet.
+- `frontend/`: the management UI (React, TanStack, Vite). Read
+  `frontend/README.md` before you change it.
 - `backlog/`: work tracking. Use the `backlog` CLI, not direct edits.
 - `docs/design.md`: the design.
 - `docs/api.md`: the management API contract. Update it when you add or
@@ -58,8 +59,10 @@ Run `mise run check` before you commit. It runs:
   security rules) and formatting.
 - `mypy` in strict mode: type checking.
 - `pytest`: tests.
+- `npm run check` in `frontend/`: eslint, prettier, tsc and vitest.
 
-pre-commit runs ruff and mypy on each commit.
+pre-commit runs ruff and mypy on each commit, and eslint, prettier and tsc
+when a commit changes `frontend/`.
 
 ## Rules
 
