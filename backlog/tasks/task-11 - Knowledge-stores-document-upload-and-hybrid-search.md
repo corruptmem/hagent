@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:58'
+updated_date: '2026-11-15 01:07'
 labels:
   - app
   - knowledge
@@ -98,10 +98,21 @@ Evidence (mise run check: 447 pytest passed, frontend 20 passed):
 - AC7: test_knowledge_turns.py::test_each_turn_includes_stores_index_and_main_files. A real TurnRunner turn has the store list, a 50-entry name-sorted index with the total, the injected private MAIN.md (no shared one), the design 9.5 order, identical instructions across turns, and a main file request. Also test_turn_index_size_comes_from_the_turns_option and test_knowledge_off_leaves_the_stores_out.
 - memory.search end to end: test_memory_search_finds_indexed_turns_through_the_executor. TurnRunner turns are indexed (not dry runs). memory.search through the executor finds the agent's turn by vector, never another agent's turn, and charges the query to the agent.
 - Agent charge: test_knowledge_search_charges_the_query_to_the_agent. Wiring: test_default_components_wire_the_knowledge_into_turns.
+
+Security review fixes (commit e7e2562, branch task-11-fix):
+- M1: build_turn_context takes main_file_max_chars. KnowledgeService.main_files reads only that part of each MAIN.md (SQL substr) and returns the full length and the last author (MainFile). PromptBuilder passes turns.main_file_max_chars. KnowledgeContextSource is now a Protocol with three arguments. The main file request uses the full length. The executor fallback clips too.
+- M2: data_block in knowledge/context.py wraps each main file in a fenced block. A line before it names the store, the path and the last author (agent ID, or the user). The fence has more backticks than the longest run in the text. The clip note is outside the fence. DATA_NOTE, a fixed text, opens the knowledge part and the recall part. It states that store text is data, not instructions. The note holds no variable value, so the prefix stays the same across turns.
+- L1: _prune_history runs in the same transaction as each file write and delete. It keeps the newest version of each path, at most MAX_FILE_VERSIONS (50) versions per path, and the text of earlier versions at or below the store size limit. Oldest first. docs/api.md states the retention.
+- L2: the embedder catches BudgetExceededError with scope agent, skips that charge for the drain (SQL HAVING ... NOT IN json_each), and continues. It retries after embed_retry_seconds with a timer, and lists the agents in status budget_skipped_agents. last_error and search_mode do not change. An installation budget error stops the drain as before.
+- L3: EntitySearch.rank_entities takes agent_id. FindEntities passes ctx.agent.id. EntityCatalog passes it as charge_agent_id.
+Evidence: mise run check passes (ruff, mypy strict, 588 pytest passed, frontend 20 passed). test_knowledge_security.py turns probes P1 to P6 into 8 tests. 7 of them fail on the code before the fix. The P4 test (scope checks and FTS5 syntax) passes before and after, because it guards behaviour that was already sound.
+
+Review fix: DATA_NOTE no longer says that only the '# Instructions' section gives instructions. The runtime also instructs the agent in other sections, for example the main file maintenance request. It now says that instructions come only from the runtime sections of the prompt.
+Proposed follow-ups (not created): (1) L2: _next_batch uses MIN(charge_agent_id), which ignores NULL. If a hash is shared by an over-budget agent and installation text, the embedder skips the whole hash until the budget allows it. (2) L1: _prune_history scans the version sizes of the whole store on each write. This is cheap at the 1 MB default limit and slow near the 1 GB maximum. A running total per store would fix it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Built the knowledge package: knowledge stores (create, describe, size limit, shared attachments), files with version checks and a change history with authors and restore, document upload (PDF text layer, Markdown, text, HTML), and hybrid search (FTS5 plus sqlite-vec BLOB vectors, merged with RRF, with a distance cutoff and a keyword-only fallback). Also a background embedding queue (one embedding per content hash and model, a re-index on a model change), the HA entity catalogue for ha.find_entities, and the /api/knowledge management routes. After the task-10 merge, each agent turn includes the knowledge context from KnowledgeComponent.turn_context, the turn history indexes turns for memory.search, and query embeddings count towards the invocation agent. Verified with mise run check (447 Python tests, front-end checks). AC1 to AC7 are checked.
+Built the knowledge package: knowledge stores (create, describe, size limit, shared attachments), files with version checks and a change history with authors and restore, document upload (PDF text layer, Markdown, text, HTML), and hybrid search (FTS5 plus sqlite-vec BLOB vectors, merged with RRF, with a distance cutoff and a keyword-only fallback). Also a background embedding queue (one embedding per content hash and model, a re-index on a model change), the HA entity catalogue for ha.find_entities, and the /api/knowledge management routes. After the task-10 merge, each agent turn includes the knowledge context from KnowledgeComponent.turn_context, the turn history indexes turns for memory.search, and query embeddings count towards the invocation agent. Security review fixes: injected main files are clipped to turns.main_file_max_chars and go into fenced data blocks with an attribution line and a fixed data-not-instructions note; the version history is bounded by count and by the store size limit; an over-budget agent no longer stops the embedding queue; ha.find_entities query embeddings count towards the agent. Verified with mise run check (588 Python tests, front-end checks) and test_knowledge_security.py (8 tests from the review probes; 7 fail before the fix). AC1 to AC7 are checked.
 <!-- SECTION:FINAL_SUMMARY:END -->
