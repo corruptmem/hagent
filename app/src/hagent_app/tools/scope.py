@@ -635,9 +635,20 @@ def admin_entities(  # noqa: PLR0912
             if not isinstance(values, (list, tuple)):
                 complete = False
                 continue
+            if not all(isinstance(v, str) for v in values):
+                complete = False
             names = [v for v in values if isinstance(v, str)]
             if key == "entity_id":
-                found |= {n for n in names if ENTITY_ID.fullmatch(n)}
+                # HA splits text at commas, strips and lower-cases it
+                # (cv.comp_entity_ids). An "all" or a bad piece makes the
+                # scan incomplete, so that the approval check fails closed.
+                for name in names:
+                    for piece in name.split(","):
+                        entity_id = piece.strip().lower()
+                        if ENTITY_ID.fullmatch(entity_id):
+                            found.add(entity_id)
+                        else:
+                            complete = False
             elif reg is not None:
                 if key == "device_id":
                     found |= reg.entities_of_devices(names)
@@ -653,6 +664,8 @@ def admin_entities(  # noqa: PLR0912
         try:
             _walk_data(rest, reg, known_entities, refs)
         except ScopeDeniedError:
+            complete = False
+        if refs.special:
             complete = False
         found |= refs.entities
         for device_id in refs.devices:

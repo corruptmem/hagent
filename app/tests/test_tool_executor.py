@@ -255,6 +255,26 @@ REVIEW_8_CASES = [
         "approval_unavailable",
         ADMIN_LOCK_APPROVAL,
     ),
+    *(
+        Case(
+            "ha.call_service",
+            {"domain": "lock", "service": "unlock", key: {"entity_id": value}},
+            "approval_unavailable",
+            ADMIN_LOCK_APPROVAL,
+        )
+        for key in ("target", "data")
+        for value in ("all", "LOCK.FRONT", "lock.front, lock.back", " lock.front")
+    ),
+    Case(
+        "ha.call_service",
+        {
+            "domain": "scene",
+            "service": "apply",
+            "data": {"x": {"entity_id": "all"}},
+        },
+        "approval_unavailable",
+        ADMIN_LOCK_APPROVAL,
+    ),
     # Finding 7: an unexpected error in the check.
     Case("memory.rule_stats", {"rule_id": "r1"}, "check_failed", setup="boom"),
 ]

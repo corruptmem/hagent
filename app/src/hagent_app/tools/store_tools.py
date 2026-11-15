@@ -357,7 +357,7 @@ Spec = dict[str, JsonValue]
 
 
 class _SpecModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 Debounce = Annotated[float, Field(ge=0, le=86400)]
