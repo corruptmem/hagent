@@ -1005,6 +1005,224 @@ Limit: a user can link any device tracker to a person. A notification can
 therefore reach the phone of another person. That phone cannot approve,
 because the app checks the HA user that sends each answer.
 
+## Rules
+
+A **rule** is a fast path that an agent writes with the `self` tools
+(design section 10). The agent owns its rules. The user can read them, roll
+them back, and run backtests in the management UI. Rule IDs, like other IDs,
+are 32 hexadecimal characters.
+
+Terms:
+
+- **Rule version**: one spec of a rule that never changes. A change adds a
+  version. The current version answers invocations (design section 10.6).
+- **Backtest**: a run of one rule version against the agent's recorded
+  history. It writes nothing (design section 10.7).
+- **Case**: one past invocation in a backtest.
+- **Trial**: an agent turn that runs next to a rule that answered. It
+  writes nothing. Only the rule result takes effect (design section 10.1).
+- **Agreement template**: the `agreement` template of the rule. It receives
+  `rule_result` and `agent_result`, and renders true when they agree. A rule
+  without it agrees when the two results have the same JSON form.
+
+Every route under `api/agents/{id}/rules` reads or changes the rules of one
+live agent only. A rule of another agent gives 404 `rule_not_found`.
+
+Errors of the rule routes:
+
+| Status | Code | Cause |
+|---|---|---|
+| 400 | `invalid_body` | A field has the wrong type or is out of range. |
+| 404 | `agent_not_found` | The agent does not exist, or the user deleted it. |
+| 404 | `rule_not_found` | The agent has no rule with this ID, or it deleted the rule. |
+| 404 | `version_not_found` | The rule has no version with this number. |
+| 404 | `backtest_not_found` | The rule has no backtest with this ID. |
+| 409 | `backtest_running` | A backtest of this rule runs already. |
+| 422 | `invalid_rule` | The stored spec of the version is not valid any more. |
+| 503 | `not_ready` | The rule engine is not running. |
+
+### List rules
+
+`GET api/agents/{id}/rules`
+
+Returns the rules of the agent in the order that the router tests them:
+
+```json
+{"rules": [{"id": "<32 hex>", "position": 0, "state": "active",
+  "current_version": 2, "latest_version": 2,
+  "updated_at": "2026-11-15T10:00:00+00:00", "spec": {"name": "...", "...": "..."}}]}
+```
+
+`state` is `draft`, `active` or `off`. Only active rules answer
+invocations. `spec` is the current version. The rule spec is described in
+the app README, section "Rules".
+
+### Read a rule
+
+`GET api/agents/{id}/rules/{rule_id}`
+
+Returns the rule with the spec of the current version, and the statistics
+of each version (design section 10.4):
+
+```json
+{"id": "<32 hex>", "rule_id": "<32 hex>", "state": "draft",
+ "current_version": 2, "latest_version": 2, "deleted": false,
+ "spec": {"...": "..."},
+ "versions": [{"version": 1, "created_at": "...", "matched": 10,
+   "answered": 9, "declined": 1, "cache_hits": 0, "errors": 0,
+   "cost_usd": 0.0, "last_used_at": "...", "last_error": null,
+   "last_error_at": null,
+   "backtest": {"runs": 1, "cost_usd": 0.0, "agreement_rate": 0.9,
+                "last": <backtest without cases>},
+   "trial": {"runs": 5, "agreed": 4, "disagreed": 1, "errors": 0,
+             "budget": 0, "agreement_rate": 0.8, "cost_usd": 0.004}}]}
+```
+
+- The live counters (`matched` to `cost_usd`) count real invocations only.
+  Backtests and trials never change them.
+- `backtest.agreement_rate` is the rate of the newest backtest of the
+  version. `backtest.cost_usd` is the sum of all its backtests.
+- `trial.agreement_rate` is agreed trials divided by agreed and disagreed
+  trials. `trial.budget` counts trials that the budget stopped.
+
+### Read a version
+
+`GET api/agents/{id}/rules/{rule_id}/versions/{version}`
+
+```json
+{"rule_id": "<32 hex>", "version": 1, "spec": {"...": "..."}}
+```
+
+### Roll a rule back
+
+`POST api/agents/{id}/rules/{rule_id}/rollback`
+
+```json
+{"version": 1}
+```
+
+The version becomes the current version. Its statistics continue. The state
+of the rule does not change. The response is
+`{"id": "<rule ID>", "version": 1, "state": "active"}`.
+
+### Run a backtest
+
+`POST api/agents/{id}/rules/{rule_id}/backtests`
+
+```json
+{"version": 2, "days": 7, "limit": 20, "live": true}
+```
+
+Every field is optional.
+
+| Field | Default | Rules |
+|---|---|---|
+| `version` | the current version | 1 or more. A draft version can run a backtest. |
+| `days` | 7 (option `backtest.default_days`) | 1 to `backtest.max_days` (30). The window ends now. |
+| `limit` | 20 for a decision action (option `backtest.decision_cases`), else 1000 | 1 to `backtest.max_cases` (1000). The most matched invocations. |
+| `live` | `true` | `false` replays recorded decision answers only. |
+
+The app runs the backtest and answers when it ends. The steps:
+
+1. Select the past invocations of the agent in the window that have an
+   agent result: an agent turn that answered (`path` `agent_turn`, `status`
+   `ok`), or a finished trial. Dry runs, review, Assist and test
+   invocations do not count. The newest come first.
+2. For each one, render the match template. If it matches, run the rule
+   with the recorded values (see "Replay rules"). The backtest stops after
+   `limit` matched invocations.
+3. Compare the rule result with the agent result with the agreement
+   template.
+4. Store the counters, the agreement rate, the cost and each case.
+
+Replay rules:
+
+- `now()` returns the time of the past invocation, in HA's time zone.
+- The input entities have their recorded states. The other entities in the
+  read scope have their current states.
+- Context items: a value that a rule recorded for the invocation comes
+  first. A `history` item reads statistics for the window that ends at the
+  time of the invocation. An `invocation_history` item reads the
+  invocations before it. An `action_response` item uses the response of the
+  same action in the agent turn of the invocation; without it, the case is
+  `skipped`. A `store_file` item uses the same read in the turn, else the
+  current file. Each item gets the scope check of the live rule.
+- Decision actions: the backtest replays the recorded answer of the same
+  request (the same model, values and questions) with no cost. Without one,
+  it sends the request if `live` is true, else it skips the case. Each live
+  request counts towards the budget of the agent. When the budget is spent,
+  the backtest stops with the status `budget`.
+- Writes: the backtest checks each write against the scope and records it
+  in the case. It never sends a write to HA, and writes no audit row.
+
+Response (status 200): a backtest object with its cases.
+
+```json
+{"id": "<32 hex>", "rule_id": "<32 hex>", "version": 2, "agent_version": 3,
+ "status": "ok", "started_at": "...", "finished_at": "...",
+ "since": "...", "until": "...", "max_cases": 20,
+ "candidates": 12, "matched": 10, "no_match": 2, "compared": 9,
+ "agreed": 8, "disagreed": 1, "declined": 1, "errors": 0, "skipped": 0,
+ "live_decisions": 4, "replayed_decisions": 6,
+ "agreement_rate": 0.889, "cost_usd": 0.0004, "error": null,
+ "cases": [{"seq": 1, "invocation_id": "<32 hex>",
+   "invocation_at": "...", "outcome": "agreed", "decision": "replayed",
+   "rule_result": 42.0, "agent_result": 43,
+   "writes": [{"service": "input_number.set_value",
+               "entity_id": "input_number.<flow>", "data": {"value": 42.0}}],
+   "detail": null}]}
+```
+
+- `status` is `ok`, `budget` (the budget stopped it), `failed` or
+  `cancelled` (the app stopped).
+- `outcome` is `agreed`, `disagreed`, `no_match`, `declined`, `error` or
+  `skipped`. `detail` says why for `declined`, `error` and `skipped`.
+- `agreement_rate` is `agreed / compared`, or `null` when no case was
+  compared. Skipped, declined and failed cases do not count.
+- `decision` is `replayed` or `live` for a decision action, else `null`.
+
+### List backtests
+
+`GET api/agents/{id}/rules/{rule_id}/backtests`
+
+Returns `{"backtests": [...]}`: the newest 50 backtests of the rule, without
+`cases`.
+
+`GET api/agents/{id}/rules/{rule_id}/backtests/{backtest_id}` returns one
+backtest with its cases. The app deletes the cases after the retention
+period (option `backtest.retention_days`, 30 days). The summary stays.
+
+### List trials
+
+`GET api/agents/{id}/rules/{rule_id}/trials`
+
+Returns `{"trials": [...]}`: the newest 50 trials of the rule.
+
+```json
+{"id": "<32 hex>", "rule_id": "<32 hex>", "version": 2,
+ "invocation_id": "<32 hex>", "turn_id": "<32 hex>",
+ "created_at": "...", "finished_at": "...", "status": "agreed",
+ "rule_result": 42.0, "agent_result": 43, "detail": null,
+ "cost_usd": 0.0012}
+```
+
+`status` is `running`, `agreed`, `disagreed`, `error`, `budget` (the budget
+was spent before or during the turn) or `cancelled`.
+
+### Check a template
+
+`POST api/rules/check-template`
+
+```json
+{"template": "{{ states('sensor.<room>_temperature') | float > 20 }}"}
+```
+
+The app checks the template against the supported subset
+(`docs/rule-templates.md`): syntax, functions, filters, tests and blocked
+statements. It does not render it. The response is
+`{"ok": true, "error": null}`, or `{"ok": false, "error": "<message>"}`
+with status 200.
+
 ## Change events
 
 `GET api/events` opens a WebSocket. The app sends one JSON object for each
@@ -1029,6 +1247,8 @@ Each later message has this form:
 | `knowledge` | `file_changed`, `file_deleted`, `item_deleted`, `document_changed` | `path`. `id` is the store ID. |
 | `knowledge` | `settings_changed` | none. `id` is `settings`. |
 | `settings` | `updated` | none. `id` is `settings`. The app sends it after each change of the settings or of an API key. |
+| `rules` | `updated` | `agent_id`, `version`. The app sends it after a rollback through the API. `id` is the rule ID. |
+| `rules` | `backtest_finished` | `agent_id`, `backtest_id`. `id` is the rule ID. |
 | `tools` | `scope_grown` | `version`, `added_read`, `added_control`: lists of entity IDs. The app sends it when an HA registry change makes the scope of an agent grow. `id` is the agent ID. |
 
 Rules for the UI:
