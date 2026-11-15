@@ -1,0 +1,46 @@
+# The HA app configuration of hagent. The Supervisor reads this file.
+# The keys that keep their default value are left out (the app linter
+# refuses them). Defaults that matter here:
+# - ingress_port: 8099, the port of the app HTTP server.
+# - startup: application, boot: auto.
+name: hagent
+version: "0.1.0"
+slug: hagent
+description: Persistent AI agents that work with your home.
+url: https://github.com/corruptmem/hagent
+arch:
+  - amd64
+# The HA base image starts s6-overlay as PID 1 (/init). Docker must not add
+# its own init process.
+init: false
+ingress: true
+panel_icon: mdi:robot-outline
+panel_title: hagent
+# REST access to HA Core through http://supervisor/core/api. The WebSocket
+# API (ws://supervisor/core/websocket) uses the same token.
+homeassistant_api: true
+# The link posts its address and secret to the Supervisor (POST /discovery).
+# The Supervisor lets an app post only for the services listed here.
+discovery:
+  - hagent
+# The Supervisor stops the app during a backup. SQLite in WAL mode keeps
+# recent writes in hagent.db-wal. A hot copy of the database file and the
+# WAL file can be inconsistent. A cold backup copies closed files.
+backup: cold
+options:
+  log_level: info
+  providers:
+    genai_prices_auto_update: false
+  link:
+    discovery: true
+schema:
+  log_level: list(debug|info|warning|error|critical)
+  providers:
+    openai_api_key: password?
+    openrouter_api_key: password?
+    agent_daily_budget_usd: float(0,)?
+    installation_daily_budget_usd: float(0,)?
+    genai_prices_auto_update: bool
+  link:
+    discovery: bool
+    host: str?
