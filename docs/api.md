@@ -679,8 +679,7 @@ The default comes from the options `knowledge.embedding_provider`,
 that the user selects replaces the default.
 
 Other options of the `knowledge` section: `max_upload_bytes`,
-`default_size_limit`, `index_entries` (index entries of each store in the
-turn context, 50 by default), `max_vector_distance` (the cosine distance
+`default_size_limit`, `max_vector_distance` (the cosine distance
 above which a vector match is not a result, 0.75 by default; the right
 value depends on the model), `embed_batch_size`, `embed_retry_seconds` and
 `load_sqlite_vec`.

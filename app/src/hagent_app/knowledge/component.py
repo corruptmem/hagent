@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -22,7 +22,11 @@ from hagent_app.http.errors import ApiError
 from hagent_app.http.events import ChangeEvents
 from hagent_app.knowledge import vectors
 from hagent_app.knowledge.config import KnowledgeConfig
-from hagent_app.knowledge.context import TurnContext, build_turn_context
+from hagent_app.knowledge.context import (
+    DEFAULT_INDEX_ENTRIES,
+    TurnContext,
+    build_turn_context,
+)
 from hagent_app.knowledge.embedder import Embedder, EmbeddingModel, parse_provider
 from hagent_app.knowledge.entities import EntityCatalog
 from hagent_app.knowledge.history import HistoryIndex
@@ -69,6 +73,7 @@ class KnowledgeComponent:
         self.catalog: EntityCatalog | None = None
         self.tools_store = _ToolsStore(self)
         self.entity_search = _EntitySearch(self)
+        self.history_index = _TurnIndex(self)
 
     def service(self) -> KnowledgeService:
         """The running service. Raise ``ApiError`` 503 before start."""
@@ -145,10 +150,12 @@ class KnowledgeComponent:
         except Exception:
             _LOG.exception("cannot build the entity catalogue")
 
-    async def turn_context(self, definition: AgentDefinition) -> TurnContext:
-        """The knowledge part of an agent turn, with the configured index size."""
+    async def turn_context(
+        self, definition: AgentDefinition, index_entries: int = DEFAULT_INDEX_ENTRIES
+    ) -> TurnContext:
+        """The knowledge part of an agent turn (design sections 9.5, 13.4)."""
         return await build_turn_context(
-            self.service(), definition, index_entries=self.config.index_entries
+            self.service(), definition, index_entries=index_entries
         )
 
     # ---------------------------------------------------------- settings
@@ -255,9 +262,11 @@ class _ToolsStore:
         return await _running(self._component).read(store_id, path, section)
 
     async def search(
-        self, store_ids: Sequence[str], query: str, limit: int
+        self, store_ids: Sequence[str], query: str, limit: int, *, agent_id: str
     ) -> list[dict[str, Any]]:
-        return await _running(self._component).search(store_ids, query, limit)
+        return await _running(self._component).search(
+            store_ids, query, limit, agent_id=agent_id
+        )
 
     async def write(  # noqa: PLR0913
         self,
@@ -302,3 +311,36 @@ class _EntitySearch:
             msg = "the entity catalogue is not running"
             raise RuntimeError(msg)
         return await catalog.rank_entities(query, entity_ids, limit)
+
+
+def _history(component: KnowledgeComponent) -> HistoryIndex:
+    history = component.history
+    if history is None:
+        msg = "the history index is not running"
+        raise ToolUnavailableError(msg)
+    return history
+
+
+class _TurnIndex:
+    """The ``HistoryIndex`` of ``turns/history.py`` that ``TurnHistory`` gets
+    at build time. It forwards to the running history index."""
+
+    def __init__(self, component: KnowledgeComponent) -> None:
+        self._component = component
+
+    async def index_history(self, agent_id: str, record: Mapping[str, Any]) -> None:
+        await _history(self._component).index_history(agent_id, record)
+
+    async def index_conversation(
+        self, agent_id: str, conversation_id: str, record: Mapping[str, Any]
+    ) -> None:
+        await _history(self._component).index_conversation(
+            agent_id, conversation_id, record
+        )
+
+    async def search_history(
+        self, agent_id: str, query: str, filters: Mapping[str, Any], limit: int
+    ) -> list[dict[str, Any]]:
+        return await _history(self._component).search_history(
+            agent_id, query, filters, limit
+        )

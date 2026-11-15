@@ -62,9 +62,13 @@ class KnowledgeStore(Protocol):
         ...
 
     async def search(
-        self, store_ids: Sequence[str], query: str, limit: int
+        self, store_ids: Sequence[str], query: str, limit: int, *, agent_id: str
     ) -> list[dict[str, Any]]:
-        """Hybrid search across the named stores only."""
+        """Hybrid search across the named stores only.
+
+        ``agent_id`` is the invocation agent. The query embedding counts
+        towards its budget.
+        """
         ...
 
     async def write(  # noqa: PLR0913

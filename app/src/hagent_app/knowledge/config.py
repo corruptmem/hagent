@@ -15,8 +15,7 @@ class KnowledgeConfig:
     with ``PUT /api/knowledge/settings``. An empty ``embedding_model`` turns
     vector search off, so search uses keywords only.
     ``max_vector_distance`` drops vector matches that are too far from the
-    query. ``index_entries`` is the number of index entries of each store in
-    the turn context.
+    query.
     """
 
     embedding_provider: str = "openai"
@@ -24,7 +23,6 @@ class KnowledgeConfig:
     embedding_dimensions: int | None = None
     default_size_limit: int = DEFAULT_SIZE_LIMIT
     max_upload_bytes: int = 25_000_000
-    index_entries: int = 50
     embed_batch_size: int = 64
     embed_retry_seconds: float = 60.0
     load_sqlite_vec: bool = True

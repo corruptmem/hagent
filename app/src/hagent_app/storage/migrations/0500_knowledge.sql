@@ -80,6 +80,7 @@ CREATE TABLE search_passages (
     content_hash TEXT NOT NULL,
     charge_agent_id TEXT,
     source TEXT,
+    source_key TEXT,
     record_type TEXT,
     at TEXT,
     CHECK (collection != 'knowledge' OR store_id IS NOT NULL)

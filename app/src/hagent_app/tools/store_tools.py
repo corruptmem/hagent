@@ -198,7 +198,7 @@ class KnowledgeSearch(Tool):
 
     async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
         ids, query, limit = prepared.payload
-        return await _knowledge(env).search(ids, query, limit)
+        return await _knowledge(env).search(ids, query, limit, agent_id=ctx.agent.id)
 
 
 class KnowledgeWriteArgs(Args):

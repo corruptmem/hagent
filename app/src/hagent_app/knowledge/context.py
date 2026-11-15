@@ -87,13 +87,14 @@ async def build_turn_context(
 
 def render(stores: list[StoreContext]) -> str:
     """The text form of the turn context."""
-    lines = ["## Knowledge stores", ""]
+    lines = ["# Knowledge stores", "", "## Stores", ""]
     for s in stores:
         description = " ".join(s.description.split()) or "(no description)"
         lines.append(f"- {s.name} (id {s.store_id}, {s.access}): {description}")
     lines += ["", "## Store index", ""]
     for s in stores:
         lines.append(f"### {s.name}")
+        lines.append(f"{s.total_entries} entries.")
         if not s.total_entries:
             lines.append("(empty)")
         lines.extend(f"- {path}" for path in s.entries)

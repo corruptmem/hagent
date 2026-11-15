@@ -44,8 +44,11 @@ MAX_QUERY_WORDS = 32
 _WORD = re.compile(r"\w+", re.UNICODE)
 
 type Collection = Literal["knowledge", "history", "conversation", "entity"]
-# Returns (model key, query vector), or raises when the provider fails.
-type QueryEmbedder = Callable[[str], Awaitable[tuple[str, list[float]] | None]]
+# Takes the query and the agent to charge (None: the installation). Returns
+# (model key, query vector), or raises when the provider fails.
+type QueryEmbedder = Callable[
+    [str, str | None], Awaitable[tuple[str, list[float]] | None]
+]
 
 
 def content_hash(text: str) -> str:
@@ -107,8 +110,8 @@ class Scope:
             )
             params.append(json.dumps(list(self.source_ids or ())))
         if self.source is not None:
-            clauses.append("p.source = ?")
-            params.append(self.source)
+            clauses.append("(p.source = ? OR p.source_key = ?)")
+            params += [self.source, self.source]
         if self.record_types is not None:
             clauses.append("p.record_type IN (SELECT value FROM json_each(?))")
             params.append(json.dumps(list(self.record_types)))
@@ -163,6 +166,7 @@ class IndexEntry:
     source: str | None = None
     record_type: str | None = None
     at: str | None = None
+    source_key: str | None = None
 
 
 def replace_source(
@@ -173,7 +177,8 @@ def replace_source(
     conn.executemany(
         "INSERT INTO search_passages (collection, store_id, agent_id, source_id, "
         "title, heading, page, ordinal, text, content_hash, charge_agent_id, "
-        "source, record_type, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "source, record_type, at, source_key) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
             (
                 entry.collection,
@@ -190,6 +195,7 @@ def replace_source(
                 entry.source,
                 entry.record_type,
                 entry.at,
+                entry.source_key,
             )
             for p in passages
             if p.text.strip()
@@ -222,8 +228,19 @@ class SearchIndex:
         """True if sqlite-vec loaded."""
         return self.vector_reason is None
 
-    async def search(self, scope: Scope, query: str, limit: int) -> SearchResult:
-        """Search the passages in ``scope``. Rank them with RRF."""
+    async def search(
+        self,
+        scope: Scope,
+        query: str,
+        limit: int,
+        *,
+        charge_agent_id: str | None = None,
+    ) -> SearchResult:
+        """Search the passages in ``scope``. Rank them with RRF.
+
+        The query embedding counts towards ``charge_agent_id``, or towards
+        the installation if it is ``None``.
+        """
         depth = max(limit * 4, 20)
         vector: tuple[str, list[float]] | None = None
         reason = self.vector_reason
@@ -232,7 +249,7 @@ class SearchIndex:
                 reason = "no embedding model is set"
             else:
                 try:
-                    vector = await self.embed_query(query)
+                    vector = await self.embed_query(query, charge_agent_id)
                 except Exception as err:
                     _LOG.warning("query embedding failed: %s", err)
                     reason = f"the embedding provider failed: {err}"

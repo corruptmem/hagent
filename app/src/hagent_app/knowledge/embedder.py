@@ -93,6 +93,9 @@ class Embedder:
         self._model: EmbeddingModel | None = None
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
+        # Counts wake calls, so that a drain that started before a wake does
+        # not report the queue as idle.
+        self._wakes = 0
         self._task: asyncio.Task[None] | None = None
         self._query_cache: dict[tuple[str, str], list[float]] = {}
         self.last_error: str | None = None
@@ -132,6 +135,7 @@ class Embedder:
 
     def wake(self) -> None:
         """Tell the task that new passages wait."""
+        self._wakes += 1
         self._idle.clear()
         self._wake.set()
 
@@ -139,8 +143,13 @@ class Embedder:
         """Wait until the queue is empty or the provider failed (for tests)."""
         await self._idle.wait()
 
-    async def embed_query(self, text: str) -> tuple[str, list[float]] | None:
-        """The vector of a search query. Charged to the installation."""
+    async def embed_query(
+        self, text: str, agent_id: str | None = None
+    ) -> tuple[str, list[float]] | None:
+        """The vector of a search query. Charge it to ``agent_id``.
+
+        A query that is in the cache costs nothing.
+        """
         model = self._model
         client = self._client()
         if model is None or client is None or not self._index.vectors_loaded:
@@ -152,7 +161,7 @@ class Embedder:
                 model.provider,
                 model.model,
                 [text],
-                agent_id=None,
+                agent_id=agent_id,
                 dimensions=model.dimensions,
             )
             cached = result.vectors[0]
@@ -182,6 +191,7 @@ class Embedder:
         while True:
             await self._wake.wait()
             self._wake.clear()
+            wakes = self._wakes
             try:
                 await self._drain()
             except asyncio.CancelledError:
@@ -193,7 +203,8 @@ class Embedder:
                 await asyncio.sleep(self._retry)
                 self._wake.set()
                 continue
-            self._idle.set()
+            if wakes == self._wakes:
+                self._idle.set()
 
     def _batch_reader(
         self, key: str

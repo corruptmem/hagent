@@ -476,12 +476,12 @@ async def test_turn_context_lists_stores_index_and_main_files(tmp_path: Path) ->
 
 
 async def test_turn_context_index_size_option(tmp_path: Path) -> None:
-    async with knowledge_env(tmp_path, options={"index_entries": 2}) as k:
+    async with knowledge_env(tmp_path) as k:
         sid = await _store(k, "few")
         for name in ("c.md", "a.md", "b.md"):
             await k.service.put_file(sid, name, "x", None)
         agent = await k.agent("Reader", [{"store_id": sid}])
-        context = await k.component.turn_context(agent.definition)
+        context = await k.component.turn_context(agent.definition, 2)
         store = next(s for s in context.stores if s.store_id == sid)
         assert store.entries == ("a.md", "b.md")
         assert "- ... 1 more (3 entries in total" in context.text

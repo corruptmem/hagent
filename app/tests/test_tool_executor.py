@@ -444,7 +444,9 @@ async def test_knowledge_search_passes_only_attached_stores(h: Harness) -> None:
     assert agent.private_store is not None
     result = await h.call(agent, "knowledge.search", {"query": "boiler"})
     assert result.ok, result.error
-    assert h.knowledge.calls == [("search", (agent.private_store.id,), "boiler")]
+    assert h.knowledge.calls == [
+        ("search", (agent.private_store.id,), "boiler", agent.id)
+    ]
     result = await h.call(
         agent,
         "knowledge.write",

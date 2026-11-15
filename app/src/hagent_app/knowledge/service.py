@@ -690,10 +690,10 @@ class KnowledgeService:
         return await self._db.run(lambda c: _read(c, store_id, path, section))
 
     async def search(
-        self, store_ids: Sequence[str], query: str, limit: int
+        self, store_ids: Sequence[str], query: str, limit: int, *, agent_id: str
     ) -> list[dict[str, Any]]:
-        """Hybrid search across the named stores only."""
-        result = await self.search_stores(store_ids, query, limit)
+        """Hybrid search across the named stores only, for an agent."""
+        result = await self.search_stores(store_ids, query, limit, agent_id=agent_id)
         names = {s["id"]: s["name"] for s in await self.describe(store_ids)}
         hits = []
         for hit in result.hits:
@@ -708,11 +708,20 @@ class KnowledgeService:
         return hits
 
     async def search_stores(
-        self, store_ids: Sequence[str], query: str, limit: int
+        self,
+        store_ids: Sequence[str],
+        query: str,
+        limit: int,
+        *,
+        agent_id: str | None = None,
     ) -> SearchResult:
-        """Hybrid search across the named stores, with the search mode."""
+        """Hybrid search across the named stores, with the search mode.
+
+        The query embedding counts towards ``agent_id`` (``None``: the
+        installation, for a search from the management API).
+        """
         scope = Scope(("knowledge",), store_ids=tuple(store_ids))
-        return await self.index.search(scope, query, limit)
+        return await self.index.search(scope, query, limit, charge_agent_id=agent_id)
 
     async def write(  # noqa: PLR0913
         self,
