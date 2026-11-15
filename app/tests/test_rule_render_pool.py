@@ -22,6 +22,7 @@ from hagent_app.rules.templates import (
     TemplateClock,
     TemplateEngine,
     TemplateError,
+    check_template,
     plain_data,
     render_sync,
 )
@@ -129,6 +130,32 @@ def test_l1_integer_multiplication_has_a_size_limit() -> None:
         sync(source)
     assert time.monotonic() - started < 0.5
     assert sync("{{ 6 * 7 }}") == "42"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "{{ ('" + "a" * 40 + "!') is match('(a+)+$') }}",
+        "{{ '" + "a" * 40 + "!' | regex_search('(a+)+$') }}",
+        "{% if ('" + "a" * 40 + "!') is search('(a+)+$') %}x{% endif %}",
+    ],
+)
+def test_the_check_never_runs_template_code(source: str) -> None:
+    """Found while testing backtests: Jinja's optimizer and constant output
+    folding ran filters and tests at compile time, so ``check_template``
+    (in the app process, at ``self.create``) ran a backtracking regex."""
+    started = time.monotonic()
+    check_template(source)
+    assert time.monotonic() - started < 0.5
+
+
+def test_autoescape_is_refused() -> None:
+    with pytest.raises(TemplateError, match="not supported"):
+        check_template("{% autoescape 'a' is match('a') %}x{% endautoescape %}")
+
+
+def test_constant_output_still_renders() -> None:
+    assert sync('a{{ 1 }}b{{ "x" }}{{ 2 + 3 }}{{ "%3d" % 4 }}') == "a1bx5  4"
 
 
 def test_plain_data_holds_no_objects_with_methods() -> None:

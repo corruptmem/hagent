@@ -150,7 +150,7 @@ def serve(inp: BinaryIO, out: BinaryIO, memory: int) -> None:
         try:
             text = render_sync(
                 view,
-                TemplateClock(tz_from_key(request["tz"])),
+                TemplateClock(tz_from_key(request["tz"]), request["at"]),
                 seconds,
                 request["source"],
                 request["variables"],

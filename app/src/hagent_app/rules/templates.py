@@ -869,7 +869,24 @@ _KEEP_GLOBALS = frozenset({"dict", "namespace", "range"})
 # -------------------------------------------------------------- the sandbox
 
 
-class _CodeGenerator(CodeGenerator):
+class _NoFolding(CodeGenerator):
+    """A code generator that never runs template code at compile time.
+
+    Jinja computes a constant ``{{ }}`` value at compile time, also when it
+    calls a filter or a test (``{{ 'aaa!' is match('(a+)+$') }}``). That
+    call would run outside the time limit, and in the app process when
+    ``check_template`` runs. Only literal text and constants fold here.
+    """
+
+    def _output_child_to_const(
+        self, node: nodes.Expr, frame: Frame, finalize: Any
+    ) -> str:
+        if not isinstance(node, (nodes.TemplateData, nodes.Const)):
+            raise nodes.Impossible
+        return str(super()._output_child_to_const(node, frame, finalize))
+
+
+class _CodeGenerator(_NoFolding):
     """Compiles ``~`` to a join with a size check."""
 
     def visit_Concat(self, node: nodes.Concat, frame: Frame) -> None:  # noqa: N802
@@ -965,19 +982,40 @@ class TemplateClock:
 
     Without it (HA is down after an app start), ``now()`` uses the local
     time zone of the app.
+
+    ``at`` fixes the time, for example to the time of a past invocation in a
+    backtest. The clock is plain data (a time zone and a time), so that the
+    render pool can send it to a worker process.
     """
 
     tz: tzinfo | None = None
+    at: datetime | None = None
 
     def now(self) -> datetime:
-        """The current time in the HA time zone."""
+        """The current time (or ``at``) in the HA time zone."""
+        moment = self.utcnow()
         if self.tz is None:
-            return datetime.now().astimezone()
-        return datetime.now(self.tz)
+            return moment.astimezone()
+        return moment.astimezone(self.tz)
+
+    def utcnow(self) -> datetime:
+        """The current time (or ``at``) in UTC."""
+        if self.at is None:
+            return datetime.now(UTC)
+        return self.at.astimezone(UTC)
 
 
 def _make_env() -> _Sandbox:
-    env = _Sandbox(autoescape=False, keep_trailing_newline=False, finalize=_finalize)
+    # optimized=False: Jinja's optimizer computes constant expressions at
+    # compile time. It would run filters and tests (for example a regular
+    # expression that backtracks) outside the time limit, and in the app
+    # process at check time.
+    env = _Sandbox(
+        autoescape=False,
+        keep_trailing_newline=False,
+        finalize=_finalize,
+        optimized=False,
+    )
     for name in list(env.filters):
         if name not in _KEEP_FILTERS:
             del env.filters[name]
@@ -1081,7 +1119,7 @@ def _bound(view: ScopedStates, clock: TemplateClock) -> tuple[dict[str, Any], ..
         return clock.now()
 
     def utcnow() -> datetime:
-        return datetime.now(UTC)
+        return clock.utcnow()
 
     def as_local(value: datetime) -> datetime:
         if clock.tz is None:
@@ -1215,6 +1253,19 @@ KNOWN_FILTERS = frozenset(_ENV.filters)
 KNOWN_TESTS = frozenset(_ENV.tests)
 
 
+class _NameTracker(meta.TrackingCodeGenerator, _NoFolding):
+    """``meta.find_undeclared_variables`` with no constant folding.
+
+    The Jinja version runs the optimizer, which calls filters and tests
+    with constant arguments. ``check_template`` runs in the app process, so
+    it must never run template code.
+    """
+
+    def __init__(self, environment: Any) -> None:
+        super().__init__(environment)
+        self.optimizer = None
+
+
 def check_template(source: str, variables: Iterable[str] = VARIABLES) -> None:
     """Raise ``TemplateError`` if the template is outside the subset.
 
@@ -1237,6 +1288,8 @@ def check_template(source: str, variables: Iterable[str] = VARIABLES) -> None:
         nodes.Extends,
         nodes.Macro,
         nodes.CallBlock,
+        # {% autoescape expr %} computes expr at compile time.
+        nodes.EvalContextModifier,
     )
     for stmt in tree.find_all(blocked):
         msg = f"the template statement {type(stmt).__name__.lower()} is not supported"
@@ -1251,7 +1304,9 @@ def check_template(source: str, variables: Iterable[str] = VARIABLES) -> None:
             raise TemplateError(msg)
     allowed = KNOWN_GLOBALS | frozenset(variables)
     try:
-        undeclared = meta.find_undeclared_variables(tree)
+        tracker = _NameTracker(_ENV)
+        tracker.visit(tree)
+        undeclared = tracker.undeclared_identifiers
     except TemplateSyntaxError as err:
         msg = f"template error: {err.message}"
         raise TemplateError(msg) from err

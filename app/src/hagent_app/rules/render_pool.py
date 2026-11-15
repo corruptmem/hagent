@@ -232,6 +232,7 @@ class RenderPool:
         request = {
             "view_token": view.token,
             "tz": tz_key(clock.tz),
+            "at": clock.at,
             "seconds": seconds,
             "source": source,
             "variables": plain_data(dict(variables)),

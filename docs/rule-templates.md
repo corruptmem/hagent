@@ -173,6 +173,16 @@ limit:
   the variables. The worker answers with JSON. A worker that a template
   took over therefore cannot send code to the app.
 - The worker needs neither HA nor the internet.
+- Backtests and trials (task-14) use the same pool. The fixed clock of a
+  backtest (`now()` and `utcnow()` at the time of the past invocation) is
+  plain data, so the worker gets it too.
+
+The template check at create time (`check_template`) runs in the app
+process. It never runs template code: the sandbox turns off Jinja's
+optimizer, and it computes a constant `{{ }}` value at compile time only
+for literal text and constants. Thus a filter or a test with constant
+arguments runs only in a worker. The check refuses `{% autoescape %}`,
+because Jinja computes its argument at compile time.
 
 When a render fails for any of these reasons, the rule records
 `rule_error`, and the invocation goes on to an agent turn.
