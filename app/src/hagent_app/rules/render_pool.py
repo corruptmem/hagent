@@ -18,6 +18,9 @@ Terms:
 - **Worker**: one template worker process.
 - **Pool**: up to ``RENDER_WORKERS`` workers. Each render takes an idle
   worker or starts a new one. A worker that failed is not used again.
+- **Owner**: the agent of a render. One owner can use at most
+  ``per_owner`` workers at a time, so that one agent with parallel
+  invocations cannot hold all the workers.
 
 The pool does its blocking work in its own threads. It does not depend on
 one event loop, so the app can share one pool.
@@ -32,13 +35,14 @@ import json
 import logging
 import os
 import pickle
-import select
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from select import POLLIN
+from select import poll as select_poll
 from typing import Any
 
 from hagent_app.rules.render_worker import MAX_REPLY, frame
@@ -133,8 +137,10 @@ class _Worker:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
-            ready, _, _ = select.select([fd], [], [], remaining)
-            if not ready:
+            # poll, not select: select fails for a descriptor above 1023.
+            poller = select_poll()
+            poller.register(fd, POLLIN)
+            if not poller.poll(remaining * 1000):
                 return None
             chunk = os.read(fd, 1 << 16)
             if not chunk:
@@ -165,7 +171,7 @@ class _Worker:
 class RenderPool:
     """Renders rule templates in worker processes with hard limits."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - keyword-only limits
         self,
         size: int = RENDER_WORKERS,
         *,
@@ -173,8 +179,12 @@ class RenderPool:
         grace: float = GRACE_SECONDS,
         start_seconds: float = START_SECONDS,
         queue_seconds: float = QUEUE_SECONDS,
+        per_owner: int | None = None,
     ) -> None:
         self.size = size
+        self.per_owner = per_owner or max(1, size // 2)
+        self._owners: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Semaphore]]
+        self._owners = {}
         self._memory = memory
         self._grace = grace
         self._start_seconds = start_seconds
@@ -188,7 +198,30 @@ class RenderPool:
         self.started = 0
         self.killed = 0
 
-    async def render(
+    async def render(  # noqa: PLR0913 - owner is keyword-only
+        self,
+        view: ScopedStates,
+        clock: TemplateClock,
+        seconds: float,
+        source: str,
+        variables: Mapping[str, Any],
+        *,
+        owner: str = "",
+    ) -> str:
+        """Render one template in a worker. Raise ``TemplateError``."""
+        async with self._owner_slot(owner):
+            return await self._render(view, clock, seconds, source, variables)
+
+    def _owner_slot(self, owner: str) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            entry = self._owners.get(owner)
+            if entry is None or entry[0] is not loop:
+                entry = (loop, asyncio.Semaphore(self.per_owner))
+                self._owners[owner] = entry
+            return entry[1]
+
+    async def _render(
         self,
         view: ScopedStates,
         clock: TemplateClock,
@@ -196,7 +229,6 @@ class RenderPool:
         source: str,
         variables: Mapping[str, Any],
     ) -> str:
-        """Render one template in a worker. Raise ``TemplateError``."""
         request = {
             "view_token": view.token,
             "tz": tz_key(clock.tz),

@@ -144,7 +144,8 @@ The app renders each template in a separate worker process
 limit:
 
 - The pool has up to 4 workers. A render takes an idle worker or starts a
-  new one.
+  new one. One agent can use at most 2 workers at a time, so that an agent
+  with parallel invocations cannot hold all the workers.
 - The app kills a worker that does not answer within the time limit plus
   0.5 seconds, and starts a new one for the next render. This also stops
   one slow call in C, for example a regular expression that backtracks.

@@ -1413,13 +1413,15 @@ class TemplateEngine:
     """Renders rule templates against one scoped state view.
 
     ``pool`` is the render pool. ``None`` selects the shared pool of the app
-    process (``render_pool.shared_pool``).
+    process (``render_pool.shared_pool``). ``owner`` is the agent ID. The
+    pool limits the workers that one owner uses at a time.
     """
 
     view: ScopedStates
     clock: TemplateClock = TemplateClock()
     seconds: float = RENDER_SECONDS
     pool: RenderPool | None = None
+    owner: str = ""
 
     def _render_sync(self, source: str, variables: Mapping[str, Any]) -> str:
         """Render in this process, with the in-process limits only."""
@@ -1431,7 +1433,9 @@ class TemplateEngine:
         from hagent_app.rules.render_pool import shared_pool  # noqa: PLC0415
 
         pool = self.pool or shared_pool()
-        return await pool.render(self.view, self.clock, self.seconds, source, variables)
+        return await pool.render(
+            self.view, self.clock, self.seconds, source, variables, owner=self.owner
+        )
 
     async def render_value(self, source: str, variables: Mapping[str, Any]) -> Any:
         """Render a template and parse the text into a native value."""

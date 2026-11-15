@@ -174,17 +174,38 @@ async def test_m1_a_stuck_c_call_is_killed_and_the_pool_recovers(
     pool: RenderPool,
 ) -> None:
     """Review probes p6 and p7: stuck renders must not hold the pool."""
-    engine = TemplateEngine(ScopedStates(), TemplateClock(), 0.2, pool=pool)
+    view, clock = ScopedStates(), TemplateClock()
     started = time.monotonic()
     results = await asyncio.gather(
-        *(engine.render(STUCK, {}) for _ in range(5)), return_exceptions=True
+        *(
+            TemplateEngine(view, clock, 0.2, pool=pool, owner=f"a{i}").render(STUCK, {})
+            for i in range(5)
+        ),
+        return_exceptions=True,
     )
     assert all(isinstance(r, TemplateError) for r in results)
     assert all("took longer" in str(r) for r in results)
     assert pool.killed == 5
+    engine = TemplateEngine(view, clock, 0.2, pool=pool)
     assert await engine.render("{{ 1 + 1 }}", {}) == "2"
     # Five kills in three rounds of two workers, about 0.7 s each.
     assert time.monotonic() - started < 6
+
+
+async def test_m1_one_agent_cannot_hold_every_worker(pool: RenderPool) -> None:
+    """Review finding M1: an agent with parallel invocations gets at most
+    ``per_owner`` workers, so that another agent still renders."""
+    assert pool.per_owner == 1
+    view, clock = ScopedStates(), TemplateClock()
+    greedy = TemplateEngine(view, clock, 0.3, pool=pool, owner="agent-a")
+    other = TemplateEngine(view, clock, 0.3, pool=pool, owner="agent-b")
+    stuck = [asyncio.create_task(greedy.render(STUCK, {})) for _ in range(2)]
+    await asyncio.sleep(0.1)
+    started = time.monotonic()
+    assert await other.render("{{ 1 + 1 }}", {}) == "2"
+    assert time.monotonic() - started < 0.5
+    results = await asyncio.gather(*stuck, return_exceptions=True)
+    assert all(isinstance(r, TemplateError) for r in results)
 
 
 async def test_h1_the_worker_ends_an_escaped_render(pool: RenderPool) -> None:

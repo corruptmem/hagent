@@ -240,7 +240,9 @@ class RuleEngine:
         executor = self._executor().without_approval()
         env = executor.env
         view = self.scoped_states(agent, env.states, env.registry.last())
-        engine = TemplateEngine(view, self._clock(), self._render_seconds)
+        engine = TemplateEngine(
+            view, self._clock(), self._render_seconds, owner=agent.id
+        )
         ctx = ToolContext(agent, invocation_id=request.invocation_id)
         variables: dict[str, Any] = {
             "source": request.request.source,
