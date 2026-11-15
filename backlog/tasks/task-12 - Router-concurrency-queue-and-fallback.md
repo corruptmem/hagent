@@ -1,11 +1,11 @@
 ---
 id: TASK-12
 title: 'Router, concurrency queue and fallback'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:58'
+updated_date: '2026-11-15 01:00'
 labels:
   - app
 dependencies:
@@ -86,6 +86,8 @@ AC evidence (app/tests/test_router.py unless noted):
 #5 test_crash_resumes_queued_and_fails_running, test_stop_fails_running_and_keeps_queued.
 #6 test_every_invocation_records_path_result_and_versions, test_cost_links_provider_calls_and_chat_retries (real Meter: 2 error rows + 1 ok row linked by invocation_id, cost 0.0012 USD).
 Test endpoint: app/tests/test_router_test_api.py (5 tests, FakeHA receives no call_service).
+
+Lead: merged with tasks 11 and 16; the StateOverlay now passes ready/stale from the base cache, so dry runs keep the states_unavailable check.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
