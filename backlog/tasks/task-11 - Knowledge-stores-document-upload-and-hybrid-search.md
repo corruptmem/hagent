@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:43'
+updated_date: '2026-11-15 00:49'
 labels:
   - app
   - knowledge
@@ -36,7 +36,7 @@ Design: docs/design.md sections 13, 13.3 and 13.4.
 - [x] #4 knowledge.search, memory.search and ha.find_entities return hybrid-ranked results limited to the agent's access and scope
 - [x] #5 Embeddings run in a background queue, deduplicated by content hash; a model change re-indexes
 - [x] #6 Search falls back to keyword-only when sqlite-vec or the embedding provider is unavailable
-- [ ] #7 Each turn includes store descriptions, a name-sorted index (50 entries by default) and injected main files
+- [x] #7 Each turn includes store descriptions, a name-sorted index (50 entries by default) and injected main files
 <!-- AC:END -->
 
 ## Implementation Plan
@@ -79,10 +79,21 @@ Evidence (mise run check: ruff, mypy strict, 416 pytest passed, frontend 20 pass
 - AC6: test_keyword_only_without_a_model, test_keyword_only_when_sqlite_vec_is_off, test_keyword_only_when_the_provider_fails, test_load_failure_gives_a_reason.
 - AC7 (builder only): test_turn_context_lists_stores_index_and_main_files, test_turn_context_index_size_option.
 Open: task-10 wires HistoryIndex into its HistoryStore and turn_context into the prompt. The status sensor (design 13.3) can read GET api/knowledge/status. Proposed follow-up (not created): give KnowledgeStore.search the agent ID, so that query embeddings count towards the agent budget.
+
+Second round (lead request, merge commit 8c07289):
+- Merged impl (task-10). Conflicts in app.py, app/pyproject.toml and test_http_server.py are resolved. The order is tools, knowledge, turns.
+- turns.history.index = knowledge.history_index. HistoryIndex implements the protocol of turns/history.py (index_history, index_conversation, search_history). Migration 0500 (not merged yet) gets a source_key column, so the source filter matches the source or the source key, as in the fallback of task-10.
+- turns.knowledge_context = knowledge.turn_context. PromptBuilder uses it for part 3 when it is set, with turns.index_max_entries as the index size. It also derives the main file requests from it. If the call fails, the builder falls back to the executor path. The knowledge option index_entries is removed, so that only one option sets the index size.
+- KnowledgeStore.search now takes agent_id (tools/stores.py, store_tools.py, FakeKnowledge, a fake in test_turns.py). Query embeddings of knowledge.search and memory.search count towards the invocation agent. Searches from the management API count towards the installation.
+- Fixed an embedder race: a drain that started before a wake no longer reports idle.
+Evidence (mise run check: 447 pytest passed, frontend 20 passed):
+- AC7: test_knowledge_turns.py::test_each_turn_includes_stores_index_and_main_files. A real TurnRunner turn has the store list, a 50-entry name-sorted index with the total, the injected private MAIN.md (no shared one), the design 9.5 order, identical instructions across turns, and a main file request. Also test_turn_index_size_comes_from_the_turns_option and test_knowledge_off_leaves_the_stores_out.
+- memory.search end to end: test_memory_search_finds_indexed_turns_through_the_executor. TurnRunner turns are indexed (not dry runs). memory.search through the executor finds the agent's turn by vector, never another agent's turn, and charges the query to the agent.
+- Agent charge: test_knowledge_search_charges_the_query_to_the_agent. Wiring: test_default_components_wire_the_knowledge_into_turns.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Built the knowledge package: knowledge stores (create, describe, size limit, shared attachments), files with version checks and a change history with authors and restore, document upload (PDF text layer, Markdown, text, HTML) with extraction, splitting and indexing, and hybrid search (FTS5 plus sqlite-vec BLOB vectors, merged with RRF, with a distance cutoff and a keyword-only fallback). Also a background embedding queue (one embedding per content hash and model, a re-index on a model change, charges to the agent or the installation), the HA entity catalogue for ha.find_entities, a history index for task-10, the turn-context builder, and the /api/knowledge management routes. Verified with mise run check (416 Python tests, front-end checks). AC1 to AC6 are checked. AC7 is unchecked: the builder is tested, but task-10 must include it in each turn.
+Built the knowledge package: knowledge stores (create, describe, size limit, shared attachments), files with version checks and a change history with authors and restore, document upload (PDF text layer, Markdown, text, HTML), and hybrid search (FTS5 plus sqlite-vec BLOB vectors, merged with RRF, with a distance cutoff and a keyword-only fallback). Also a background embedding queue (one embedding per content hash and model, a re-index on a model change), the HA entity catalogue for ha.find_entities, and the /api/knowledge management routes. After the task-10 merge, each agent turn includes the knowledge context from KnowledgeComponent.turn_context, the turn history indexes turns for memory.search, and query embeddings count towards the invocation agent. Verified with mise run check (447 Python tests, front-end checks). AC1 to AC7 are checked.
 <!-- SECTION:FINAL_SUMMARY:END -->
