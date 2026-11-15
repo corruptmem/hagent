@@ -1,11 +1,11 @@
 ---
 id: TASK-13
 title: 'Rule engine: sandboxed HA templates, decision actions, context and cache'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:21'
+updated_date: '2026-11-15 02:23'
 labels:
   - app
   - rules
@@ -142,6 +142,8 @@ New finding (not in the review): Jinja's optimizer, and its constant folding of 
 Residual: the per-agent cap does not separate backtests from live rules. Backtests of several agents can use all 4 workers for a short time. Each render ends within the time limit plus 0.5 s, so this causes a delay, not a stall.
 
 Validation: mise run check passes (1085 app tests, integration tests, frontend checks).
+
+Lead: an independent review found 3 high, 2 medium and 2 low issues (sandbox resource limits, cache scope). task-13-fix fixed all seven: templates render in a worker process with hard memory, CPU and time limits, and the cache key holds a scope digest. It also found and fixed an event-loop ReDoS through Jinja constant folding at create time. Residual: the worker has no filesystem/seccomp sandbox.
 <!-- SECTION:NOTES:END -->
 
 ## Comments

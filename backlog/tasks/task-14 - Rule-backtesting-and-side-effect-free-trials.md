@@ -1,11 +1,11 @@
 ---
 id: TASK-14
 title: Rule backtesting and side-effect-free trials
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 02:07'
+updated_date: '2026-11-15 02:23'
 labels:
   - app
   - rules
@@ -87,6 +87,8 @@ AC evidence (app/tests/test_backtest.py):
 - AC3: test_a_trial_turn_writes_nothing_and_compares (dry_run turn, no call_service), test_a_trial_counts_towards_the_budget_of_the_agent, test_a_spent_budget_stops_trials, test_a_trial_turn_that_hits_the_budget_records_it, test_trials_follow_the_sample_rate, test_one_trial_at_a_time_for_each_rule, test_stop_cancels_running_trials.
 - AC4: test_each_invocation_keeps_its_inputs_and_full_states, test_records_keep_the_context_that_a_rule_collects, test_retention_deletes_only_old_records, test_retention_never_drops_below_the_backtest_window, test_history_from_before_records_uses_the_turn_input.
 - Scope: test_an_out_of_scope_history_item_never_reaches_ha; CASES self.backtest_rule not_owner and tool_off; test_the_rule_routes_keep_agents_apart.
+
+Lead: backtests and trials use the hardened render pool after task-13-fix (regression tests through a backtest and a trial).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
