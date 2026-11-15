@@ -22,6 +22,7 @@ SIGINT.
 | `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
 | `src/hagent_app/knowledge/` | Knowledge stores, documents, the search index, the embedding queue and the knowledge management API (task-11). See "Knowledge stores and search". |
 | `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
+| `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
@@ -401,6 +402,58 @@ catalogue is empty, the tool uses its word match.
 Tools must never receive `AgentService`. `tests/test_tools_no_writer.py`
 checks this.
 
+## Approvals
+
+`ApprovalsComponent` (`approvals/`) supplies `ToolsComponent.approval`.
+`default_components()` sets it. The executor calls the gate for each call
+that the definition marks for approval (design section 8).
+
+Terms:
+
+- **Approval request**: one held call, with a random 128-bit ID. The table
+  `approval_requests` holds it.
+- **Action event**: the `mobile_app_notification_action` event. The HA
+  Companion app fires it when a person taps an action button. Its
+  `context.user_id` is the HA user of the phone registration.
+
+Rules:
+
+- The gate returns `ApprovalOutcome`. The executor runs the call only for
+  an accepted outcome. Denial codes: `approval_rejected`,
+  `approval_timeout`, `approval_unavailable` and `approval_stale`. If the
+  invocation is cancelled during the wait, the executor records
+  `approval_cancelled` in the audit log.
+- After an accept, the gate loads the agent again. If the agent is deleted,
+  off, or has another definition version, the gate denies the call with
+  `approval_stale`. An `agents` change event also ends the pending
+  requests of that agent with status `cancelled`.
+- An answer counts only before `expires_at`, also when the wall clock
+  jumps.
+- The API trusts `X-Remote-User-Id` only from the Supervisor peer
+  (`172.30.32.2`), unless `approvals.dev_trust_user_header` is on.
+- No agent can subscribe to `call_service` events, at any level. Their
+  data holds the action IDs of approval notifications.
+- Only users in `approvals.approvers` can answer. An answer from another
+  user, from no user, or from the HA user of the app has no effect. The
+  table `approval_answers` records each answer and its outcome.
+- The app listens only to the action event. It ignores the `ios.*` events,
+  so that one tap never counts twice.
+- One conditional `UPDATE ... WHERE status = 'pending'` decides a request.
+  The first valid answer wins. A timeout, a cancel and the app stop use
+  the same statement.
+- If no notification reaches an approver, the request fails at once.
+- After a request ends, the app clears the notification on each target.
+- On start, the app expires each pending request.
+- A dry run sends no approval request. It stops before the approval hook
+  for each tool that needs approval, also for a read tool.
+
+`Notifier` is the send interface. `MobileAppNotifier` is the app-side
+implementation. The app cannot read the HA user or the webhook ID of a
+phone registration, so it uses the `person` entity of the approver and its
+mobile app device trackers, or the `notify_services` option. It refuses a
+service that does not exist, or a device name that more than one mobile app
+device has. Set `approvals.notifier` before start to use another sender,
+for example one in HA Core (task-17).
 ## How to run an agent turn
 
 The `turns` package runs agent turns (design sections 9.5, 11, 13.1 and

@@ -180,3 +180,27 @@ async def test_no_op_service_call_sends_no_event(
     await asyncio.sleep(0.05)
     assert result.context_id is not None
     assert events == []
+
+
+async def test_subscribe_during_a_drop_subscribes_after_reconnect(
+    fake_ha: FakeHA, client: HAClient
+) -> None:
+    await client.wait_connected()
+    dropped = False
+
+    async def drop_once(ha: FakeHA, _msg: dict[str, Any]) -> None:
+        nonlocal dropped
+        dropped = True
+        del ha.handlers["subscribe_events"]
+        await ha.drop()
+
+    fake_ha.handlers["subscribe_events"] = drop_once
+    seen: list[dict[str, Any]] = []
+    # The connection closes during the subscribe: the call must not raise.
+    await client.subscribe_events(seen.append, "test_event")
+    assert dropped
+    await wait_until(lambda: fake_ha.connections_accepted == 2)
+    await wait_until(lambda: bool(fake_ha.commands_of("subscribe_events")[1:]))
+    await asyncio.sleep(0.05)
+    await fake_ha.fire_event("test_event", {"n": 1})
+    await wait_until(lambda: len(seen) == 1)

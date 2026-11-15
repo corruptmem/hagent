@@ -708,6 +708,145 @@ The `ingress` section of the app options has these keys:
 | `allowed_addresses` | `["172.30.32.2"]` | The addresses and CIDR networks that can connect. Change it only for local development, for example to `["127.0.0.1"]`. |
 | `ui_dir` | `""` | The directory of the UI build. An empty value selects `frontend/dist` in the source checkout. |
 
+## Approvals
+
+An **approval request** holds one tool call that the definition marks for
+approval (design section 8). The app sends an HA notification with accept
+and reject actions to the approvers. An approver can also answer through
+this API. The first valid answer wins.
+
+The answer route needs the `X-Remote-User-Id` header. The Supervisor sets
+this header on each Ingress request to the ID of the HA user who is logged
+in. It removes a copy that the client sends. Only a user in
+`approvals.approvers` can answer. The HA user of the app token can never
+answer.
+
+The app trusts this header only when the TCP peer is the Supervisor
+address, `172.30.32.2`. From any other peer, the app ignores the header,
+and an answer gets 403 `no_user`. This applies also when
+`ingress.allowed_addresses` admits more addresses. For local development,
+the option `approvals.dev_trust_user_header` turns this check off. The app
+then logs a warning at start.
+
+### List approval requests
+
+`GET api/approvals?status=<status>&limit=<n>`
+
+Returns the newest requests first. `status` is optional. `limit` is 1 to
+500. The default is 100.
+
+```json
+{"approvals": [<approval request>], "can_answer": true}
+```
+
+`can_answer` is true when the user of the request is an approver.
+
+### Read an approval request
+
+`GET api/approvals/{id}`
+
+Returns one approval request, with `answers` and `can_answer`. `answers`
+lists every answer that the app received for the request, oldest first:
+`received_at`, `decision`, `user_id`, `via` and `outcome`. `outcome` is
+one of these:
+
+| Outcome | Meaning |
+|---|---|
+| `applied` | The answer decided the request. |
+| `late` | The request was not pending any more. The answer had no effect. |
+| `not_approver` | The HA user is not an approver. |
+| `no_user` | The answer had no HA user, for example an event from an automation. |
+| `app_user` | The answer came from the HA user of the app token. |
+
+Here `can_answer` is true only while the request is pending.
+
+### Answer an approval request
+
+`POST api/approvals/{id}/answer`
+
+```json
+{"decision": "accept"}
+```
+
+`decision` is `accept` or `reject`. The response is the changed approval
+request.
+
+Errors:
+
+| Status | Code | Cause |
+|---|---|---|
+| 400 | `invalid_body` | `decision` is not `accept` or `reject`. |
+| 403 | `no_user` | The request has no `X-Remote-User-Id` header. |
+| 403 | `not_approver` | The user is not an approver. |
+| 404 | `approval_not_found` | No request has this ID. |
+| 409 | `approval_closed` | The request is not pending. |
+
+### Approval request object
+
+```json
+{
+  "id": "<32 hex characters>",
+  "status": "pending",
+  "agent_id": "<agent ID>",
+  "agent_version": 3,
+  "invocation_id": "<invocation ID>",
+  "tool": "ha.call_service",
+  "summary": "Agent 'Heating' asks to run ha.call_service.\nServices: climate.set_temperature\nEntities: climate.<room>",
+  "request": {"domain": "climate", "service": "set_temperature"},
+  "approvers": ["<HA user ID>"],
+  "targets": ["mobile_app_<device>"],
+  "problems": [],
+  "created_at": "2026-11-15T10:00:00+00:00",
+  "expires_at": "2026-11-15T10:05:00+00:00",
+  "finished_at": null,
+  "answered_by": null,
+  "answered_via": null,
+  "reason": null
+}
+```
+
+| Status | Meaning |
+|---|---|
+| `pending` | The agent turn waits for an answer. |
+| `accepted` | An approver accepted the call. The executor runs it, if the agent is still live and on, with the same definition version. Otherwise the tool result has `approval_stale`, and `reason` says why. |
+| `rejected` | An approver rejected the call. The tool result has `approval_rejected`. |
+| `timeout` | No valid answer arrived before `expires_at`. The tool result has `approval_timeout`. |
+| `failed` | No notification reached an approver. `problems` says why. The tool result has `approval_unavailable`. |
+| `cancelled` | The agent turn stopped while it waited, or the agent changed (deleted, turned off or a new version). For an agent change, the tool result has `approval_stale`. |
+| `expired` | The app stopped or restarted while the request was pending. |
+
+- `summary` is the notification text. It names only the checked services
+  and entities, never free-form service data. For `ha.admin_change`, it
+  also names the command type and the ID fields of the command
+  (`entity_id`, `device_id`, `area_id`, `floor_id`, `label_id`,
+  `dashboard_id`, `url_path` and `<helper domain>_id`) when the value is a
+  plain ID (`[a-z0-9_.-]`, at most 100 characters).
+- `targets` lists the notify services that received the notification.
+- `problems` lists why an approver or a device received no notification.
+- `answered_via` is `notification` or `api`.
+
+### Approval options
+
+The `approvals` section of the app options has these keys. The settings
+store (task-20) replaces them later.
+
+| Key | Default | Content |
+|---|---|---|
+| `approvers` | `[]` | The HA user IDs that can answer. With an empty list, each call that needs approval fails with `approval_unavailable`. |
+| `timeout_seconds` | `300` | How long an agent turn waits. Above 0 and at most 3600. |
+| `dev_trust_user_header` | `false` | Development only. Trust `X-Remote-User-Id` from every allowed address, not only from the Supervisor. |
+| `notify_services` | `{}` | An optional list of `notify.mobile_app_<device>` services for each approver. It replaces the person link for that approver. |
+
+Without `notify_services`, the app finds the phones of an approver through
+the HA `person` entity whose user is the approver, then its device trackers
+of the mobile app. The app sends to a service only if the service exists
+and exactly one mobile app device has its name. Otherwise it records the
+problem and does not send.
+
+Limit: a user can link any device tracker to a person. A notification can
+therefore reach the phone of another person. That phone cannot approve,
+because the app checks the HA user that sends each answer.
+
 ## Change events
 
 `GET api/events` opens a WebSocket. The app sends one JSON object for each
@@ -726,6 +865,8 @@ Each later message has this form:
 | `agents` | `created` | `version`, `enabled` |
 | `agents` | `updated` | `version`, `enabled`. The app sends it for an edit, a restore and a change to `enabled`. |
 | `agents` | `deleted` | `private_store`: `keep` or `delete` |
+| `approvals` | `created` | `status`: `pending`. `id` is the approval request ID. |
+| `approvals` | `updated` | `status`: the final status. |
 | `knowledge` | `created`, `updated`, `deleted` | none. `id` is the store ID. |
 | `knowledge` | `file_changed`, `file_deleted`, `item_deleted`, `document_changed` | `path`. `id` is the store ID. |
 | `knowledge` | `settings_changed` | none. `id` is `settings`. |

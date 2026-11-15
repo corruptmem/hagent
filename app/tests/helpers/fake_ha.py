@@ -11,6 +11,7 @@ WebSocket API that the app uses:
   changes the target entities. Like real HA (task-2), the fake sends the
   ``state_changed`` events before the call result, and both carry the same
   context;
+- ``auth/current_user``, from ``FakeHA.user``;
 - the registry lists (``config/<kind>_registry/list`` for entity,
   device, area, floor and label), ``config/entity_registry/get`` and
   ``get_services``, from ``FakeHA.registry`` and ``FakeHA.services``.
@@ -52,6 +53,7 @@ type Message = dict[str, Any]
 type Handler = Callable[["FakeHA", Message], Any]
 
 TOKEN = "test-token"
+APP_USER_ID = "f" * 32
 
 
 def now_iso() -> str:
@@ -83,6 +85,8 @@ class FakeHA:
             kind: [] for kind in ("entity", "device", "area", "floor", "label")
         }
         self.services: dict[str, dict[str, Message]] = {}
+        # The HA user of the client token, for ``auth/current_user``.
+        self.user: Message = {"id": APP_USER_ID, "name": "hagent", "is_admin": True}
         self.connections_accepted = 0
         self._conns: list[_Conn] = []
         self._down = False
@@ -159,15 +163,23 @@ class FakeHA:
         return self._emit_state_changed(entity_id, old, None)
 
     def fire_event(
-        self, event_type: str, data: Mapping[str, Any]
+        self,
+        event_type: str,
+        data: Mapping[str, Any],
+        *,
+        context: Mapping[str, Any] | None = None,
     ) -> asyncio.Task[None]:
-        """Send any event to the subscribers of its type."""
+        """Send any event to the subscribers of its type.
+
+        ``context`` sets fields of the event context, for example
+        ``{"user_id": ...}``. The default context has no user.
+        """
         event = {
             "event_type": event_type,
             "data": dict(data),
             "origin": "LOCAL",
             "time_fired": now_iso(),
-            "context": make_context(),
+            "context": {**make_context(), **dict(context or {})},
         }
         return asyncio.create_task(self._broadcast(event))
 
@@ -296,6 +308,7 @@ class FakeHA:
             )
         commands["config/entity_registry/get"] = self._entity_entry
         commands["get_services"] = lambda _m: self.services
+        commands["auth/current_user"] = lambda _m: self.user
         commands["history/history_during_period"] = lambda _m: {
             e: [{"s": s["state"]}] for e, s in self.states.items()
         }

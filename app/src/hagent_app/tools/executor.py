@@ -5,11 +5,13 @@
 1. Find the tool. Check that the definition turns on the tool.
 2. Validate the arguments. Unknown arguments fail.
 3. ``authorize``: the scope check. It returns a prepared request.
-4. A dry run of a call that writes stops here. It records the call and
-   returns the prepared request, with no approval request.
+4. A dry run of a call that writes or needs approval stops here. It records
+   the call and returns the prepared request, with no approval request.
 5. The approval check. If the definition marks the call for approval, the
    approval gate must accept it. With no gate, the executor denies the call
-   (task-16 supplies the gate).
+   (task-16 supplies the gate). The gate can return ``ApprovalOutcome`` with
+   a denial code, for example ``approval_timeout``. If the invocation is
+   cancelled during the wait, the executor records ``approval_cancelled``.
 6. For a call that changes HA: write the audit row with status
    ``pending``. If the write fails, stop.
 7. ``run`` on the prepared request.
@@ -25,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -52,12 +55,51 @@ _LOG = logging.getLogger(__name__)
 ALL_TOOLS: tuple[Tool, ...] = HA_TOOLS + STORE_TOOLS
 
 
+APPROVAL_DENIAL_CODES = frozenset(
+    {
+        "approval_rejected",
+        "approval_timeout",
+        "approval_unavailable",
+        "approval_stale",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalOutcome:
+    """The answer of an approval gate.
+
+    ``accepted`` is True only if an approver accepted the call. For a
+    denial, ``code`` is one of ``APPROVAL_DENIAL_CODES``. The executor maps
+    any other code to ``approval_rejected``.
+    """
+
+    accepted: bool
+    code: str = "approval_rejected"
+    message: str = "the approver did not accept the call"
+
+
 class ApprovalGate(Protocol):
     """The hook for task-16: hold a call until a person accepts or rejects it."""
 
-    async def request(self, ctx: ToolContext, tool: str, prepared: Prepared) -> bool:
-        """Return True if an approver accepts the call."""
+    async def request(
+        self, ctx: ToolContext, tool: str, prepared: Prepared
+    ) -> bool | ApprovalOutcome:
+        """Return True, or an accepted outcome, if an approver accepts the call."""
         ...
+
+
+def _approval_outcome(answer: object) -> ApprovalOutcome:
+    """Normalise a gate answer. Anything but an explicit accept is a denial."""
+    if answer is True:
+        return ApprovalOutcome(accepted=True)
+    if isinstance(answer, ApprovalOutcome):
+        if answer.accepted is True:
+            return answer
+        if answer.code in APPROVAL_DENIAL_CODES:
+            return answer
+        return ApprovalOutcome(False, "approval_rejected", answer.message)
+    return ApprovalOutcome(accepted=False)
 
 
 def needs_approval(definition: AgentDefinition, tool: Tool, prepared: Prepared) -> bool:
@@ -120,7 +162,7 @@ class ToolExecutor:
             if tool.available(definition)
         ]
 
-    async def execute(  # noqa: PLR0911, PLR0912, PLR0915 - one linear pipeline
+    async def execute(  # noqa: PLR0911, PLR0912 - one linear pipeline
         self, ctx: ToolContext, name: str, arguments: Mapping[str, Any]
     ) -> ToolResult:
         """Run one tool call. Never raise for a denial or a tool error."""
@@ -172,28 +214,17 @@ class ToolExecutor:
 
         approval_needed = needs_approval(ctx.definition, tool, prepared)
 
-        # A dry run stops here for a call that writes. It sends no approval
-        # request, because a test invocation must not reach approvers.
-        if ctx.dry_run and tool.writes:
+        # A dry run stops here for a call that writes or needs approval. It
+        # sends no approval request, because a test invocation must not
+        # reach approvers.
+        if ctx.dry_run and (tool.writes or approval_needed):
             return await self._dry_run(call, tool, prepared, approval_needed)
 
         # The approval hook.
         if approval_needed:
-            if self._approval is None:
-                return await self._deny(
-                    call,
-                    "approval_unavailable",
-                    "the call needs approval, and approvals are not available",
-                )
-            try:
-                accepted = await self._approval.request(ctx, name, prepared)
-            except Exception:
-                _LOG.exception("approval request failed")
-                accepted = False
-            if not accepted:
-                return await self._deny(
-                    call, "approval_rejected", "the approver did not accept the call"
-                )
+            denied = await self._approve(ctx, call, name, prepared)
+            if denied is not None:
+                return denied
 
         audit_id = None
         if tool.changes_ha:
@@ -236,6 +267,39 @@ class ToolExecutor:
             audit_id, "ok", None, context_id if isinstance(context_id, str) else None
         )
         return ToolResult(True, data, audit_id=audit_id)
+
+    async def _approve(
+        self, ctx: ToolContext, call: AuditCall, name: str, prepared: Prepared
+    ) -> ToolResult | None:
+        """Ask the gate. Return a denial, or ``None`` if an approver accepted."""
+        if self._approval is None:
+            return await self._deny(
+                call,
+                "approval_unavailable",
+                "the call needs approval, and approvals are not available",
+            )
+        try:
+            outcome = _approval_outcome(
+                await self._approval.request(ctx, name, prepared)
+            )
+        except asyncio.CancelledError:
+            # Record the held call in the denied-calls log, then stop.
+            await asyncio.shield(
+                self._deny(
+                    call,
+                    "approval_cancelled",
+                    "the invocation was cancelled during the approval",
+                )
+            )
+            raise
+        except Exception:
+            _LOG.exception("approval request failed")
+            outcome = ApprovalOutcome(
+                False, "approval_unavailable", "the approval request failed"
+            )
+        if not outcome.accepted:
+            return await self._deny(call, outcome.code, outcome.message)
+        return None
 
     async def _dry_run(
         self, call: AuditCall, tool: Tool, prepared: Prepared, approval_needed: bool

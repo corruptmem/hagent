@@ -9,6 +9,7 @@ dependencies = [
     "genai-prices>=0.2.3",
     "httpx2>=2.16",
     "pydantic-ai-slim[openai,openrouter]>=2.68",
+    "python-slugify>=8",
     "sqlite-vec==0.1.9",
     "pypdf>=7.1.0",
     # 0.x: the interface can change between minor releases, so pin it.
