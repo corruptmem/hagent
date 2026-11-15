@@ -24,7 +24,7 @@ from hagent_app.approvals.notifier import ha_slug
 from hagent_app.approvals.service import ACTION_EVENT
 from hagent_app.config import Config, ConfigError
 from hagent_app.http import ChangeEvents, HttpServer
-from hagent_app.tools import ToolResult
+from hagent_app.tools import ApprovalOutcome, ToolResult
 from helpers.fake_ha import APP_USER_ID, FakeHA, Message
 from helpers.tools import Harness, harness
 from helpers.wait import wait_until
@@ -674,3 +674,27 @@ def test_message_json_is_stable() -> None:
     payload = _payload(message_for("0" * 32, "text"))
     assert json.loads(json.dumps(payload)) == payload
     assert payload["data"]["actions"][0]["authenticationRequired"] is True
+
+
+@pytest.mark.parametrize(
+    ("answer", "accepted", "code"),
+    [
+        (True, True, None),
+        (False, False, "approval_rejected"),
+        (None, False, "approval_rejected"),
+        (1, False, "approval_rejected"),
+        ("yes", False, "approval_rejected"),
+        (ApprovalOutcome(True), True, None),
+        (ApprovalOutcome(False, "approval_timeout"), False, "approval_timeout"),
+        (ApprovalOutcome(False, "ok"), False, "approval_rejected"),
+    ],
+)
+def test_executor_accepts_only_an_explicit_accept(
+    answer: object, accepted: bool, code: str | None
+) -> None:
+    from hagent_app.tools.executor import _approval_outcome  # noqa: PLC0415
+
+    outcome = _approval_outcome(answer)
+    assert outcome.accepted is accepted
+    if code is not None:
+        assert outcome.code == code
