@@ -1,0 +1,65 @@
+# Test project for the HA integration (custom_components/hagent).
+#
+# HA Core pins its own versions of shared libraries (for example pydantic).
+# Those pins conflict with the app, so the integration has its own uv
+# project and lock, apart from the root workspace. HA Core loads the
+# integration with its own interpreter; this project only runs the tests and
+# the type check.
+#
+# Two dependency groups, which uv keeps apart:
+#
+# - "dev" (default): pytest-homeassistant-custom-component 0.13.375 with the
+#   HA Core release that it pins (2026.10.4). It runs the tests in tests/
+#   against a real HA Core instance in memory.
+# - "ha2611": HA Core 2026.11.1, the release that adds the AI Task EVALUATE
+#   feature. No released pytest-homeassistant-custom-component supports it
+#   yet. It runs mypy and the tests in tests_ha2611/, which call the
+#   entities directly.
+
+[project]
+name = "hagent-integration-tests"
+version = "0.0.0"
+requires-python = ">=3.14.2"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest-homeassistant-custom-component==0.13.375",
+    # Requirements of the components that the integration uses (HA Core
+    # 2026.10.4 manifests). HA Core installs them at run time; the tests need them.
+    "gazetteer-matcher==1.1.0",
+    "hassil==3.12.1",
+    "home-assistant-intents==2026.10.6",
+    # Requirement of the camera component, which ai_task imports.
+    "PyTurboJPEG==1.8.3",
+]
+ha2611 = [
+    "homeassistant==2026.11.1",
+    # Requirements of the conversation component (HA Core 2026.11.1).
+    "gazetteer-matcher==1.1.0",
+    "hassil==3.12.1",
+    "home-assistant-intents==2026.10.27",
+    "PyTurboJPEG==1.8.3",
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "pytest-asyncio>=1.2",
+]
+
+[tool.uv]
+package = false
+conflicts = [[{ group = "dev" }, { group = "ha2611" }]]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra -p no:cacheprovider"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+files = ["custom_components/hagent", "tests_ha2611"]
+mypy_path = ["."]
+explicit_package_bases = true

@@ -1,0 +1,94 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to the hagent app",
+        "description": "Enter the host, the port and the secret of the hagent app. The app shows them in its set-up information (api/integration).",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "secret": "Secret"
+        }
+      },
+      "hassio_confirm": {
+        "title": "hagent app found",
+        "description": "Connect Home Assistant to the hagent app on {host}?"
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the hagent app.",
+      "invalid_auth": "The app refused the secret.",
+      "protocol": "The app uses another link protocol version. Update the integration or the app."
+    },
+    "abort": {
+      "already_configured": "This hagent app is already configured.",
+      "cannot_connect": "Cannot connect to the hagent app.",
+      "invalid_auth": "The app refused the secret.",
+      "protocol": "The app uses another link protocol version. Update the integration or the app."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "link": {
+        "name": "App link"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "running": "Running",
+          "budget_spent": "Budget spent",
+          "off": "Turned off",
+          "error": "Error"
+        }
+      },
+      "last_result": {
+        "name": "Last result"
+      },
+      "cost_today": {
+        "name": "Cost today"
+      }
+    },
+    "switch": {
+      "enabled": {
+        "name": "Enabled"
+      }
+    },
+    "ai_task": {
+      "ai_task": {
+        "name": "AI Task"
+      }
+    },
+    "conversation": {
+      "conversation": {
+        "name": "Assist"
+      }
+    }
+  },
+  "services": {
+    "invoke": {
+      "name": "Invoke agent",
+      "description": "Start an invocation of a hagent agent. Target the agent device or one of its entities.",
+      "fields": {
+        "data": {
+          "name": "Data",
+          "description": "Optional context for the agent, as a mapping."
+        },
+        "wait": {
+          "name": "Wait",
+          "description": "Return the result as response data. If off, return at once and fire hagent_result later."
+        },
+        "timeout": {
+          "name": "Timeout",
+          "description": "The longest wait in seconds."
+        },
+        "on_timeout": {
+          "name": "On timeout",
+          "description": "cancel: stop the invocation and return an error. continue: finish in the background. The default is cancel for agents with outputs, and continue for other agents."
+        }
+      }
+    }
+  }
+}
