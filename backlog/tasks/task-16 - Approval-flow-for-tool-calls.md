@@ -1,11 +1,11 @@
 ---
 id: TASK-16
 title: Approval flow for tool calls
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:55'
+updated_date: '2026-11-15 00:56'
 labels:
   - app
   - security
@@ -105,6 +105,8 @@ Fixes:
 - L4: an answer UPDATE also needs expires_at > now; otherwise the answer is late.
 
 Regression tests (test_approvals.py, test_review_*): one per probe p1, p1b, p2, p3, p3b, p4, p5, p6, plus agent-change cancel, unrelated change, admin summary without free text, call_service at read/control/admin, dev option warning. test_tool_executor.py::test_admin_event_subscription_is_strict now uses automation_triggered. The 8 original probes all fail against the new code. mise run check: 580 passed, lint, mypy and frontend pass.
+
+Lead: an independent review found 0 critical, 0 high, 3 medium and 4 low issues; all 7 fixed on task-16. The lead re-ran the 8 original probes against impl: all now fail (fixed). Remaining window (agent change between the post-accept check and tool.run) is accepted. Approvals UI screen goes to task-19.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
