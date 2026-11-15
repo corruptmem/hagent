@@ -24,6 +24,7 @@ from hagent_app.knowledge import vectors
 from hagent_app.knowledge.config import KnowledgeConfig
 from hagent_app.knowledge.context import (
     DEFAULT_INDEX_ENTRIES,
+    DEFAULT_MAIN_FILE_MAX_CHARS,
     TurnContext,
     build_turn_context,
 )
@@ -151,11 +152,17 @@ class KnowledgeComponent:
             _LOG.exception("cannot build the entity catalogue")
 
     async def turn_context(
-        self, definition: AgentDefinition, index_entries: int = DEFAULT_INDEX_ENTRIES
+        self,
+        definition: AgentDefinition,
+        index_entries: int = DEFAULT_INDEX_ENTRIES,
+        main_file_max_chars: int = DEFAULT_MAIN_FILE_MAX_CHARS,
     ) -> TurnContext:
         """The knowledge part of an agent turn (design sections 9.5, 13.4)."""
         return await build_turn_context(
-            self.service(), definition, index_entries=index_entries
+            self.service(),
+            definition,
+            index_entries=index_entries,
+            main_file_max_chars=main_file_max_chars,
         )
 
     # ---------------------------------------------------------- settings
@@ -232,6 +239,7 @@ class KnowledgeComponent:
             "embedding": model.to_data() if model else None,
             "pending_embeddings": await embedder.pending(),
             "last_error": embedder.last_error,
+            "budget_skipped_agents": list(embedder.budget_skipped),
             "entity_catalog": self.catalog.size if self.catalog else 0,
         }
 
@@ -304,13 +312,18 @@ class _EntitySearch:
         self._component = component
 
     async def rank_entities(
-        self, query: str, entity_ids: Sequence[str], limit: int
+        self,
+        query: str,
+        entity_ids: Sequence[str],
+        limit: int,
+        *,
+        agent_id: str | None = None,
     ) -> list[str]:
         catalog = self._component.catalog
         if catalog is None:
             msg = "the entity catalogue is not running"
             raise RuntimeError(msg)
-        return await catalog.rank_entities(query, entity_ids, limit)
+        return await catalog.rank_entities(query, entity_ids, limit, agent_id=agent_id)
 
 
 def _history(component: KnowledgeComponent) -> HistoryIndex:

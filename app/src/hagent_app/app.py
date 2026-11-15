@@ -68,6 +68,10 @@ def default_components() -> list[Component]:
     """
     from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.router import (  # noqa: PLC0415 - import cycle
+        RetryingChatModels,
+        RouterComponent,
+    )
     from hagent_app.settings import SettingsComponent  # noqa: PLC0415 - import cycle
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
@@ -87,10 +91,18 @@ def default_components() -> list[Component]:
     tools.knowledge = knowledge.tools_store
     tools.entities = knowledge.entity_search
     http.add_routes(knowledge.routes())
+    # Chat models retry a failed request with backoff (design section 18).
+    models = RetryingChatModels(
+        lambda ref, agent_id: providers.chat_model(
+            ref.provider, ref.model, agent_id=agent_id
+        )
+    )
     # TurnsComponent plugs its history into tools.history.
-    turns = TurnsComponent(providers, tools)
+    turns = TurnsComponent(providers, tools, model_for=models)
     turns.history.index = knowledge.history_index
     turns.knowledge_context = knowledge.turn_context
+    router = RouterComponent(turns, tools=tools, models=models)
+    http.add_routes(router.routes())
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
@@ -104,6 +116,7 @@ def default_components() -> list[Component]:
         tools,
         knowledge,
         turns,
+        router,
         catalog,
         ui,
         http,

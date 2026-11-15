@@ -25,7 +25,8 @@ class TurnsConfig:
       more in cache misses than it saves (design section 13.2).
     - ``compaction_keep_pairs``: the latest tool results that stay.
     - ``index_max_entries``: the maximum entries of one store index.
-    - ``main_file_max_chars``: the size limit of an injected main file.
+    - ``main_file_max_chars``: the size limit of an injected main file. The
+      prompt holds at most this many characters of each main file.
     - ``main_file_warn_fraction``: at this part of the limit, the runtime
       asks the agent to shorten the main file.
     """

@@ -1,11 +1,11 @@
 ---
 id: TASK-18
 title: 'Management UI: shell, Ingress serving and agent screens'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:13'
+updated_date: '2026-11-15 01:00'
 labels:
   - ui
 dependencies:
@@ -31,7 +31,7 @@ Design: docs/design.md sections 6.1, 7.1, 7.2 (Agents) and 22 (Management UI sta
 - [x] #2 The app accepts UI connections only from 172.30.32.2
 - [x] #3 All definition fields in section 7.1 can be edited, with entity pickers from live HA data
 - [x] #4 Definition versions can be compared and restored
-- [ ] #5 A test invocation runs with sample data without changes to HA
+- [x] #5 A test invocation runs with sample data without changes to HA
 - [x] #6 Front-end lint, format and type checks run in pre-commit and mise run check
 <!-- AC:END -->
 
@@ -67,6 +67,8 @@ Evidence:
 - The browser pass did not run, because the Chrome extension was not connected. vitest drives the UI flows in jsdom.
 
 Lead: merged into impl with providers component first. Task stays In Progress: AC #5 (test invocation) waits for the agent runtime (task-12); the lead will finish it after task-12 merges.
+
+Lead: AC #5 is done by task-12 (POST api/agents/{id}/test, dry run, sample states, no HA changes; tests in task-12). The UI contract did not change.
 <!-- SECTION:NOTES:END -->
 
 ## Comments

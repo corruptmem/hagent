@@ -25,6 +25,7 @@ SIGINT.
 | `src/hagent_app/settings/` | `SettingsComponent`: the settings store, the API keys and the settings API (task-20). See "Settings" below. |
 | `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
+| `src/hagent_app/router/` | The router, the persistent invocation queue, the fallback, chat retries and the test invocation route (task-12). See "How to invoke an agent" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
@@ -228,10 +229,22 @@ Rules:
   that an agent writes to that agent, and documents and the entity
   catalogue to the installation. A query embedding of `knowledge.search`
   or `memory.search` counts towards the invocation agent:
-  `KnowledgeStore.search` receives the agent ID from the executor. A search
+  `KnowledgeStore.search` receives the agent ID from the executor. A query
+  embedding of `ha.find_entities` also counts towards the agent:
+  `EntitySearch.rank_entities` receives `agent_id`. A search
   from the management API counts towards the installation. A query that is
   in the query cache costs nothing. A model change re-indexes every passage. The embedder deletes vectors of
   other models and vectors whose text no longer exists.
+- If the budget of an agent refuses a batch (`BudgetExceededError` with
+  scope `agent`), the embedder skips the text of that agent for the rest of
+  the drain. It continues with other text, and tries again after
+  `knowledge.embed_retry_seconds`. `GET api/knowledge/status` lists these
+  agents in `budget_skipped_agents`. An installation budget error stops
+  the drain, as other provider errors do.
+- The version history is bounded (`_prune_history`). Each change keeps the
+  newest version of each path and at most `MAX_FILE_VERSIONS` (50)
+  versions of one path. The text of earlier versions stays at or below the
+  store size limit. The oldest versions go first.
 - Store errors (`KnowledgeError`) subclass `StoreError` in
   `tools/stores.py`. The executor returns their code to the model, for
   example `version_conflict`.
@@ -252,11 +265,21 @@ component:
   the source key), `since` and `until`.
 - `turns.knowledge_context = knowledge.turn_context`. The prompt builder
   calls it for part 3 of each turn (design section 9.5), with
-  `turns.index_max_entries` as the index size (50 by default). It gives
-  the store list, the name-sorted index and the injected main files. The
+  `turns.index_max_entries` as the index size (50 by default) and
+  `turns.main_file_max_chars` as the main file limit (16,000 characters by
+  default). It gives the store list, the name-sorted index and the
+  injected main files. The service reads at most the limit of each main
+  file. A note after the block gives the full length. The
   text holds no time or other value that changes between turns. The
   builder also uses it for the main file requests (design section 13.1).
   If the call fails, the builder reads the stores through the executor.
+- Store text is data, not instructions (design section 19). Agents with
+  `read_write` access write it, and other agents read it. The knowledge
+  part starts with a fixed statement of this rule (`DATA_NOTE`). Each
+  injected main file is a fenced data block (`data_block`) with a line that
+  names the store, the path and the last author. The fence has more
+  backticks than the longest run in the text, so the text cannot close the
+  block. The executor fallback and the recall part use the same rule.
 - Other code can index records with `await knowledge.history.add(...)` and
   remove them with `remove`, for example when retention deletes a record.
 
@@ -578,7 +601,8 @@ same scope check as a model tool call.
   correction attempt. A second failure gives `invalid_result`.
 - When an injected `MAIN.md` reaches `main_file_warn_fraction` of
   `main_file_max_chars`, the invocation part asks the agent to move detail
-  into other files. The runtime does not cut the file.
+  into other files. The runtime does not change the file. The prompt holds
+  at most `main_file_max_chars` characters of it.
 
 ### History
 
@@ -610,6 +634,167 @@ search uses a plain text match. Dry runs do not go into the index, the search or
 
 The `turns` section of `options.json` holds the keys in `TurnsConfig`
 (`src/hagent_app/turns/config.py`).
+
+## How to invoke an agent
+
+The `router` package handles every invocation (design sections 9.1, 9.4,
+9.6, 9.7 and 18). `RouterComponent` is the only entry point. The scheduler
+(task-15) and the integration (task-17: `hagent.invoke`, AI Task and
+Assist) call it.
+
+Terms:
+
+- **Invocation**: one request to an agent from one source.
+- **Lane**: the queue of one agent, or of one Assist conversation.
+- **Path**: how the invocation got its result: `rule`, `agent_turn` or
+  `fallback`.
+- **Fallback reason**: why the router used the fallback.
+
+### Entry point
+
+```python
+handle = await router.submit(
+    InvocationRequest(
+        agent_id,
+        "invoke",  # invoke, ai_task, ai_task_evaluate, schedule, event, review, assist
+        text=None,  # optional text; the agent receives it as data["text"]
+        data={"reason": "..."},  # the caller data
+        conversation_id=None,  # required for assist
+        result_schema=None,  # an AI Task structure, if any
+        caller={"automation_id": "..."},  # source metadata, for history only
+    )
+)
+result = await handle.result()  # or: result = await router.invoke(request)
+```
+
+- `submit` returns at once. `handle.invocation_id` names the invocation.
+  A cancelled `handle.result()` does not stop the invocation.
+- `await router.cancel(invocation_id)` stops a queued or running
+  invocation. Use it for `on_timeout: cancel`. The invocation records
+  `cancelled`, and its turn writes nothing more.
+- `router.add_result_listener(fn)` calls `fn` with each final result, also
+  for invocations that no caller waits for (`wait: false`, or a resumed
+  queue entry). Task-17 fires `hagent_result` from it. `fn` must be fast.
+- `submit` raises `RouterNotRunningError` before start and during stop.
+
+`InvocationResult` holds `status` (`ok`, `fallback`, `error` or
+`cancelled`), `path`, `result`, `fallback_reason`, `error_code`, `error`,
+`agent_version`, `rule_id`, `rule_version`, `turn_id` and `cost_usd`.
+`result.to_data()` gives the response data of design section 9.2. The
+error codes are stable: `agent_not_found`, `agent_off`, `busy`,
+`queue_full`, `cancelled`, `no_last_result`, `fallback_error` and
+`not_running`.
+
+### Steps
+
+1. `submit` refuses an agent that does not exist or is turned off.
+2. `submit` applies the concurrency mode of the current definition:
+   - `queued`: the invocation waits in the lane. At most `queue_size`
+     invocations wait. One more gets `queue_full`.
+   - `single`: if one runs or waits, the invocation gets `busy`.
+   - `restart`: the router cancels the running and waiting invocations,
+     then starts the new one. They get `cancelled`.
+   - `parallel`: the invocation starts at once. At most `queue_size` run
+     at the same time. One more gets `queue_full`.
+   An Assist invocation uses the lane of its conversation in `queued` mode,
+   with `assist_queue_size`. It never waits for background work.
+3. When the invocation starts, the router reads the agent again. The
+   invocation keeps this snapshot to the end. A change to the definition
+   therefore takes effect only between invocations. A turned-off agent
+   gets `agent_off` here too.
+4. The router collects the input values from the state cache (entities,
+   and the entities of the input devices). After an app start, it waits
+   up to `state_wait_seconds` for the first state load.
+5. The rule stage answers, or says why not. Review, Assist and test
+   invocations skip it.
+6. The router runs an agent turn. If the turn returns no result, or cannot
+   start, the router applies the fallback of the definition.
+7. The router sums the cost of the provider calls of the invocation, and
+   records the result in `invocations`.
+
+### Fallback
+
+| `stop_reason` of the turn | Fallback reason |
+|---|---|
+| `budget` | `budget` |
+| `provider_error` (after the retries) | `provider_unreachable` |
+| `tool_call_limit`, `token_limit`, `request_limit` | the same name |
+| `invalid_result` | `invalid_result` |
+| `error` | `turn_failed` |
+| the turn cannot start | `runtime_unavailable` |
+| the app restarted during the run | `app_restart` |
+| the app stopped during the run | `app_stopped` |
+
+- `last_result`: the result of the last `ok` invocation with the same
+  source key (the source, or `assist:<conversation ID>`). Dry runs and
+  fallback results do not count. With no such result, the status is
+  `error` with `no_last_result`.
+- `fixed`: the value of the definition. The definition has no writes for
+  the fallback yet, so the router applies no writes.
+- `no_change`: status `fallback` with no result.
+- `error`: status `error` with `fallback_error`.
+
+### The rule stage (task-13)
+
+`RouterComponent.rules` is a `RuleStage`. Set it in `default_components()`
+before the app starts. Until task-13, `NoRules` returns `NO_RULE_MATCHED`.
+`try_rules(RuleRequest)` gets the invocation ID, the agent snapshot, the
+request and the inputs. It returns a `RuleOutcome`:
+
+- `answered=True` with `result`, `rule_id` and `rule_version`: the router
+  records the path `rule` and starts no turn.
+- `answered=False` with a `reason` (`no_rule_matched`, `declined`,
+  `rule_error`): the router starts an agent turn. It records `rule_id` and
+  `rule_version` of a rule that declined.
+- Read the rule set once, at the start of `try_rules`, so that a rule
+  change takes effect only between invocations.
+- A stage that raises counts as `rule_error`.
+
+### Queue and restart
+
+The `invocations` table (migration `0600`) is the history and the queue.
+The router writes a row with status `queued`, sets `running` when the
+invocation starts, and sets the final status at the end.
+
+- On start, the router records each `running` row as failed, with the
+  fallback and the reason `app_restart`. It runs each `queued` row again,
+  in the order of arrival, and gives the result to the result listeners.
+- On stop, the router cancels the running invocations. Each records the
+  fallback with the reason `app_stopped`. Queued rows stay `queued`. Their
+  callers get `not_running`.
+
+### Cost
+
+The router sets `providers.meter.current_invocation`, a context variable,
+in each invocation task. `Meter` writes it to
+`provider_calls.invocation_id` (migration `0601`). The router sums the cost
+when the invocation ends. Tasks that the invocation starts inherit the
+value. The running summary update therefore adds cost to the invocation
+after its result.
+
+### Chat retries
+
+`RetryingChatModels` is the model factory of `TurnsComponent`. It wraps
+each `MeteredModel` in a `RetryingModel`. The SDK clients do not retry
+(`max_retries=0`). The router retries one model request, never a whole
+turn, because a turn can change HA before a request fails. Each attempt
+goes through the meter. Retryable errors: connection errors, timeouts,
+HTTP 429 and HTTP 5xx. A spent budget, a missing key, an unknown price, a
+spent quota and a rejected request are not retryable. Streamed requests
+are not retried.
+
+### Test invocation
+
+`router.test(agent_id, definition=..., text=..., data=..., states=...)`
+runs one dry-run turn outside the queue. `POST api/agents/{id}/test` calls
+it (see `docs/api.md`). The sample states go to the turn through
+`TurnsComponent.run_turn(..., states=...)` and
+`ToolExecutor.with_states`, so the HA read tools see them too.
+
+### Options
+
+The `router` section of `options.json` holds the keys in `RouterConfig`
+(`src/hagent_app/router/config.py`).
 
 ## How to use the HA client and the state cache
 

@@ -34,12 +34,18 @@ class EntitySearch(Protocol):
     """Ranked search over the HA entity catalogue (design section 13.3)."""
 
     async def rank_entities(
-        self, query: str, entity_ids: Sequence[str], limit: int
+        self,
+        query: str,
+        entity_ids: Sequence[str],
+        limit: int,
+        *,
+        agent_id: str | None = None,
     ) -> list[str]:
         """The IDs from ``entity_ids`` that match ``query``, best first.
 
         The caller passes only entities in the agent's scope. The result
-        holds no other ID.
+        holds no other ID. The query embedding counts towards the budget of
+        ``agent_id``, or towards the installation if it is ``None``.
         """
         ...
 

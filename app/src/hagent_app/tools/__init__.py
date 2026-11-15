@@ -7,7 +7,14 @@ only through the ``Agent`` snapshot in ``ToolContext``. No tool receives
 """
 
 from hagent_app.tools.audit import AuditEntry, AuditLog
-from hagent_app.tools.base import Prepared, Tool, ToolContext, ToolEnv, ToolResult
+from hagent_app.tools.base import (
+    Prepared,
+    StateView,
+    Tool,
+    ToolContext,
+    ToolEnv,
+    ToolResult,
+)
 from hagent_app.tools.component import ToolsComponent
 from hagent_app.tools.executor import (
     ALL_TOOLS,
@@ -28,6 +35,7 @@ __all__ = [
     "Prepared",
     "RegistrySnapshot",
     "ScopeDeniedError",
+    "StateView",
     "Tool",
     "ToolContext",
     "ToolEnv",

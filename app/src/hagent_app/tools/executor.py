@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -37,6 +37,7 @@ from hagent_app.ha.client import HAError
 from hagent_app.tools.audit import AuditCall, AuditLog
 from hagent_app.tools.base import (
     Prepared,
+    StateView,
     Tool,
     ToolContext,
     ToolEnv,
@@ -143,6 +144,16 @@ class ToolExecutor:
         self._audit = audit
         self._approval = approval
         self._tools = {tool.name: tool for tool in tools}
+
+    def with_states(self, states: StateView) -> ToolExecutor:
+        """A copy of this executor that reads ``states`` in place of the
+        state cache. A test invocation uses it for its sample states. The
+        scope check, the audit log and the approval gate stay the same."""
+        copy = ToolExecutor(
+            replace(self._env, states=states), self._audit, approval=self._approval
+        )
+        copy._tools = self._tools
+        return copy
 
     @property
     def tool_names(self) -> list[str]:
