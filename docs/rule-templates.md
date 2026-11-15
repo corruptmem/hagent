@@ -138,20 +138,58 @@ A rule template is text from a model, so the sandbox limits its cost:
 - Each `{{ }}` value, and each argument of every filter, test and function,
   passes a size check first. The check counts every reference, so nested
   lists that share references cannot grow without a limit.
+- The size check also reads the content of a `namespace` and of the dict
+  views (`.keys()`, `.values()`, `.items()`).
 - `*`, `**`, `+`, `%`, `~`, `join`, `replace`, `regex_replace`, `indent`,
   `center` and `format` check the size of their result before or while they
-  build it.
+  build it. `int * int` checks the bit length of the product.
+- A format width or precision of `*` (for example `'%*d'`) is refused.
+- The output limit applies while Jinja joins the output parts, also inside
+  a `{% set %}` block.
 - `batch` takes a size of 10,000 or less. `sum` adds numbers only.
 - A render stops after 1 second (option `rules.render_seconds`). A trace
-  function stops a loop in the template.
-- The runtime waits at most 1 second more for a render. It then records
-  `rule_error`, and the invocation goes on to an agent turn.
+  function stops a loop in the template. If code in the render catches the
+  stop signal, the render fails all the same.
 
-Residual risk: one slow call in C, for example a regular expression that
-backtracks, cannot be stopped. The wait ends, but the thread runs on until
-the call ends. Renders use a pool of 4 threads of their own. If all 4 are
-stuck, later renders wait, fail at the time limit, and the rules record
-`rule_error`. Other app work does not use this pool.
+### Worker processes
+
+The app renders each template in a separate worker process
+(`rules/render_pool.py`, `rules/render_worker.py`). The worker is the hard
+limit:
+
+- The pool has up to 4 workers. A render takes an idle worker or starts a
+  new one. One agent can use at most 2 workers at a time, so that an agent
+  with parallel invocations cannot hold all the workers.
+- The app kills a worker that does not answer within the time limit plus
+  0.5 seconds, and starts a new one for the next render. This also stops
+  one slow call in C, for example a regular expression that backtracks.
+- A worker can use 256 MiB of memory on top of its imports (`RLIMIT_AS`).
+  A render that passes the limit fails, and the app replaces the worker.
+- Before each render, the worker sets a CPU limit (`RLIMIT_CPU`) of the time
+  limit plus 2 seconds. The kernel stops a worker that passes it.
+- The worker starts with an empty environment (only `TZ`) and the working
+  directory `/`. Thus it does not get the HA token from the environment.
+- The app sends plain data only: the scoped state view, the time zone and
+  the variables. The worker answers with JSON. A worker that a template
+  took over therefore cannot send code to the app.
+- The worker needs neither HA nor the internet.
+- Backtests and trials (task-14) use the same pool. The fixed clock of a
+  backtest (`now()` and `utcnow()` at the time of the past invocation) is
+  plain data, so the worker gets it too.
+
+The template check at create time (`check_template`) runs in the app
+process. It never runs template code: the sandbox turns off Jinja's
+optimizer, and it computes a constant `{{ }}` value at compile time only
+for literal text and constants. Thus a filter or a test with constant
+arguments runs only in a worker. The check refuses `{% autoescape %}`,
+because Jinja computes its argument at compile time.
+
+When a render fails for any of these reasons, the rule records
+`rule_error`, and the invocation goes on to an agent turn.
+
+Residual risk: the worker runs as the same user as the app. If a template
+escaped the sandbox, it could read the files of the app. The worker has no
+file system sandbox.
 
 ## Evidence against HA
 

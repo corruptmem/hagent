@@ -32,7 +32,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import Any
 
 from pydantic import ValidationError
@@ -82,17 +82,13 @@ from hagent_app.tools.ha_tools import CallService, CallServiceArgs, scope_of
 from hagent_app.tools.scope import ScopeDeniedError, check_read
 
 
-@dataclass(frozen=True, slots=True)
-class FixedClock(TemplateClock):
-    """A template clock that stays at one time: the past invocation."""
+def fixed_clock(tz: tzinfo | None, at: datetime) -> TemplateClock:
+    """A template clock that stays at one time: the past invocation.
 
-    at: datetime = field(default_factory=lambda: datetime.now(UTC))
-
-    def now(self) -> datetime:
-        """The time of the past invocation, in the HA time zone."""
-        if self.tz is None:
-            return self.at.astimezone()
-        return self.at.astimezone(self.tz)
+    The fixed time is a field of ``TemplateClock``, so that the render pool
+    sends it to the worker process.
+    """
+    return TemplateClock(tz, at)
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,7 +418,10 @@ class DryRunEvaluator:
         overlay = StateOverlay(env.states, past_states(past))
         view = ScopedStates.build(overlay, visible_entities(agent, env.registry.last()))
         engine = TemplateEngine(
-            view, FixedClock(self._clock().tz, past.at), self._render_seconds
+            view,
+            fixed_clock(self._clock().tz, past.at),
+            self._render_seconds,
+            owner=agent.id,
         )
         variables: dict[str, Any] = {
             "source": past.source,

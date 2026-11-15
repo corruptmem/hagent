@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -32,6 +33,7 @@ from hagent_app.providers.prices import TokenUsage
 from hagent_app.router import InvocationRequest, RouterComponent
 from hagent_app.router.models import InvocationResult
 from hagent_app.rules import RulesComponent
+from hagent_app.rules.render_pool import shared_pool
 from hagent_app.tools import StateView, ToolContext, ToolsComponent
 from hagent_app.turns.history import TurnHistory
 from hagent_app.turns.models import TurnInput, TurnRecord, TurnResult
@@ -456,6 +458,74 @@ async def test_now_is_the_time_of_the_past_invocation(env: Env) -> None:
         seconds=1
     )
     assert zone == "Europe/London"
+
+
+async def test_utcnow_is_the_time_of_the_past_invocation(env: Env) -> None:
+    agent = await env.agent()
+    [past] = await _history(env, agent, [("18", "x")])
+    await env.age(past, 2)
+    rule_id = await env.rule(
+        agent, action={"type": "template", "template": "{{ utcnow().isoformat() }}"}
+    )
+    result = await env.backtest.backtester.run(agent, rule_id)
+    [case] = result["cases"]
+    at = datetime.fromisoformat(case["rule_result"])
+    assert abs(at - datetime.fromisoformat(case["invocation_at"])) < timedelta(
+        seconds=1
+    )
+
+
+# The task-13 security review fixes must hold in the dry-run paths too: each
+# backtest and trial render runs in a worker process with the same limits.
+STUCK_REGEX = "{{ ('" + "a" * 30 + "!') is match('(a+)+$') }}"
+NAMESPACE_BOMB = (
+    "{% set s = 'a' * 250000 %}{% set ns = namespace(l=[s] * 1000) %}{{ ns }}"
+)
+
+
+async def test_backtest_renders_have_the_worker_limits(env: Env) -> None:
+    agent = await env.agent()
+    await _history(env, agent, [("18", "x"), ("19", "y")])
+    pool = shared_pool()
+    killed = pool.killed
+    stuck = await env.rule(agent, action={"type": "template", "template": STUCK_REGEX})
+    started = time.monotonic()
+    result = await env.backtest.backtester.run(agent, stuck)
+    # Two cases, each killed after the time limit (1 s) plus the grace.
+    assert time.monotonic() - started < 8
+    assert [c["outcome"] for c in result["cases"]] == ["error", "error"]
+    assert all("took longer" in c["detail"] for c in result["cases"])
+    assert pool.killed == killed + 2
+    bomb = await env.rule(
+        agent, action={"type": "template", "template": NAMESPACE_BOMB}
+    )
+    result = await env.backtest.backtester.run(agent, bomb)
+    assert all("larger than" in c["detail"] for c in result["cases"])
+    # The agreement template runs in a worker too.
+    star = await env.rule(agent, agreement="{{ '%*d' % (500000000, 1) }}")
+    result = await env.backtest.backtester.run(agent, star)
+    assert all("of *" in c["detail"] for c in result["cases"])
+
+
+async def test_trial_renders_have_the_worker_limits(env: Env) -> None:
+    agent = await env.agent()
+    env.backtest.sample = lambda: 0.0
+    await env.rule(
+        agent,
+        activate=True,
+        action={"type": "template", "template": "40"},
+        trial={"enabled": True, "rate": 0.5},
+        agreement=NAMESPACE_BOMB,
+    )
+    env.turns.answer = lambda _t: 41
+    result = await env.invoke(agent)
+    assert (result.path, result.result) == ("rule", 40)
+    await wait_until(lambda: not env.backtest.trials.tasks)
+    [trial] = await env.h.db.run(
+        lambda c: [dict(r) for r in c.execute("SELECT * FROM rule_trials")]
+    )
+    assert trial["status"] == "error"
+    assert "larger than" in trial["detail"]
 
 
 async def test_rule_answers_and_other_sources_are_not_candidates(env: Env) -> None:

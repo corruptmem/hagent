@@ -194,7 +194,9 @@ class TrialRunner:
         view = ScopedStates.build(
             env.states, visible_entities(agent, env.registry.last())
         )
-        engine = TemplateEngine(view, self._clock(), self._render_seconds)
+        engine = TemplateEngine(
+            view, self._clock(), self._render_seconds, owner=agent.id
+        )
         variables = {
             "source": invocation.source,
             "inputs": dict(request.inputs),
