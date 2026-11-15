@@ -13,6 +13,7 @@ from hagent_app.knowledge.embedder import EmbeddingModel
 from hagent_app.knowledge.entities import entity_texts
 from hagent_app.knowledge.index import Scope
 from helpers.knowledge import MODEL, KnowledgeEnv, knowledge_env
+from helpers.wait import wait_until
 
 MODEL_2 = EmbeddingModel("openrouter", "openai/text-embedding-3-large", 32)
 
@@ -163,10 +164,8 @@ async def test_memory_search_is_hybrid_and_limited_to_the_agent(
         assert result.ok, result
         ids = [r["record_id"] for r in result.data]
         # r1 has no keyword match; the vector search finds it (heater ~ boiler).
-        # The vector list ranks every record in scope, so r2 comes last.
-        assert set(ids[:2]) == {"c1", "r1"}
-        assert ids[2:] == ["r2"]
-        assert "r9" not in ids
+        # r2 is unrelated: the distance cutoff keeps it out. r9 is Beta's.
+        assert set(ids) == {"c1", "r1"}
         assert adapter.calls == [a.id]
         filtered = await k.call(
             a,
@@ -198,10 +197,8 @@ async def test_find_entities_ranks_only_entities_in_scope(tmp_path: Path) -> Non
         assert "area: Kitchen" in texts["light.kitchen"][1]
         assert "labels: heating" in texts["climate.lounge"][1]
 
-        scope = {
-            "level": "read",
-            "scope": {"entities": ["light.kitchen", "light.hall"]},
-        }
+        in_scope = ["light.kitchen", "light.hall", "lock.front"]
+        scope = {"level": "read", "scope": {"entities": in_scope}}
         agent = await k.agent("Finder", tools__ha=scope)
         result = await k.call(agent, "ha.find_entities", {"query": "kitchen lamp"})
         assert result.ok, result
@@ -209,14 +206,13 @@ async def test_find_entities_ranks_only_entities_in_scope(tmp_path: Path) -> Non
         # light.kitchen_spot and switch.kettle (kitchen) rank high, but they
         # are outside the scope.
         assert found[0] == "light.kitchen"
-        assert set(found) <= {"light.kitchen", "light.hall"}
+        # lock.front is in scope but unrelated: the distance cutoff drops it.
+        assert set(found) == {"light.kitchen", "light.hall"}
 
         # No word of the query is in the text; the vector search finds it.
         result = await k.call(agent, "ha.find_entities", {"query": "bulb"})
-        assert [r["entity_id"] for r in result.data][:1] in (
-            ["light.kitchen"],
-            ["light.hall"],
-        )
+        bulb = {r["entity_id"] for r in result.data}
+        assert bulb == {"light.kitchen", "light.hall"}
 
         # The ranker gets only the scope-filtered candidates.
         ranked = await catalog.rank_entities("kitchen", ["light.hall"], 10)
@@ -379,17 +375,23 @@ async def test_keyword_only_when_the_provider_fails(tmp_path: Path) -> None:
         _, body = await k.request("GET", "/api/knowledge/status")
         assert body["search_mode"] == "keyword"
         assert "fake provider is down" in body["last_error"]
-        # The provider comes back: the embedder retries and search is hybrid.
-        k.embeddings.fail = False
-        await k.idle()
         embedder = k.component.embedder
         assert embedder is not None
-        for _ in range(100):
-            if await embedder.pending() == 0:
-                break
-            await embedder.wait_idle()
+        assert await embedder.pending() > 0
+        assert await k.rows("SELECT * FROM search_embeddings") == []
+        # The provider comes back: the embedder retries on its own (after
+        # embed_retry_seconds), and the queue empties.
+        distinct = await k.rows(
+            "SELECT COUNT(DISTINCT content_hash) FROM search_passages"
+        )
+        k.embeddings.fail = False
+        await wait_until(lambda: embedder.embedded_texts >= distinct[0][0])
+        assert await embedder.pending() == 0
+        stored = await k.rows("SELECT COUNT(*) FROM search_embeddings")
+        assert stored[0][0] == distinct[0][0] > 0
         result = await k.service.search_stores([sid], "boiler", 5)
         assert result.mode == "hybrid"
+        assert result.hits[0].matched == ("keyword", "vector")
 
 
 def test_load_failure_gives_a_reason() -> None:
@@ -470,3 +472,16 @@ async def test_turn_context_lists_stores_index_and_main_files(tmp_path: Path) ->
         assert again.text == text
         smaller = await build_turn_context(k.service, agent.definition, index_entries=5)
         assert "- ... 56 more (61 entries in total" in smaller.text
+        assert (await k.component.turn_context(agent.definition)).text == text
+
+
+async def test_turn_context_index_size_option(tmp_path: Path) -> None:
+    async with knowledge_env(tmp_path, options={"index_entries": 2}) as k:
+        sid = await _store(k, "few")
+        for name in ("c.md", "a.md", "b.md"):
+            await k.service.put_file(sid, name, "x", None)
+        agent = await k.agent("Reader", [{"store_id": sid}])
+        context = await k.component.turn_context(agent.definition)
+        store = next(s for s in context.stores if s.store_id == sid)
+        assert store.entries == ("a.md", "b.md")
+        assert "- ... 1 more (3 entries in total" in context.text

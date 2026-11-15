@@ -213,6 +213,10 @@ Rules:
   receives only attached store IDs.
 - Each search applies the scope filter in SQL, before the ranking and the
   limit.
+- The vector search drops matches with a cosine distance above
+  `knowledge.max_vector_distance` (0.75 by default). Without this cutoff,
+  every passage in scope would rank. The right value depends on the
+  embedding model.
 - The app loads sqlite-vec from the component, through `db.run`. No
   migration uses it. If it does not load, if no embedding model is set, or
   if the provider fails, search uses keywords only. `GET
@@ -241,7 +245,8 @@ Rules:
   `collection`. `memory.search` then ranks with hybrid search, and sees
   only the records of the invocation agent.
 - Build the knowledge part of each turn with
-  `await build_turn_context(knowledge.service(), agent.definition)`. Put
+  `await knowledge.turn_context(agent.definition)`. It uses the option
+  `knowledge.index_entries` (50 by default). Put
   `context.text` after the tool definitions. `StoreContext.main_file_size`
   helps with the 80 percent rule for main files (design section 13.1). The
   text holds no time or other value that changes between turns.

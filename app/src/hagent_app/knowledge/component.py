@@ -17,10 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from hagent_app.agents.definition import AgentDefinition
 from hagent_app.http.errors import ApiError
 from hagent_app.http.events import ChangeEvents
 from hagent_app.knowledge import vectors
 from hagent_app.knowledge.config import KnowledgeConfig
+from hagent_app.knowledge.context import TurnContext, build_turn_context
 from hagent_app.knowledge.embedder import Embedder, EmbeddingModel, parse_provider
 from hagent_app.knowledge.entities import EntityCatalog
 from hagent_app.knowledge.history import HistoryIndex
@@ -98,7 +100,7 @@ class KnowledgeComponent:
         """Load sqlite-vec, start the embedder and build the entity catalogue."""
         self.config = config = ctx.config.section("knowledge", KnowledgeConfig)
         self._db = ctx.db
-        index = SearchIndex(ctx.db)
+        index = SearchIndex(ctx.db, max_distance=config.max_vector_distance)
         if config.load_sqlite_vec:
             index.vector_reason = await ctx.db.run(vectors.load)
         else:
@@ -142,6 +144,12 @@ class KnowledgeComponent:
             await self.catalog.rebuild(snapshot)
         except Exception:
             _LOG.exception("cannot build the entity catalogue")
+
+    async def turn_context(self, definition: AgentDefinition) -> TurnContext:
+        """The knowledge part of an agent turn, with the configured index size."""
+        return await build_turn_context(
+            self.service(), definition, index_entries=self.config.index_entries
+        )
 
     # ---------------------------------------------------------- settings
 

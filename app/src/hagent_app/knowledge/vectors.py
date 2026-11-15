@@ -51,19 +51,25 @@ def nearest(  # noqa: PLR0913, PLR0917
     query: Sequence[float],
     model: str,
     limit: int,
+    max_distance: float,
 ) -> list[int]:
     """Passage IDs from ``candidates_sql``, nearest to ``query`` first.
 
     ``candidates_sql`` selects ``id`` and ``content_hash`` of the passages
     that the scope permits. The limit applies after the scope filter.
+    Passages with a cosine distance above ``max_distance`` are not
+    results: without this cutoff, every passage in scope would rank.
     """
     sql = (
-        "SELECT c.id FROM (" + candidates_sql + ") AS c "  # noqa: S608 - fixed SQL
-        "JOIN search_embeddings e ON e.content_hash = c.content_hash "
-        "AND e.model = ? AND e.dims = ? "
-        "ORDER BY vec_distance_cosine(e.vector, ?) LIMIT ?"
+        "SELECT id FROM (SELECT c.id AS id, "  # noqa: S608 - fixed SQL
+        "vec_distance_cosine(e.vector, ?) AS distance FROM ("
+        + candidates_sql
+        + ") AS c JOIN search_embeddings e ON e.content_hash = c.content_hash "
+        "AND e.model = ? AND e.dims = ?) WHERE distance <= ? "
+        "ORDER BY distance, id LIMIT ?"
     )
     rows = conn.execute(
-        sql, [*params, model, len(query), serialize(query), limit]
+        sql,
+        [serialize(query), *params, model, len(query), max_distance, limit],
     ).fetchall()
     return [int(row[0]) for row in rows]

@@ -474,7 +474,10 @@ Terms:
   `version_conflict`.
 - **Size**: the UTF-8 bytes of the text of all items in a store. The size
   limit of a store is 1000 bytes to 1000000000 bytes. The default is
-  1000000 bytes (option `knowledge.default_size_limit`).
+  1000000 bytes. The option `knowledge.default_size_limit` changes the
+  default for stores that this API creates. A private store that the app
+  creates with an agent starts with 1000000 bytes. The user can change the
+  limit of each store.
 
 Errors of all knowledge routes: 404 `not_found`, 503 `not_ready`.
 
@@ -674,6 +677,13 @@ model is set, or the embedding provider failed.
 The default comes from the options `knowledge.embedding_provider`,
 `knowledge.embedding_model` and `knowledge.embedding_dimensions`. A model
 that the user selects replaces the default.
+
+Other options of the `knowledge` section: `max_upload_bytes`,
+`default_size_limit`, `index_entries` (index entries of each store in the
+turn context, 50 by default), `max_vector_distance` (the cosine distance
+above which a vector match is not a result, 0.75 by default; the right
+value depends on the model), `embed_batch_size`, `embed_retry_seconds` and
+`load_sqlite_vec`.
 
 ## UI files
 

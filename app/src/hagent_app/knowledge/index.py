@@ -37,6 +37,9 @@ from hagent_app.storage import Database
 _LOG = logging.getLogger(__name__)
 
 RRF_K = 60
+# Cosine distance above which a vector match is not a result. The right
+# value depends on the embedding model (option max_vector_distance).
+DEFAULT_MAX_DISTANCE = 0.75
 MAX_QUERY_WORDS = 32
 _WORD = re.compile(r"\w+", re.UNICODE)
 
@@ -211,6 +214,7 @@ class SearchIndex:
     db: Database
     vector_reason: str | None = "sqlite-vec is not loaded"
     embed_query: QueryEmbedder | None = None
+    max_distance: float = DEFAULT_MAX_DISTANCE
     last_reason: str | None = field(default=None, init=False)
 
     @property
@@ -237,7 +241,9 @@ class SearchIndex:
         self.last_reason = reason
 
         def run(conn: sqlite3.Connection) -> list[Hit]:
-            return _search(conn, scope, query, vector, depth, limit)
+            return _search(
+                conn, scope, query, vector, (depth, limit, self.max_distance)
+            )
 
         hits = await self.db.run(run)
         if vector is None:
@@ -245,14 +251,14 @@ class SearchIndex:
         return SearchResult(hits, "hybrid")
 
 
-def _search(  # noqa: PLR0913, PLR0917
+def _search(
     conn: sqlite3.Connection,
     scope: Scope,
     query: str,
     vector: tuple[str, list[float]] | None,
-    depth: int,
-    limit: int,
+    limits: tuple[int, int, float],
 ) -> list[Hit]:
+    depth, limit, max_distance = limits
     where, params = scope.where()
     lists: dict[str, list[int]] = {}
     match = fts_query(query)
@@ -273,7 +279,7 @@ def _search(  # noqa: PLR0913, PLR0917
         )
         try:
             lists["vector"] = vectors.nearest(
-                conn, candidates, params, query_vector, model, depth
+                conn, candidates, params, query_vector, model, depth, max_distance
             )
         except sqlite3.Error as err:
             _LOG.warning("vector search failed: %s", err)
