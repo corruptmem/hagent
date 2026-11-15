@@ -151,6 +151,8 @@ hagent has two parts: an app and an integration.
   API for state, events and service calls.
 - It keeps agent definitions, agent state, knowledge stores and history in
   SQLite, in the app data directory. HA backups include this directory.
+  The app uses a cold backup: the Supervisor stops the app during a backup,
+  so that the SQLite files are consistent.
 - It serves a management UI through Ingress. Ingress shows an app web page
   in the HA sidebar, behind HA login. Only HA administrators can open it.
   Section 7.2 describes the UI.
@@ -1041,6 +1043,13 @@ A conversation is a series of agent turns with the same knowledge stores,
 history, tools and scopes. The app keeps the conversation history, with
 compaction (section 13.1), so it does not expire after 5 minutes. Rules do
 not answer Assist invocations.
+
+Who can call an agent: `hagent.invoke`, the AI Task entity and the
+conversation entity accept calls from HA administrators and from calls with
+no user, for example automations. HA rejects calls from other users. An
+agent can hold wide scopes, so this rule stops a user with fewer rights from
+acting through it. A user who is not an administrator therefore cannot talk
+to an agent through Assist. `docs/link.md` describes the rule.
 
 ## 16. Providers
 
