@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:12'
+updated_date: '2026-11-15 00:13'
 labels:
   - ui
 dependencies:
@@ -65,6 +65,8 @@ Evidence:
 - pre-commit run --all-files: all hooks passed. mise run check: passed.
 - Live run of the app with the real UI build against a live HA instance (scratch data directory, no HA changes): all six registry commands returned non-empty data and stale was false; index.html had the base element for a test X-Ingress-Path; the hashed asset returned 200; api/missing returned JSON 404; an unsafe header gave base /; a LAN source got 403 forbidden; loopback (allowed by the override) got 200.
 - The browser pass did not run, because the Chrome extension was not connected. vitest drives the UI flows in jsdom.
+
+Lead: merged into impl with providers component first. Task stays In Progress: AC #5 (test invocation) waits for the agent runtime (task-12); the lead will finish it after task-12 merges.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
