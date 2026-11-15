@@ -15,7 +15,7 @@ only these callers can run an agent through the integration (the
 entity):
 
 - automations, and scripts that no user starts,
-- voice satellites and other calls without an HA user,
+- other calls without an HA user, for example from a voice satellite,
 - HA admin users.
 
 A call by an HA user who is not an admin fails with `Unauthorized`. A

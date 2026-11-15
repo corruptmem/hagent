@@ -101,8 +101,8 @@ class HagentConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason=error)
         await self.async_set_unique_id(installation_id)
         # Never change an existing entry from a discovery: another app could
-        # send a host and secret of its own. The user changes an entry by
-        # hand (reconfigure or a new manual set-up).
+        # send a host and secret of its own. Only a manual set-up with the
+        # same installation ID changes an entry.
         self._abort_if_unique_id_configured()
         return await self.async_step_hassio_confirm()
 

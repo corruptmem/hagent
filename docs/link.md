@@ -263,8 +263,9 @@ with the `admin` level or a wide scope can call admin actions such as
 `homeassistant.restart`. So the integration applies the rule of HA admin
 actions to each call that reaches the link:
 
-- A call without an HA user can invoke an agent. Automations, scripts
-  that no user starts and voice satellites make such calls.
+- A call without an HA user can invoke an agent. Automations and scripts
+  that no user starts make such calls. A voice satellite also makes such
+  calls when its pipeline runs without a user.
 - A call by an admin user can invoke an agent.
 - A call by any other user fails with `Unauthorized`. The integration does
   not send an `invoke` command to the app.
@@ -281,9 +282,10 @@ A script inherits the context of the user who starts it. Thus a script
 that a non-admin user starts also fails when it calls an agent. A
 non-admin user cannot use Assist with a hagent agent.
 
-The app marks the caller data in the prompt as data, not instructions
-(design section 19). This mark does not replace the rule above: a model
-can still follow text in the data.
+In the prompt, the app shows `text` on its own line as the request. It
+marks the other caller data as data, not instructions (design section 19).
+This mark does not replace the rule above: a model can still follow text
+in the data.
 
 ## Seam for approval notifications
 

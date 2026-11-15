@@ -8,6 +8,7 @@ server. No test needs a live HA instance or the real app.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 from pathlib import Path
 from typing import Any
@@ -778,8 +779,17 @@ def test_attachment_must_be_a_regular_file(tmp_path: Path) -> None:
     item = conversation.Attachment(
         media_content_id="m", mime_type="text/plain", path=fifo
     )
-    with pytest.raises(HagentInvocationError, match="regular"):
-        read_attachments([item])
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        future = pool.submit(read_attachments, [item])
+        try:
+            error = future.exception(timeout=5)
+        except TimeoutError:
+            # open() blocks on the FIFO. A writer releases it, so the test
+            # fails and does not hang.
+            os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            pytest.fail("read_attachments opened the FIFO")
+    assert isinstance(error, HagentInvocationError)
+    assert "regular" in str(error)
 
 
 def test_structure_schema_is_an_object_schema() -> None:
