@@ -300,15 +300,17 @@ def _round(
         if default is _MISSING:
             raise _fail("round", value) from None
         return default
+    multiplier = float(10**precision)
     if method == "ceil":
-        result: float = math.ceil(number * 10**precision) / 10**precision
+        result: float = math.ceil(number * multiplier) / multiplier
     elif method == "floor":
-        result = math.floor(number * 10**precision) / 10**precision
+        result = math.floor(number * multiplier) / multiplier
     elif method == "half":
-        result = round(number * 2) / 2.0
+        result = round(number * 2) / 2
     else:
         result = round(number, precision)
-    return result
+    # As HA: precision 0 gives an int.
+    return int(result) if precision == 0 else result
 
 
 def _multiply(value: Any, amount: Any, default: Any = _MISSING) -> Any:
@@ -337,8 +339,12 @@ def _numbers(name: str, args: tuple[Any, ...], default: Any) -> list[float] | An
         and not isinstance(args[0], str)
     ):
         items = args[0]
-    values = []
+    values: list[float] = []
     for item in items:
+        if isinstance(item, (int, float)) and not isinstance(item, bool):
+            # Keep the type, as HA does: the median of ints can be an int.
+            values.append(item)
+            continue
         try:
             values.append(float(item))
         except ValueError, TypeError:
