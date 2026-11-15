@@ -30,6 +30,7 @@
           "entities": [],
           "devices": [],
           "areas": [],
+          "floors": [],
           "labels": [],
           "domains": []
         },

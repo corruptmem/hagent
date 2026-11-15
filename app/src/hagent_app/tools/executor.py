@@ -1,0 +1,271 @@
+"""The tool executor: the one path from an agent turn to HA and the stores.
+
+``ToolExecutor.execute`` runs these steps for each call, in this order:
+
+1. Find the tool. Check that the definition turns on the tool.
+2. Validate the arguments. Unknown arguments fail.
+3. ``authorize``: the scope check. It returns a prepared request.
+4. A dry run of a call that writes stops here. It records the call and
+   returns the prepared request, with no approval request.
+5. The approval check. If the definition marks the call for approval, the
+   approval gate must accept it. With no gate, the executor denies the call
+   (task-16 supplies the gate).
+6. For a call that changes HA: write the audit row with status
+   ``pending``. If the write fails, stop.
+7. ``run`` on the prepared request.
+8. For a call that changes HA: write the final status, also when the
+   invocation is cancelled.
+
+The executor writes every denied call to the audit log. It never raises
+for a denial or a tool error: it returns a ``ToolResult`` for the model.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Iterable, Mapping
+from typing import Any, Protocol
+
+from pydantic import ValidationError
+
+from hagent_app.agents.definition import AgentDefinition
+from hagent_app.ha.client import HAError
+from hagent_app.tools.audit import AuditCall, AuditLog
+from hagent_app.tools.base import (
+    Prepared,
+    Tool,
+    ToolContext,
+    ToolEnv,
+    ToolResult,
+    ToolSpec,
+    ToolUnavailableError,
+)
+from hagent_app.tools.ha_tools import HA_TOOLS
+from hagent_app.tools.registry import RegistryUnavailableError
+from hagent_app.tools.scope import ScopeDeniedError
+from hagent_app.tools.store_tools import STORE_TOOLS
+
+_LOG = logging.getLogger(__name__)
+
+ALL_TOOLS: tuple[Tool, ...] = HA_TOOLS + STORE_TOOLS
+
+
+class ApprovalGate(Protocol):
+    """The hook for task-16: hold a call until a person accepts or rejects it."""
+
+    async def request(self, ctx: ToolContext, tool: str, prepared: Prepared) -> bool:
+        """Return True if an approver accepts the call."""
+        ...
+
+
+def needs_approval(definition: AgentDefinition, tool: Tool, prepared: Prepared) -> bool:
+    """True if the definition marks this call for approval (design section 8)."""
+    approval = definition.approval
+    refs = {tool.group, f"{tool.group}.*", tool.name}
+    if refs & set(approval.tools):
+        return True
+    if not tool.writes:
+        # Service and entity approval applies to changes only.
+        return False
+    for name in prepared.services:
+        domain = name.split(".", 1)[0]
+        if name in approval.services or f"{domain}.*" in approval.services:
+            return True
+    return bool(prepared.entities & set(approval.entities))
+
+
+def _validation_message(err: ValidationError) -> str:
+    parts = []
+    for item in err.errors(include_url=False, include_context=False)[:5]:
+        loc = ".".join(str(p) for p in item["loc"]) or "arguments"
+        parts.append(f"{loc}: {item['msg']}")
+    return "; ".join(parts)
+
+
+class ToolExecutor:
+    """Run tool calls for agent turns, with the scope check first."""
+
+    def __init__(
+        self,
+        env: ToolEnv,
+        audit: AuditLog,
+        *,
+        approval: ApprovalGate | None = None,
+        tools: Iterable[Tool] = ALL_TOOLS,
+    ) -> None:
+        self._env = env
+        self._audit = audit
+        self._approval = approval
+        self._tools = {tool.name: tool for tool in tools}
+
+    @property
+    def tool_names(self) -> list[str]:
+        """The names of every tool that the executor knows."""
+        return sorted(self._tools)
+
+    def tools_for(self, definition: AgentDefinition) -> list[ToolSpec]:
+        """The tools that the definition turns on, for the model."""
+        return [
+            ToolSpec(
+                name=tool.name,
+                group=tool.group,
+                description=tool.description,
+                parameters=tool.args_model.model_json_schema(),
+            )
+            for tool in self._tools.values()
+            if tool.available(definition)
+        ]
+
+    async def execute(  # noqa: PLR0911, PLR0912 - one linear pipeline
+        self, ctx: ToolContext, name: str, arguments: Mapping[str, Any]
+    ) -> ToolResult:
+        """Run one tool call. Never raise for a denial or a tool error."""
+        tool = self._tools.get(name)
+        call = AuditCall(
+            agent_id=ctx.agent.id,
+            agent_version=ctx.agent.version,
+            invocation_id=ctx.invocation_id,
+            tool=name,
+            level=tool.level(ctx.definition) if tool else "unknown",
+            request=dict(arguments) if isinstance(arguments, Mapping) else None,
+        )
+        if tool is None:
+            return await self._deny(call, "unknown_tool", f"no tool named {name!r}")
+        if not tool.available(ctx.definition):
+            return await self._deny(
+                call, "tool_off", f"the definition does not turn on {name}"
+            )
+        try:
+            args = tool.args_model.model_validate(arguments)
+        except ValidationError as err:
+            return await self._deny(call, "invalid_arguments", _validation_message(err))
+
+        # The scope check.
+        try:
+            prepared = await tool.authorize(ctx, self._env, args)
+        except ScopeDeniedError as err:
+            return await self._deny(call, err.code, err.message)
+        except RegistryUnavailableError as err:
+            return await self._deny(call, "registry_unavailable", str(err))
+        except ToolUnavailableError as err:
+            return await self._deny(call, "unavailable", str(err))
+        except (HAError, TimeoutError) as err:
+            return await self._deny(call, "ha_error", f"the check failed: {err}")
+        call = AuditCall(
+            call.agent_id,
+            call.agent_version,
+            call.invocation_id,
+            call.tool,
+            call.level,
+            dict(prepared.request),
+        )
+
+        approval_needed = needs_approval(ctx.definition, tool, prepared)
+
+        # A dry run stops here for a call that writes. It sends no approval
+        # request, because a test invocation must not reach approvers.
+        if ctx.dry_run and tool.writes:
+            return await self._dry_run(call, tool, prepared, approval_needed)
+
+        # The approval hook.
+        if approval_needed:
+            if self._approval is None:
+                return await self._deny(
+                    call,
+                    "approval_unavailable",
+                    "the call needs approval, and approvals are not available",
+                )
+            try:
+                accepted = await self._approval.request(ctx, name, prepared)
+            except Exception:
+                _LOG.exception("approval request failed")
+                accepted = False
+            if not accepted:
+                return await self._deny(
+                    call, "approval_rejected", "the approver did not accept the call"
+                )
+
+        audit_id = None
+        if tool.changes_ha:
+            # No HA change without its audit row.
+            try:
+                audit_id = await self._audit.begin(
+                    call,
+                    previous=prepared.previous,
+                    previous_note=prepared.previous_note,
+                )
+            except Exception:
+                _LOG.exception("cannot write the audit log; the call stops")
+                return ToolResult(
+                    False, error_code="audit_failed", error="the audit log failed"
+                )
+
+        try:
+            data = await tool.run(ctx, self._env, prepared)
+        except asyncio.CancelledError:
+            # HA can have acted already. Record the end, then stop.
+            await asyncio.shield(
+                self._finish(audit_id, "error", "the invocation was cancelled")
+            )
+            raise
+        except ToolUnavailableError as err:
+            await self._finish(audit_id, "error", str(err))
+            return ToolResult(False, error_code="unavailable", error=str(err))
+        except (HAError, TimeoutError) as err:
+            await self._finish(audit_id, "error", str(err))
+            return ToolResult(False, error_code="ha_error", error=str(err))
+        except Exception as err:
+            _LOG.exception("tool %s failed", name)
+            await self._finish(audit_id, "error", repr(err))
+            return ToolResult(False, error_code="tool_error", error=str(err))
+        context_id = data.get("context_id") if isinstance(data, dict) else None
+        await self._finish(
+            audit_id, "ok", None, context_id if isinstance(context_id, str) else None
+        )
+        return ToolResult(True, data, audit_id=audit_id)
+
+    async def _dry_run(
+        self, call: AuditCall, tool: Tool, prepared: Prepared, approval_needed: bool
+    ) -> ToolResult:
+        audit_id = None
+        if tool.changes_ha:
+            try:
+                audit_id = await self._audit.begin(
+                    call,
+                    previous=prepared.previous,
+                    previous_note=prepared.previous_note,
+                )
+                await self._audit.finish(audit_id, "dry_run")
+            except Exception:
+                _LOG.exception("cannot write the audit log")
+        data = {
+            "dry_run": True,
+            "needs_approval": approval_needed,
+            "request": dict(prepared.request),
+        }
+        return ToolResult(True, data, audit_id=audit_id)
+
+    async def _finish(
+        self,
+        audit_id: int | None,
+        status: Any,
+        error: str | None,
+        context_id: str | None = None,
+    ) -> None:
+        if audit_id is None:
+            return
+        try:
+            await self._audit.finish(
+                audit_id, status, error=error, context_id=context_id
+            )
+        except Exception:
+            _LOG.exception("cannot finish audit row %s", audit_id)
+
+    async def _deny(self, call: AuditCall, code: str, message: str) -> ToolResult:
+        audit_id = None
+        try:
+            audit_id = await self._audit.denied(call, code, message)
+        except Exception:
+            _LOG.exception("cannot record a denied call")
+        return ToolResult(False, error_code=code, error=message, audit_id=audit_id)

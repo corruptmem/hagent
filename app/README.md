@@ -20,9 +20,12 @@ SIGINT.
 | `src/hagent_app/providers/` | Provider adapters, the price table, cost records and budgets (task-9). See "Providers and cost" below. |
 | `src/hagent_app/ingress/` | `IngressGuard`, the source-address check, and `UiComponent`, which serves the UI files (task-18). |
 | `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
+| `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
+| `tests/helpers/home.py` | A sample home (registries, services and states) for scope tests. |
+| `tests/helpers/tools.py` | `harness`, the tool test harness, with fake knowledge, history and agent-state stores. |
 | `tests/helpers/wait.py` | `wait_until`, a poll helper for async tests. |
 | `tests/helpers/fake_providers.py` | `FakeProviders`, a fake provider API that replays recorded responses from `tests/fixtures/providers/`. |
 | `tests/helpers/providers_env.py` | `ProvidersEnv`, a started providers component on a temporary database. The `providers_env` fixture creates it. |
@@ -171,6 +174,110 @@ Rules that task-7 applies, and that task-11 must keep:
 - The app refuses to delete a private store that other live agents attach.
 - A definition can attach only stores that exist in `knowledge_stores`.
 
+## How to call tools: the executor and the scope check
+
+Every agent tool call goes through `ToolExecutor` (`tools/executor.py`). The
+executor checks the scope before a tool reaches HA or a store (design
+sections 8 and 19). The app has administrator access to HA, so this check
+is the only barrier. It fails closed.
+
+Terms:
+
+- **Tool**: one operation that a model can call, for example
+  `ha.call_service`. Each tool belongs to a tool group: `ha`, `knowledge`,
+  `memory` or `self`.
+- **Registry snapshot**: one copy of the HA entity, device, area, floor and
+  label registries and the HA service list (`tools/registry.py`).
+- **Prepared call**: a service call that passed the check. Its target names
+  explicit entity IDs only, so HA acts on exactly the checked entities.
+
+Use the executor from an agent turn (task-10):
+
+```python
+executor = tools_component.executor()
+ctx = ToolContext(agent, invocation_id=invocation_id, dry_run=False)
+specs = executor.tools_for(agent.definition)  # tool names, texts, schemas
+result = await executor.execute(ctx, "ha.call_service", arguments)
+```
+
+`agent` is the `Agent` snapshot from `AgentReader`. The executor takes the
+agent ID and the scope from the snapshot, never from the arguments.
+`execute` never raises for a denial: it returns a `ToolResult` with
+`error_code`. With `dry_run`, the executor checks and records a change but
+does not make it, and it sends no approval request. The result says
+whether the call would need approval.
+
+Steps of `execute`, in order:
+
+1. The definition must turn on the tool. The arguments must validate.
+2. `authorize` checks the scope and returns a prepared request.
+3. If the definition marks the call for approval, an `ApprovalGate` must
+   accept it. With no gate, the executor denies the call. Task-16 sets
+   `ToolsComponent.approval`. Service and entity approval applies only to
+   tools that write.
+4. For a call that changes HA, the executor writes an audit row with status
+   `pending`. If that write fails, it does not call HA.
+5. `run` acts on the prepared request only. If the invocation is
+   cancelled, the executor still writes the final audit status.
+
+Rules of the HA check (`tools/scope.py`):
+
+- Area, device, floor and label targets resolve to entity IDs, also inside
+  the scope. Top-level target keys in the service data join the target.
+- Known entity and device IDs anywhere in the service data, in values and
+  in keys, must be in the scope. The check lower-cases text and splits it
+  at commas, as HA does.
+- The members of a group entity (the `entity_id` state attribute, also of
+  nested groups) must be in the scope too. Groups that an integration
+  manages without that attribute, and template entities that run actions,
+  are not visible to the check.
+- An area, device, floor or label target with no entity of the service
+  domain causes a denial, so that HA never gets a call whose target the
+  check dropped.
+- Templates in the service data, unknown target keys, and unknown devices,
+  areas, floors, labels or services cause a denial.
+- Indirect services need their exact name in `tools.ha.services`.
+- A call that resolves to no entity needs its exact name in
+  `tools.ha.services`. This stops `mqtt.publish`, `recorder.purge` and
+  similar services.
+- Outputs are a short form of `control`, but not for indirect services.
+- `admin` passes every call unchanged.
+- While the registry is stale, every check that needs it fails.
+
+The admin tools accept only the WebSocket commands in `tools/admin.py`.
+Each change command has a reader for the previous version, which the audit
+log keeps. If the reader fails, the change does not run. HA changes
+automation, script and scene configuration only through REST, and the app
+has no REST client yet.
+
+`ScopeMonitor` resolves every scope again after each registry reload. If a
+scope grew within the same definition version, it creates an HA persistent
+notification and publishes `tools` / `scope_grown`. It stores the last
+result in `tool_scope_snapshots`, so it also finds growth across a restart.
+
+### How to plug in a store
+
+The knowledge, memory and self tools use the protocols in
+`tools/stores.py`: `KnowledgeStore` (task-11), `HistoryStore` (task-10) and
+`AgentStateStore` (task-13 to task-15). Set the store on `ToolsComponent`
+in `default_components()`, before the app starts. Until then, those tools
+return `unavailable`. The executor passes only
+attached store IDs and the invocation's agent ID to a store.
+
+### How to add a tool
+
+1. Subclass `Tool` (`tools/base.py`). Set `name`, `group`, `description`
+   and `args_model`. Set `changes_ha` if the tool changes HA, and `writes`
+   if it changes HA or a store.
+2. Put every check in `authorize`. It must not change anything.
+3. Use only the prepared request in `run`.
+4. Add the tool to `HA_TOOLS` or `STORE_TOOLS`.
+5. Add an out-of-scope case to `CASES` in `tests/test_tool_executor.py`.
+   The test fails for a tool without one.
+
+Tools must never receive `AgentService`. `tests/test_tools_no_writer.py`
+checks this.
+
 ## How to use the HA client and the state cache
 
 - `await ctx.ha.call_service(domain, service, data, target=...)` returns a
@@ -185,7 +292,7 @@ Rules that task-7 applies, and that task-11 must keep:
   not match HA.
 
 The client does no scope check. Agent tools must call HA only through the
-tool executor (task-8), which checks the scope first.
+tool executor, which checks the scope first.
 
 ## How to add a migration
 

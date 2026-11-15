@@ -70,7 +70,9 @@ async def catalog(fake_ha: FakeHA, tmp_path: Path) -> AsyncIterator[str]:
         fake_ha.handlers[kind] = _reply(result)
     fake_ha.set_state("light.test_lamp", "on", {"friendly_name": "Lamp state name"})
     fake_ha.set_state("input_boolean.test", "off")
-    components = default_components()
+    # The tools component reads the same registries for its own snapshot.
+    # Leave it out, so that the command counts show only catalog commands.
+    components = [c for c in default_components() if c.name != "tools"]
     config = Config(
         ha_url=fake_ha.url,
         ha_token=fake_ha.token,

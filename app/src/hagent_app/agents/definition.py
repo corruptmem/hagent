@@ -180,6 +180,7 @@ class HAScope(_Model):
     entities: EntityList = ()
     devices: RegistryList = ()
     areas: RegistryList = ()
+    floors: RegistryList = ()
     labels: RegistryList = ()
     domains: SlugList = ()
 
@@ -191,13 +192,21 @@ class HAScope(_Model):
             or self.entities
             or self.devices
             or self.areas
+            or self.floors
             or self.labels
             or self.domains
         )
 
     @model_validator(mode="after")
     def _check(self) -> Self:
-        lists = (self.entities, self.devices, self.areas, self.labels, self.domains)
+        lists = (
+            self.entities,
+            self.devices,
+            self.areas,
+            self.floors,
+            self.labels,
+            self.domains,
+        )
         if self.all and any(lists):
             msg = "a scope with all=true takes no lists"
             raise ValueError(msg)

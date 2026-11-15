@@ -259,6 +259,12 @@ export function DefinitionForm({
           scopeOff || scopeAll,
         )}
         {picker(
+          "tools.ha.scope.floors",
+          "Scope: floors",
+          options.floors,
+          scopeOff || scopeAll,
+        )}
+        {picker(
           "tools.ha.scope.labels",
           "Scope: labels",
           options.labels,

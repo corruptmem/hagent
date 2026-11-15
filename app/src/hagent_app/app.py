@@ -25,6 +25,7 @@ from hagent_app.ha_catalog import CatalogComponent
 from hagent_app.http import HttpServer
 from hagent_app.ingress import IngressGuard, UiComponent
 from hagent_app.storage import Database, transaction
+from hagent_app.tools import ToolsComponent
 
 _LOG = logging.getLogger(__name__)
 
@@ -71,11 +72,12 @@ def default_components() -> list[Component]:
     http.add_middleware(guard.middleware)
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
+    tools = ToolsComponent(http.events)
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
     http.add_routes(ui.routes())
-    return [ProvidersComponent(), guard, agents, catalog, ui, http]
+    return [ProvidersComponent(), guard, agents, tools, catalog, ui, http]
 
 
 class App:

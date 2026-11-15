@@ -13,6 +13,7 @@ export interface HaScope {
   entities: string[];
   devices: string[];
   areas: string[];
+  floors: string[];
   labels: string[];
   domains: string[];
 }

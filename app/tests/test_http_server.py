@@ -142,6 +142,7 @@ async def test_default_components_serve_the_api(
         "providers",
         "ingress_guard",
         "agents",
+        "tools",
         "ha_catalog",
         "ui",
         "http",

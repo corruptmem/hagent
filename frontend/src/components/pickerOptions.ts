@@ -5,6 +5,7 @@ export interface PickerOptions {
   entities: PickerOption[];
   devices: PickerOption[];
   areas: PickerOption[];
+  floors: PickerOption[];
   labels: PickerOption[];
   domains: PickerOption[];
   services: PickerOption[];
@@ -17,6 +18,7 @@ export function pickerOptions(catalog: Catalog | undefined): PickerOptions {
       entities: [],
       devices: [],
       areas: [],
+      floors: [],
       labels: [],
       domains: [],
       services: [],
@@ -43,6 +45,7 @@ export function pickerOptions(catalog: Catalog | undefined): PickerOptions {
         : { value: d.id, label: d.name };
     }),
     areas: catalog.areas.map((a) => ({ value: a.id, label: a.name })),
+    floors: catalog.floors.map((f) => ({ value: f.id, label: f.name })),
     labels: catalog.labels.map((l) => ({ value: l.id, label: l.name })),
     domains: catalog.domains.map((d) => ({ value: d, label: d })),
     services: [

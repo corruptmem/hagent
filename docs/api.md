@@ -148,7 +148,7 @@ The design gives no default for `budget.max_tokens` and
 ### HA scope
 
 `tools.ha.scope` has these fields: `all` (true or false), `entities`,
-`devices`, `areas`, `labels` and `domains` (lists).
+`devices`, `areas`, `floors`, `labels` and `domains` (lists).
 
 - For `read` and `control`, the scope must set `all` to true, or list at
   least one target.
@@ -489,6 +489,7 @@ Each later message has this form:
 | `agents` | `created` | `version`, `enabled` |
 | `agents` | `updated` | `version`, `enabled`. The app sends it for an edit, a restore and a change to `enabled`. |
 | `agents` | `deleted` | `private_store`: `keep` or `delete` |
+| `tools` | `scope_grown` | `version`, `added_read`, `added_control`: lists of entity IDs. The app sends it when an HA registry change makes the scope of an agent grow. `id` is the agent ID. |
 
 Rules for the UI:
 
