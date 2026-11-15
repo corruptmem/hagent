@@ -869,7 +869,7 @@ link**. `docs/link.md` describes the link protocol. The management UI does
 not use the link.
 
 `GET api/link/ws` opens the link. It is the only path that the Ingress
-guard does not check, because HA Core connects from its own address. The
+guard does not check (the exact path, not its subpaths), because HA Core connects from its own address. The
 request must carry `Authorization: Bearer <secret>`. Without the right
 secret, the app answers 401 `unauthorized` and does not open the WebSocket.
 

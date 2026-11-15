@@ -215,6 +215,30 @@ async def test_agents_appear_update_and_disappear(
     )
 
 
+async def test_device_follows_name_and_version_changes(
+    hass: HomeAssistant, fake_app: FakeApp
+) -> None:
+    await setup_entry(hass, fake_app)
+    await wait_for(hass, lambda: agent_device(hass) is not None)
+    await fake_app.push({"type": "agent", "agent": agent(name="Warmth", version=4)})
+
+    def renamed() -> bool:
+        device = agent_device(hass)
+        return device is not None and device.name == "Warmth"
+
+    await wait_for(hass, renamed)
+    device = agent_device(hass)
+    assert device is not None
+    assert device.sw_version == "definition 4"
+    # A reconnect with a changed agent updates the device too.
+    fake_app.agents = [agent(name="Heat", version=5)]
+    await fake_app.drop()
+    await wait_for(
+        hass, lambda: getattr(agent_device(hass), "sw_version", "") == "definition 5"
+    )
+    assert agent_device(hass).name == "Heat"  # type: ignore[union-attr]
+
+
 async def test_hello_after_reconnect_removes_agents_deleted_meanwhile(
     hass: HomeAssistant, fake_app: FakeApp
 ) -> None:

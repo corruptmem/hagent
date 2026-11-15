@@ -27,6 +27,29 @@ SECRET = "test-secret-0123456789abcdefghijklmnopqrstuvwxyz"
 
 type Handler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
+# The fields of each command in docs/link.md. The fake app records each
+# command with another field, so that a misnamed field fails the test.
+COMMAND_FIELDS = {
+    "invoke": {
+        "type",
+        "id",
+        "agent_id",
+        "source",
+        "text",
+        "data",
+        "conversation_id",
+        "result_schema",
+        "attachments",
+        "caller",
+        "wait",
+        "timeout",
+        "on_timeout",
+    },
+    "cancel": {"type", "id", "invocation_id"},
+    "set_enabled": {"type", "id", "agent_id", "enabled"},
+    "ping": {"type", "id"},
+}
+
 
 def messages() -> dict[str, Any]:
     """A fresh copy of the shared example messages."""
@@ -49,6 +72,7 @@ class FakeApp:
         self.agents: list[dict[str, Any]] = [agent()]
         self.installation_id = "installation-1"
         self.commands: list[dict[str, Any]] = []
+        self.bad_commands: list[dict[str, Any]] = []
         self.handlers: dict[str, Handler] = {}
         self.sockets: list[web.WebSocketResponse] = []
         self.refused = 0
@@ -103,6 +127,9 @@ class FakeApp:
                     continue
                 command = json.loads(msg.data)
                 self.commands.append(command)
+                allowed = COMMAND_FIELDS.get(command.get("type"), set())
+                if not set(command) <= allowed:
+                    self.bad_commands.append(command)
                 task = asyncio.get_running_loop().create_task(self._answer(ws, command))
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
@@ -142,6 +169,7 @@ async def fake_app(socket_enabled: None) -> AsyncIterator[FakeApp]:
         yield app
     finally:
         await app.stop()
+    assert app.bad_commands == [], "commands with fields that docs/link.md lacks"
 
 
 def make_entry(app: FakeApp, **data: Any) -> MockConfigEntry:

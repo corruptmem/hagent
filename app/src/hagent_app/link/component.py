@@ -104,12 +104,12 @@ class _Connection:
 class LinkComponent:
     """The integration link. List it after ``router`` in ``default_components``.
 
-    ``exempt_prefixes`` is the value for ``IngressGuard(exempt_prefixes=...)``.
-    It holds only the link path.
+    ``exempt_paths`` is the value for ``IngressGuard(exempt_paths=...)``. It
+    holds only the exact link path, not its subpaths.
     """
 
     name = "link"
-    exempt_prefixes = (LINK_PATH,)
+    exempt_paths = (LINK_PATH,)
 
     def __init__(
         self,

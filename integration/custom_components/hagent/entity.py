@@ -13,7 +13,7 @@ from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN, MANUFACTURER, signal_agents, signal_connection
-from .runtime import Agent, HagentRuntime
+from .runtime import Agent, HagentRuntime, device_version
 
 type HagentConfigEntry = ConfigEntry[HagentRuntime]
 
@@ -34,7 +34,7 @@ class HagentAgentEntity(Entity):
             name=str(agent.get("name") or agent_id),
             manufacturer=MANUFACTURER,
             model="Agent",
-            sw_version=f"definition {agent.get('version')}",
+            sw_version=device_version(agent),
         )
 
     @property

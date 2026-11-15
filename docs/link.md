@@ -30,8 +30,9 @@ default port is 8099.
   error code `unauthorized`. The app does not open the WebSocket.
 - The app compares the secret in constant time.
 - The Ingress guard does not check the link path, because HA Core connects
-  from its own address (design section 6.1). The guard checks every other
-  path, also `/api/link` and `/api/link/ws2`.
+  from its own address (design section 6.1). The exemption is for the exact
+  path only. The guard checks every other path, also `/api/link`,
+  `/api/link/ws2` and each subpath such as `/api/link/ws/x`.
 - Each frame holds one JSON object. The largest frame is 16 MiB.
 - Both sides send WebSocket pings every 30 seconds.
 

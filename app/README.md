@@ -117,9 +117,10 @@ def default_components() -> list[Component]:
   WebSocket. It uses the TCP peer address, never a header. Before it
   starts, it refuses all requests with 503.
 - The integration link connects from HA Core, not from that address.
-  `default_components()` gives its path, and only its path, to
-  `IngressGuard(exempt_prefixes=LinkComponent.exempt_prefixes)`. The link
-  checks the shared secret itself. Do not add other exempt paths.
+  `default_components()` gives its exact path, and only that path, to
+  `IngressGuard(exempt_paths=LinkComponent.exempt_paths)`. Subpaths of the
+  link path are not exempt. The link checks the shared secret itself. Do
+  not add other exempt paths.
 - `UiComponent` serves the UI on every path that does not start with
   `api/`. Its route pattern excludes `api/`, so it never hides a route
   that another component adds. Put new routes under `/api/<area>`.

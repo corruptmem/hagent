@@ -41,6 +41,11 @@ _LOGGER = logging.getLogger(__name__)
 type Agent = dict[str, Any]
 
 
+def device_version(agent: Mapping[str, Any]) -> str:
+    """The ``sw_version`` of an agent device: the definition version."""
+    return f"definition {agent.get('version')}"
+
+
 class HagentRuntime:
     """The link and the agent list of one config entry."""
 
@@ -91,6 +96,8 @@ class HagentRuntime:
                 self._remove_conversation(agent_id)
         self.agents = agents
         self._remove_stale_devices()
+        for agent in agents.values():
+            self._update_device(agent)
         async_dispatcher_send(self.hass, signal_agents(self.entry.entry_id))
 
     @callback
@@ -104,6 +111,7 @@ class HagentRuntime:
             if old is not None and old.get("assist") and not agent.get("assist"):
                 self._remove_conversation(agent_id)
             self.agents[agent_id] = agent
+            self._update_device(agent)
             async_dispatcher_send(self.hass, signal_agents(self.entry.entry_id))
         elif kind == "agent_removed":
             agent_id = str(msg["agent_id"])
@@ -127,6 +135,22 @@ class HagentRuntime:
             devices.async_update_device(
                 device.id, remove_config_entry_id=self.entry.entry_id
             )
+
+    def _update_device(self, agent: Agent) -> None:
+        """Give the agent device the current name and definition version.
+
+        A name that the user set in HA (``name_by_user``) still wins.
+        """
+        devices = dr.async_get(self.hass)
+        device = devices.async_get_device_by_identifier(
+            (DOMAIN, str(agent["id"])), self.entry.entry_id
+        )
+        if device is None:
+            return
+        name = str(agent.get("name") or agent["id"])
+        version = device_version(agent)
+        if device.name != name or device.sw_version != version:
+            devices.async_update_device(device.id, name=name, sw_version=version)
 
     def _remove_conversation(self, agent_id: str) -> None:
         self.tracked("conversation").discard(agent_id)

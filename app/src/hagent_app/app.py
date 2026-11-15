@@ -79,7 +79,7 @@ def default_components() -> list[Component]:
     http = HttpServer()
     # The integration link connects from HA Core, not through Ingress. The
     # guard exempts only the link path; the link checks the shared secret.
-    guard = IngressGuard(exempt_prefixes=LinkComponent.exempt_prefixes)
+    guard = IngressGuard(exempt_paths=LinkComponent.exempt_paths)
     http.add_middleware(guard.middleware)
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())

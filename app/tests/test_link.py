@@ -45,6 +45,7 @@ from helpers.agents import definition
 from helpers.tools import Harness, harness
 from helpers.wait import wait_until
 from pydantic_ai.messages import BinaryContent
+from yarl import URL
 
 FIXTURE = Path(__file__).resolve().parents[2] / "docs" / "link-messages.json"
 
@@ -132,7 +133,7 @@ async def env(tmp_path: Path) -> AsyncIterator[Env]:
         async def cost(agent_id: str) -> tuple[Decimal, Decimal]:
             return costs.get(agent_id, (Decimal(0), Decimal(1)))
 
-        guard = IngressGuard(exempt_prefixes=LinkComponent.exempt_prefixes)
+        guard = IngressGuard(exempt_paths=LinkComponent.exempt_paths)
         http.add_middleware(guard.middleware)
         link = LinkComponent(events, router, cost=cost)
         http.add_routes(link.routes())
@@ -260,14 +261,23 @@ async def test_link_accepts_the_secret_and_sends_hello(env: Env) -> None:
         "/api/link/ws2",
         "/api/linkx/ws",
         "/api/link/wsx",
+        "/api/link/ws/",
+        "/api/link/ws/x",
+        "/api/link/ws/../agents",
+        "/api/link/ws/%2e%2e/agents",
         "/api/events",
         "/",
     ],
 )
 async def test_exemption_covers_only_the_link_path(env: Env, path: str) -> None:
-    """From a non-Ingress address, every other path gets the guard's 403."""
+    """From a non-Ingress address, every other path gets the guard's 403.
+
+    The URL is sent as written (``encoded=True``), so that the client does
+    not remove the dot segments first.
+    """
     headers = {"Authorization": f"Bearer {env.link.secret}"}
-    async with env.session.get(env.base + path, headers=headers) as resp:
+    url = URL(env.base + path, encoded=True)
+    async with env.session.get(url, headers=headers) as resp:
         assert resp.status == 403
         assert (await resp.json())["error"]["code"] == "forbidden"
 
@@ -275,8 +285,10 @@ async def test_exemption_covers_only_the_link_path(env: Env, path: str) -> None:
 def test_default_components_exempt_only_the_link_path() -> None:
     components = default_components()
     guard = next(c for c in components if isinstance(c, IngressGuard))
-    assert guard._exempt == (LINK_PATH,)
+    assert guard._exempt == ()
+    assert guard._exempt_exact == {LINK_PATH}
     assert guard._exempt_path(LINK_PATH)
+    assert not guard._exempt_path(LINK_PATH + "/x")
     assert not guard._exempt_path(INFO_PATH)
     assert not guard._exempt_path("/api/link")
     assert not guard._exempt_path("/api/linkx/ws")
@@ -296,7 +308,7 @@ async def test_info_route_is_served_through_ingress(tmp_path: Path) -> None:
         events = ChangeEvents()
         router = RouterComponent(ScriptedTurns())
         http = HttpServer(port=0)
-        guard = IngressGuard(exempt_prefixes=LinkComponent.exempt_prefixes)
+        guard = IngressGuard(exempt_paths=LinkComponent.exempt_paths)
         http.add_middleware(guard.middleware)
         link = LinkComponent(events, router)
         http.add_routes(link.routes())
@@ -659,6 +671,19 @@ async def test_app_messages_match_the_shared_fixture(env: Env) -> None:
     await env.agents.delete(agent.id, "delete")
     removed = await receive_type(ws, "agent_removed")
     assert set(removed) == set(fixture["agent_removed"])
+
+
+def test_the_fixture_invoke_command_parses() -> None:
+    """The integration sends commands with the fields of the fixture."""
+    from hagent_app.link.protocol import parse_invoke  # noqa: PLC0415
+
+    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    command = parse_invoke(fixture["invoke"])
+    assert command.request.agent_id == "agent-1"
+    assert command.request.data == {"reason": "test"}
+    assert command.wait is True
+    assert command.timeout == 30
+    assert command.on_timeout == "continue"
 
 
 # ----------------------------------------------------------- discovery
