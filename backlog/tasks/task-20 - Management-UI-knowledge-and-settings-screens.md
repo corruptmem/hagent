@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 01:14'
+updated_date: '2026-11-15 01:25'
 labels:
   - ui
 dependencies:
@@ -43,6 +43,8 @@ Design: docs/design.md section 7.2 (Knowledge, Settings) and 13.4.
 4. Tests: masking (GET, errors, events, logs), live key use, budgets, overrides, approvals checks. Docs: docs/api.md, app/README.md.
 5. Front end: Knowledge area (store list with attached agents, create/edit/delete store, items, upload/replace/delete documents, file edit with version conflict handling, history and restore, read-only for large or document items). Settings area (keys masked, embedding model with provider notice and re-index status, budgets, approvers, price overrides, auto-update toggle, decision models). Agent editor store picker from the stores list. Events invalidate knowledge and settings queries.
 6. vitest tests for each AC; mise run check.
+
+Round 2 (lead review): 7. Merge impl again. 8. Meter enforces each agent's definition budget.daily_usd; null means the settings default agent budget. 9. GET api/agents/defaults takes budget.daily_usd from settings. 10. Read-only GET api/ha/users (config/auth/list, fallback person/list, graceful failure) and an approver picker in settings.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -62,6 +64,14 @@ AC evidence:
 - AC3: app/tests/test_settings.py: test_get_shows_keys_only_masked, test_short_key_has_no_hint, test_invalid_key_errors_hold_no_key, test_providers_use_the_settings_key_at_once (errors and logs hold no key). Settings.test.tsx: shows API keys only masked and stores a new key. Live smoke test: the PUT response held only the hint.
 - AC4: Settings.test.tsx: states that text goes to the provider before it changes the embedding model (notice, re-index text, PUT api/knowledge/settings). Re-index on a model change: test_embeddings_are_queued_deduplicated_and_charged in app/tests/test_knowledge_search.py (line 279 onward asserts vectors only of the new model).
 - Approvals switch: test_settings_approvers_replace_the_option_section, test_settings_timeout_and_override_apply in app/tests/test_approvals.py.
+
+Round 2 (lead review), after a second merge of impl (5f57abe):
+- (1) Meter enforces budget.daily_usd of the current definition. The field is now nullable (default null = settings default agent budget). Order: definition value, then the agent_budgets_usd option, then the default agent budget. The meter reads the current definition on each reservation (Meter.budget_lookup with AgentReader), so a budget cut applies at the next call, also inside a running turn. This is deliberate: a budget is a safety limit. Evidence: test_meter_enforces_the_definition_budget (app/tests/test_settings.py), test_per_agent_budget_override (test_providers_budget.py).
+- (2) GET api/agents/defaults takes budget.daily_usd from the settings. Evidence: test_new_agent_defaults_follow_the_settings_budget (test_http_server.py, real default_components wiring), test_list_schema_and_defaults (test_agents_api.py). UI: an empty daily budget field means null (vitest: leaves the daily budget empty to use the settings default).
+- (3) GET api/ha/users (ha_catalog): config/auth/list, then the person entities of the state cache, else an empty list with the reason. No credentials or groups leave the app. Evidence: test_users_lists_people_without_credentials, test_users_fall_back_to_persons_when_ha_refuses, test_users_without_any_source_return_an_empty_list (test_ha_catalog.py). Approver picker in settings with an ID field for users that are not in the list (vitest: picks approvers from the HA users list; says when the HA users cannot be listed). Not verified: that the app token may call config/auth/list. HA gates it to administrators; the app is expected to connect as the Supervisor system user, which is an administrator. A refusal uses the person fallback.
+- Existing agents keep the daily_usd value that is stored in their definitions (for example 0.5). They do not follow a settings change until a user clears the field.
+- Follow-ups 2-4 of the earlier comment are done. Follow-up 1 (deleted-paths route) is skipped on the lead's decision.
+Validation: mise run check passed (650 pytest, 43 vitest, ruff, mypy, eslint, prettier, tsc).
 <!-- SECTION:NOTES:END -->
 
 ## Comments
@@ -77,5 +87,5 @@ Proposed follow-ups (not created): 1) a route that lists deleted paths of a stor
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-Added the knowledge and settings areas of the management UI, and an app-managed settings store. The settings package stores API keys, budgets, price overrides, the genai-prices auto-update, decision models and approvers in the app database. The API shows keys only as a hint. Providers read keys through a live key source (settings, then environment, then options), and budgets, prices and models follow settings changes without a restart. Approvals read approvers, notify overrides and the time limit from settings, with the option section as fallback. The UI has a store list with attached agents, a store view (edit, delete, upload, replace, file edit with conflict handling, history and restore), a settings screen with the embedding-model notice, and a store picker in the agent editor. Verified with mise run check (606 pytest, 40 vitest, ruff, mypy, eslint, prettier, tsc) and a local smoke test of the new routes.
+Added the knowledge and settings areas of the management UI, and an app-managed settings store. The settings package stores API keys, budgets, price overrides, the genai-prices auto-update, decision models and approvers. The API shows keys only as a hint. Providers read keys through a live key source (settings, then environment, then options), and budgets, prices and models follow settings changes without a restart. The meter enforces budget.daily_usd of each agent definition; null uses the settings default, and new agents take that default. Approvals read approvers, notify overrides and the time limit from settings, with the option section as fallback. GET api/ha/users feeds an approver picker. The UI has a store list with attached agents, a store view (edit, delete, upload, replace, file edit with conflict handling, history and restore), a settings screen with the embedding-model notice, and a store picker in the agent editor. Verified with mise run check (650 pytest, 43 vitest, ruff, mypy, eslint, prettier, tsc) and a local smoke test of the settings and store routes.
 <!-- SECTION:FINAL_SUMMARY:END -->
