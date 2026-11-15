@@ -9,6 +9,7 @@ dependencies = [
     "genai-prices>=0.2.3",
     "httpx2>=2.16",
     "pydantic-ai-slim[openai,openrouter]>=2.68",
+    "python-slugify>=8",
 ]
 
 [build-system]

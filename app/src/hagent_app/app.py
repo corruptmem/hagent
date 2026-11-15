@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from hagent_app.agents import AgentsComponent
+from hagent_app.approvals import ApprovalsComponent
 from hagent_app.config import Config
 from hagent_app.ha import HAClient, StateCache
 from hagent_app.ha_catalog import CatalogComponent
@@ -72,12 +73,24 @@ def default_components() -> list[Component]:
     http.add_middleware(guard.middleware)
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
+    approvals = ApprovalsComponent(http.events)
+    http.add_routes(approvals.routes())
     tools = ToolsComponent(http.events)
+    tools.approval = approvals.gate
     catalog = CatalogComponent()
     http.add_routes(catalog.routes())
     ui = UiComponent()
     http.add_routes(ui.routes())
-    return [ProvidersComponent(), guard, agents, tools, catalog, ui, http]
+    return [
+        ProvidersComponent(),
+        guard,
+        agents,
+        approvals,
+        tools,
+        catalog,
+        ui,
+        http,
+    ]
 
 
 class App:

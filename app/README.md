@@ -21,6 +21,7 @@ SIGINT.
 | `src/hagent_app/ingress/` | `IngressGuard`, the source-address check, and `UiComponent`, which serves the UI files (task-18). |
 | `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
 | `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
+| `src/hagent_app/approvals/` | `ApprovalsComponent`: the approval gate of the tool executor, the notifier, the answer listener and the approvals API (task-16). See "Approvals" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
@@ -277,6 +278,46 @@ attached store IDs and the invocation's agent ID to a store.
 
 Tools must never receive `AgentService`. `tests/test_tools_no_writer.py`
 checks this.
+
+## Approvals
+
+`ApprovalsComponent` (`approvals/`) supplies `ToolsComponent.approval`.
+`default_components()` sets it. The executor calls the gate for each call
+that the definition marks for approval (design section 8).
+
+Terms:
+
+- **Approval request**: one held call, with a random 128-bit ID. The table
+  `approval_requests` holds it.
+- **Action event**: the `mobile_app_notification_action` event. The HA
+  Companion app fires it when a person taps an action button. Its
+  `context.user_id` is the HA user of the phone registration.
+
+Rules:
+
+- The gate returns `ApprovalOutcome`. The executor runs the call only for
+  an accepted outcome. Denial codes: `approval_rejected`,
+  `approval_timeout` and `approval_unavailable`.
+- Only users in `approvals.approvers` can answer. An answer from another
+  user, from no user, or from the HA user of the app has no effect. The
+  table `approval_answers` records each answer and its outcome.
+- The app listens only to the action event. It ignores the `ios.*` events,
+  so that one tap never counts twice.
+- One conditional `UPDATE ... WHERE status = 'pending'` decides a request.
+  The first valid answer wins. A timeout, a cancel and the app stop use
+  the same statement.
+- If no notification reaches an approver, the request fails at once.
+- After a request ends, the app clears the notification on each target.
+- On start, the app expires each pending request.
+- A dry run sends no approval request.
+
+`Notifier` is the send interface. `MobileAppNotifier` is the app-side
+implementation. The app cannot read the HA user or the webhook ID of a
+phone registration, so it uses the `person` entity of the approver and its
+mobile app device trackers, or the `notify_services` option. It refuses a
+service that does not exist, or a device name that more than one mobile app
+device has. Set `approvals.notifier` before start to use another sender,
+for example one in HA Core (task-17).
 
 ## How to use the HA client and the state cache
 

@@ -9,7 +9,8 @@
    returns the prepared request, with no approval request.
 5. The approval check. If the definition marks the call for approval, the
    approval gate must accept it. With no gate, the executor denies the call
-   (task-16 supplies the gate).
+   (task-16 supplies the gate). The gate can return ``ApprovalOutcome`` with
+   a denial code, for example ``approval_timeout``.
 6. For a call that changes HA: write the audit row with status
    ``pending``. If the write fails, stop.
 7. ``run`` on the prepared request.
@@ -25,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -51,12 +53,46 @@ _LOG = logging.getLogger(__name__)
 ALL_TOOLS: tuple[Tool, ...] = HA_TOOLS + STORE_TOOLS
 
 
+APPROVAL_DENIAL_CODES = frozenset(
+    {"approval_rejected", "approval_timeout", "approval_unavailable"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalOutcome:
+    """The answer of an approval gate.
+
+    ``accepted`` is True only if an approver accepted the call. For a
+    denial, ``code`` is one of ``APPROVAL_DENIAL_CODES``. The executor maps
+    any other code to ``approval_rejected``.
+    """
+
+    accepted: bool
+    code: str = "approval_rejected"
+    message: str = "the approver did not accept the call"
+
+
 class ApprovalGate(Protocol):
     """The hook for task-16: hold a call until a person accepts or rejects it."""
 
-    async def request(self, ctx: ToolContext, tool: str, prepared: Prepared) -> bool:
-        """Return True if an approver accepts the call."""
+    async def request(
+        self, ctx: ToolContext, tool: str, prepared: Prepared
+    ) -> bool | ApprovalOutcome:
+        """Return True, or an accepted outcome, if an approver accepts the call."""
         ...
+
+
+def _approval_outcome(answer: object) -> ApprovalOutcome:
+    """Normalise a gate answer. Anything but an explicit accept is a denial."""
+    if answer is True:
+        return ApprovalOutcome(accepted=True)
+    if isinstance(answer, ApprovalOutcome):
+        if answer.accepted is True:
+            return answer
+        if answer.code in APPROVAL_DENIAL_CODES:
+            return answer
+        return ApprovalOutcome(False, "approval_rejected", answer.message)
+    return ApprovalOutcome(accepted=False)
 
 
 def needs_approval(definition: AgentDefinition, tool: Tool, prepared: Prepared) -> bool:
@@ -177,14 +213,16 @@ class ToolExecutor:
                     "the call needs approval, and approvals are not available",
                 )
             try:
-                accepted = await self._approval.request(ctx, name, prepared)
+                outcome = _approval_outcome(
+                    await self._approval.request(ctx, name, prepared)
+                )
             except Exception:
                 _LOG.exception("approval request failed")
-                accepted = False
-            if not accepted:
-                return await self._deny(
-                    call, "approval_rejected", "the approver did not accept the call"
+                outcome = ApprovalOutcome(
+                    False, "approval_unavailable", "the approval request failed"
                 )
+            if not outcome.accepted:
+                return await self._deny(call, outcome.code, outcome.message)
 
         audit_id = None
         if tool.changes_ha:
