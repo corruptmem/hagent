@@ -105,13 +105,21 @@ class EntityCatalog:
         return self.size
 
     async def rank_entities(
-        self, query: str, entity_ids: Sequence[str], limit: int
+        self,
+        query: str,
+        entity_ids: Sequence[str],
+        limit: int,
+        *,
+        agent_id: str | None = None,
     ) -> list[str]:
-        """The IDs from ``entity_ids`` that match ``query``, best first."""
+        """The IDs from ``entity_ids`` that match ``query``, best first.
+
+        The query embedding counts towards ``agent_id`` (design 13.3).
+        """
         if self.size == 0:
             msg = "the entity catalogue is empty"
             raise CatalogNotReadyError(msg)
         scope = Scope(("entity",), source_ids=tuple(entity_ids))
-        result = await self._index.search(scope, query, limit)
+        result = await self._index.search(scope, query, limit, charge_agent_id=agent_id)
         allowed = set(entity_ids)
         return [h.source_id for h in result.hits if h.source_id in allowed]

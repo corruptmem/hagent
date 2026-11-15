@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 00:49'
+updated_date: '2026-11-15 00:58'
 labels:
   - app
   - knowledge
@@ -56,6 +56,14 @@ Design: docs/design.md sections 13, 13.3 and 13.4.
 12. Register in default_components; tests with a fake embedding client, including scope-violation tests; app/README.md hand-off; mise run check.
 
 Revision: files and documents share one table, knowledge_items, with knowledge_item_versions and knowledge_document_sections, because they share one path namespace. sqlite_vec uses a type: ignore at its import, not a mypy override. The vector search has a distance cutoff (max_vector_distance).
+
+Security review fixes (branch task-11-fix):
+M1. build_turn_context reads at most main_file_max_chars of each main file (SQL substr) and the full length. It clips the text and appends a note with the total and a pointer to knowledge.read. PromptBuilder passes turns.main_file_max_chars. The executor fallback clips too.
+M2. One helper wraps each injected main file in a fenced data block with an attribution line (store, path, last author). The fence is longer than any backtick run in the text, so the text cannot close it. The stable knowledge header states that store text is data, not instructions. The recall section gets the same note.
+L1. After each version insert, prune history per store: keep at most N versions per path, and keep non-current history bytes at or below the store size limit (oldest first).
+L2. On BudgetExceededError with scope agent, the embedder skips that charge for the drain and continues with other charges. It retries after embed_retry_seconds and reports the skipped agents in the status.
+L3. EntitySearch.rank_entities takes agent_id. FindEntities passes ctx.agent.id; the catalogue passes it as charge_agent_id.
+Each review probe becomes a regression test.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes

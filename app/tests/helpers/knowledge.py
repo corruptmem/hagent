@@ -23,6 +23,7 @@ from hagent_app.knowledge import KnowledgeComponent
 from hagent_app.knowledge.embedder import EmbeddingModel
 from hagent_app.providers.config import Provider
 from hagent_app.providers.embeddings import EmbeddingResult
+from hagent_app.providers.errors import BudgetExceededError
 from hagent_app.providers.prices import TokenUsage
 from hagent_app.tools import AuditLog, ToolContext, ToolExecutor, ToolResult
 from hagent_app.tools.base import ToolEnv
@@ -61,6 +62,8 @@ class FakeEmbeddings:
 
     calls: list[tuple[str, tuple[str, ...], str | None]] = field(default_factory=list)
     fail: bool = False
+    # Agents whose budget refuses each call.
+    over_budget: set[str] = field(default_factory=set)
 
     async def embed(
         self,
@@ -74,6 +77,9 @@ class FakeEmbeddings:
         if self.fail:
             msg = "the fake provider is down"
             raise RuntimeError(msg)
+        if agent_id in self.over_budget:
+            msg = "the agent budget is spent"
+            raise BudgetExceededError(msg, "agent")
         self.calls.append((model, tuple(texts), agent_id))
         return EmbeddingResult(model, [fake_vector(t) for t in texts], TokenUsage())
 

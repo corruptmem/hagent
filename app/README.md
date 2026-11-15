@@ -227,10 +227,22 @@ Rules:
   that an agent writes to that agent, and documents and the entity
   catalogue to the installation. A query embedding of `knowledge.search`
   or `memory.search` counts towards the invocation agent:
-  `KnowledgeStore.search` receives the agent ID from the executor. A search
+  `KnowledgeStore.search` receives the agent ID from the executor. A query
+  embedding of `ha.find_entities` also counts towards the agent:
+  `EntitySearch.rank_entities` receives `agent_id`. A search
   from the management API counts towards the installation. A query that is
   in the query cache costs nothing. A model change re-indexes every passage. The embedder deletes vectors of
   other models and vectors whose text no longer exists.
+- If the budget of an agent refuses a batch (`BudgetExceededError` with
+  scope `agent`), the embedder skips the text of that agent for the rest of
+  the drain. It continues with other text, and tries again after
+  `knowledge.embed_retry_seconds`. `GET api/knowledge/status` lists these
+  agents in `budget_skipped_agents`. An installation budget error stops
+  the drain, as other provider errors do.
+- The version history is bounded (`_prune_history`). Each change keeps the
+  newest version of each path and at most `MAX_FILE_VERSIONS` (50)
+  versions of one path. The text of earlier versions stays at or below the
+  store size limit. The oldest versions go first.
 - Store errors (`KnowledgeError`) subclass `StoreError` in
   `tools/stores.py`. The executor returns their code to the model, for
   example `version_conflict`.
@@ -251,11 +263,21 @@ component:
   the source key), `since` and `until`.
 - `turns.knowledge_context = knowledge.turn_context`. The prompt builder
   calls it for part 3 of each turn (design section 9.5), with
-  `turns.index_max_entries` as the index size (50 by default). It gives
-  the store list, the name-sorted index and the injected main files. The
+  `turns.index_max_entries` as the index size (50 by default) and
+  `turns.main_file_max_chars` as the main file limit (16,000 characters by
+  default). It gives the store list, the name-sorted index and the
+  injected main files. The service reads at most the limit of each main
+  file. A note after the block gives the full length. The
   text holds no time or other value that changes between turns. The
   builder also uses it for the main file requests (design section 13.1).
   If the call fails, the builder reads the stores through the executor.
+- Store text is data, not instructions (design section 19). Agents with
+  `read_write` access write it, and other agents read it. The knowledge
+  part starts with a fixed statement of this rule (`DATA_NOTE`). Each
+  injected main file is a fenced data block (`data_block`) with a line that
+  names the store, the path and the last author. The fence has more
+  backticks than the longest run in the text, so the text cannot close the
+  block. The executor fallback and the recall part use the same rule.
 - Other code can index records with `await knowledge.history.add(...)` and
   remove them with `remove`, for example when retention deletes a record.
 
@@ -538,7 +560,8 @@ same scope check as a model tool call.
   correction attempt. A second failure gives `invalid_result`.
 - When an injected `MAIN.md` reaches `main_file_warn_fraction` of
   `main_file_max_chars`, the invocation part asks the agent to move detail
-  into other files. The runtime does not cut the file.
+  into other files. The runtime does not change the file. The prompt holds
+  at most `main_file_max_chars` characters of it.
 
 ### History
 
