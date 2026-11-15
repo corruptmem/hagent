@@ -449,6 +449,232 @@ This endpoint is not an agent tool. Only the UI uses it.
   command failed. When HA is offline, the app returns the last data that it
   has. A list is empty if the app never received it.
 
+## Knowledge stores
+
+These routes manage knowledge stores, their files and their documents
+(design section 13.4). Task-20 builds the UI screens for them.
+
+Terms:
+
+- **Store**: a named collection of text. Each agent has a private store.
+  The user creates shared stores. An agent definition attaches stores in
+  `knowledge` (see "Knowledge attachments").
+- **File**: Markdown text that agents and the user write. `MAIN.md` is the
+  main file of a store.
+- **Document**: a file that the user uploads. The app extracts its text,
+  splits it into passages and indexes it. Agents cannot change documents.
+- **Item**: a file or a document. Files and documents share one path
+  namespace in a store.
+- **Path**: the name of an item. A path uses letters, digits, `_`, `-`,
+  `.`, space and `/`. It has no empty, `.` or `..` parts. Paths do not
+  depend on case. In a URL, encode each part of the path.
+- **Item version**: a number that grows by one on each change of an item,
+  also on a delete. A write names the version that the writer read
+  (`base_version`). If the item changed since, the write fails with 409
+  `version_conflict`.
+- **Size**: the UTF-8 bytes of the text of all items in a store. The size
+  limit of a store is 1000 bytes to 1000000000 bytes. The default is
+  1000000 bytes (option `knowledge.default_size_limit`).
+
+Errors of all knowledge routes: 404 `not_found`, 503 `not_ready`.
+
+### Store object
+
+```json
+{
+  "id": "<store ID>", "name": "heating",
+  "description": "Facts about the heating system.",
+  "private": false, "owner_agent_id": null,
+  "size_limit": 1000000, "size": 5120, "files": 3, "documents": 1,
+  "created_at": "<time>", "updated_at": "<time>",
+  "attached": [
+    {"agent_id": "<agent ID>", "agent_name": "Heating",
+     "access": "read_write", "inject_main": false}
+  ]
+}
+```
+
+`attached` lists each live agent whose current definition attaches the
+store. A store with `private` true is the private store of
+`owner_agent_id`.
+
+### List stores
+
+`GET api/knowledge/stores` returns `{"stores": [<store>, ...]}`, sorted by
+name.
+
+### Create a store
+
+`POST api/knowledge/stores` with
+`{"name": "heating", "description": "...", "size_limit": 1000000}`.
+`description` and `size_limit` are optional. The response is 201 with the
+store. A name has 1 to 64 letters, digits, `_` or `-`, and starts with a
+letter or a digit.
+
+Errors: 409 `name_conflict` (names do not depend on case), 422
+`invalid_name`, 422 `invalid_size_limit`.
+
+### Read, edit and delete a store
+
+- `GET api/knowledge/stores/{store_id}` returns the store.
+- `PATCH api/knowledge/stores/{store_id}` with any of `name`,
+  `description` and `size_limit`. It returns the store. A size limit below
+  the current size fails with 409 `size_limit`.
+- `DELETE api/knowledge/stores/{store_id}` deletes the store, its items,
+  their history and their index entries. It returns
+  `{"deleted": "<store ID>"}`. It fails with 409 `store_in_use` while a
+  live agent attaches the store, or while the store is the private store
+  of a live agent. `details.agent_ids` lists the agents. Detach the store
+  first, or delete the agent with its private store.
+
+To attach a store to an agent, edit the agent definition (`knowledge`).
+
+### List items
+
+`GET api/knowledge/stores/{store_id}/items` returns the items, sorted by
+path:
+
+```json
+{"items": [
+  {"path": "MAIN.md", "kind": "file", "version": 4, "size": 812,
+   "updated_at": "<time>", "updated_by_agent_id": "<agent ID or null>"},
+  {"path": "boiler.pdf", "kind": "document", "version": 1, "size": 40210,
+   "updated_at": "<time>", "updated_by_agent_id": null,
+   "media_type": "application/pdf", "pages": 24}
+]}
+```
+
+`updated_by_agent_id` is `null` for a change by the user.
+
+### Read an item
+
+`GET api/knowledge/stores/{store_id}/items/{path}` returns the item fields
+and its text in `content`. The optional query `section` selects a part:
+
+- a heading, for example `section=Pressure`;
+- a page of a document, for example `section=page 3`;
+- a part of a large item, for example `section=part 2`.
+
+An item with more than 20000 characters returns `part 1` when the request
+names no section. A part response adds `part`, `parts`, `outline` (the
+headings and pages) and `next_section`.
+
+### Write a file
+
+`PUT api/knowledge/stores/{store_id}/files/{path}` with
+`{"content": "<Markdown>", "base_version": 3}` writes the whole text of a
+file. Omit `base_version` to create a new file. It returns
+`{"store_id": "...", "path": "...", "version": 4, "size": 120}`.
+
+Errors: 409 `version_conflict` (`details.version` is the current version),
+409 `version_required`, 409 `document_read_only` (the path is a document),
+413 `size_limit`, 422 `invalid_path`.
+
+### Delete an item
+
+`DELETE api/knowledge/stores/{store_id}/items/{path}` deletes a file or a
+document. The optional query `base_version` checks the version. The
+response has the version of the delete. The history keeps the earlier
+versions, so the user can restore a deleted file.
+
+### Change history and restore
+
+- `GET api/knowledge/stores/{store_id}/history/{path}` returns
+  `{"versions": [...]}`, newest first. Each version has `version`, `kind`,
+  `change` (`create`, `append`, `replace`, `put`, `delete`, `upload` or
+  `restore <version>`; `replace` is also a new document upload),
+  `deleted`, `author` (`agent` or
+  `user`), `author_agent_id`, `size` and `created_at`.
+- `GET api/knowledge/stores/{store_id}/history/{path}?version=3` returns
+  one version with its text in `content`. Document versions and deletes
+  have `content` set to `null`.
+- `POST api/knowledge/stores/{store_id}/restore` with
+  `{"path": "rooms.md", "version": 3, "base_version": 5}` writes the text
+  of version 3 as a new version. `base_version` is optional. It returns
+  the same object as "Write a file". Only file versions with text can be
+  restored: other versions fail with 409 `not_restorable`.
+
+### Upload a document
+
+`POST api/knowledge/stores/{store_id}/documents?name=<file name>` uploads a
+document. The body is the raw file, not a form. The `Content-Type` header,
+or else the file extension, gives the type:
+
+| Type | Content type | Extensions |
+|---|---|---|
+| PDF with a text layer | `application/pdf` | `.pdf` |
+| Markdown | `text/markdown` | `.md`, `.markdown` |
+| Plain text | `text/plain` | `.txt`, `.text` |
+| HTML | `text/html` | `.html`, `.htm` |
+
+The app changes characters that a path cannot hold to `_`, for example
+`Manual (2019).pdf` becomes `Manual _2019_.pdf`. The response is 201:
+
+```json
+{"store_id": "...", "path": "Manual _2019_.pdf", "version": 1,
+ "size": 40210, "media_type": "application/pdf", "pages": 24,
+ "sections": 22, "passages": 61}
+```
+
+`PUT api/knowledge/stores/{store_id}/documents/{path}` replaces a document
+with a new upload. The response is 200 with the same object.
+
+The upload limit is 25000000 bytes (option `knowledge.max_upload_bytes`).
+
+Errors: 409 `document_exists` (use PUT), 409 `path_in_use` (a file uses
+the path), 413 `upload_too_large`, 413 `size_limit`, 415
+`unsupported_document`, 422 `extract_failed` (for example a PDF with no
+text layer).
+
+### Search
+
+`GET api/knowledge/search?q=<text>&store_id=<ID>&limit=10` runs the hybrid
+search of `knowledge.search`. Repeat `store_id` to name several stores.
+With no `store_id`, it searches all stores. `limit` is 1 to 50.
+
+```json
+{"mode": "hybrid", "fallback_reason": null,
+ "results": [
+   {"collection": "knowledge", "store_id": "...", "source_id": "boiler.pdf",
+    "title": "boiler.pdf", "page": 12, "heading": "Pressure",
+    "text": "...", "score": 0.0325, "matched": ["keyword", "vector"]}
+ ]}
+```
+
+`mode` is `keyword` when the search could not use vectors.
+`fallback_reason` then says why: sqlite-vec did not load, no embedding
+model is set, or the embedding provider failed.
+
+### Status
+
+`GET api/knowledge/status` returns the state of the search index:
+
+```json
+{"search_mode": "hybrid", "fallback_reason": null, "sqlite_vec": true,
+ "embedding": {"provider": "openai", "model": "text-embedding-3-small",
+               "dimensions": null},
+ "pending_embeddings": 0, "last_error": null, "entity_catalog": 214}
+```
+
+`pending_embeddings` is the number of texts that wait for a vector.
+`entity_catalog` is the number of HA entities in the search index.
+
+### Settings
+
+- `GET api/knowledge/settings` returns `{"embedding": <model or null>}`.
+- `PUT api/knowledge/settings` with
+  `{"embedding": {"provider": "openai", "model": "text-embedding-3-small",
+  "dimensions": 512}}` selects the embedding model of the installation.
+  `provider` is `openai` or `openrouter`. `dimensions` is optional. Send
+  `{"embedding": null}` to turn vector search off. A change of model
+  starts a full re-index in the background. Embedding sends text to the
+  provider: the UI must state this when the user selects a model (design
+  section 13.3).
+
+The default comes from the options `knowledge.embedding_provider`,
+`knowledge.embedding_model` and `knowledge.embedding_dimensions`. A model
+that the user selects replaces the default.
+
 ## UI files
 
 `GET {tail}`: each path that does not start with `api/` is a UI path.
@@ -489,6 +715,9 @@ Each later message has this form:
 | `agents` | `created` | `version`, `enabled` |
 | `agents` | `updated` | `version`, `enabled`. The app sends it for an edit, a restore and a change to `enabled`. |
 | `agents` | `deleted` | `private_store`: `keep` or `delete` |
+| `knowledge` | `created`, `updated`, `deleted` | none. `id` is the store ID. |
+| `knowledge` | `file_changed`, `file_deleted`, `item_deleted`, `document_changed` | `path`. `id` is the store ID. |
+| `knowledge` | `settings_changed` | none. `id` is `settings`. |
 | `tools` | `scope_grown` | `version`, `added_read`, `added_control`: lists of entity IDs. The app sends it when an HA registry change makes the scope of an agent grow. `id` is the agent ID. |
 
 Rules for the UI:
