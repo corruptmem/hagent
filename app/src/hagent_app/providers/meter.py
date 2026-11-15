@@ -153,6 +153,10 @@ class Meter:
         value = self._agent_budgets.get(agent_id, self._config.agent_daily_budget_usd)
         return Decimal(str(value))
 
+    def set_config(self, config: ProvidersConfig) -> None:
+        """Replace the budgets and limits (a settings change)."""
+        self._config = config
+
     def set_agent_budgets(self, budgets: Mapping[str, float]) -> None:
         """Replace the per-agent budgets (for the agent definitions)."""
         self._agent_budgets = dict(budgets)

@@ -174,6 +174,12 @@ class PriceTable:
         self._openrouter_version: str | None = None
         self.set_openrouter(openrouter or {}, openrouter_version)
 
+    def set_overrides(self, overrides: Mapping[str, Mapping[str, Any]]) -> None:
+        """Replace the override layer (a settings change)."""
+        self._overrides = {
+            key: rates_from_override(raw) for key, raw in overrides.items()
+        }
+
     def set_openrouter(
         self, prices: Mapping[str, Mapping[str, Any]], version: str | None
     ) -> None:

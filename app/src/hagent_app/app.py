@@ -68,6 +68,7 @@ def default_components() -> list[Component]:
     """
     from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
+    from hagent_app.settings import SettingsComponent  # noqa: PLC0415 - import cycle
     from hagent_app.turns import TurnsComponent  # noqa: PLC0415 - import cycle
 
     http = HttpServer()
@@ -75,8 +76,10 @@ def default_components() -> list[Component]:
     http.add_middleware(guard.middleware)
     agents = AgentsComponent(http.events)
     http.add_routes(agents.routes())
-    providers = ProvidersComponent()
-    approvals = ApprovalsComponent(http.events)
+    settings = SettingsComponent(http.events)
+    http.add_routes(settings.routes())
+    providers = ProvidersComponent(settings=settings)
+    approvals = ApprovalsComponent(http.events, settings=settings)
     http.add_routes(approvals.routes())
     tools = ToolsComponent(http.events)
     tools.approval = approvals.gate
@@ -93,6 +96,7 @@ def default_components() -> list[Component]:
     ui = UiComponent()
     http.add_routes(ui.routes())
     return [
+        settings,
         providers,
         guard,
         agents,

@@ -76,7 +76,10 @@ class SettingsKeySource:
             ("openrouter", config.openrouter_api_key),
         ):
             if env.get(KEY_ENV[provider]):
-                self._fallback[provider] = ("environment", Secret(env[KEY_ENV[provider]]))
+                self._fallback[provider] = (
+                    "environment",
+                    Secret(env[KEY_ENV[provider]]),
+                )
             elif configured:
                 self._fallback[provider] = ("options", Secret(configured))
 

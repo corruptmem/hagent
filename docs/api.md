@@ -686,6 +686,115 @@ above which a vector match is not a result, 0.75 by default; the right
 value depends on the model), `embed_batch_size`, `embed_retry_seconds` and
 `load_sqlite_vec`.
 
+## Settings
+
+These routes manage the settings of the installation (design section 7.2).
+The settings area of the UI uses them, and also `api/knowledge/settings`
+for the embedding model.
+
+Terms:
+
+- **Stored value**: a value that the user set. `null` means that the user
+  set no value.
+- **Default**: the value from the app options. The app uses it when the
+  stored value is `null`.
+- **Hint**: the masked form of an API key: `…` and the last four
+  characters. A key with fewer than 20 characters has no hint.
+
+The API never returns an API key, also not in an error or a change event.
+The app never writes a key to the log.
+
+### Settings object
+
+`GET api/settings` returns the settings object:
+
+```json
+{
+  "keys": {
+    "openai": {"set": true, "hint": "…abcd", "source": "settings"},
+    "openrouter": {"set": false, "hint": null, "source": null}
+  },
+  "settings": {
+    "installation_daily_budget_usd": 5.0,
+    "agent_daily_budget_usd": null,
+    "price_overrides": null,
+    "genai_prices_auto_update": null,
+    "decision_models": null,
+    "approvals": null
+  },
+  "defaults": {
+    "installation_daily_budget_usd": 5.0,
+    "agent_daily_budget_usd": 0.5,
+    "price_overrides": {},
+    "genai_prices_auto_update": false,
+    "decision_models": [],
+    "approvals": null
+  },
+  "built_in_decision_models": [
+    {"provider": "openai", "model": "gpt-6-luna"}
+  ]
+}
+```
+
+`keys.<provider>.source` says where the key in use comes from:
+`settings` (the UI), `environment` (`HAGENT_OPENAI_API_KEY` or
+`HAGENT_OPENROUTER_API_KEY`), `options` (the `providers` option section),
+or `null` (no key). A key in the settings wins over the other sources.
+
+The settings:
+
+| Setting | Content |
+|---|---|
+| `installation_daily_budget_usd` | The daily budget of the installation in USD, 0 to 10000. |
+| `agent_daily_budget_usd` | The daily budget of an agent in USD, 0 to 10000. The `agent_budgets_usd` option still sets budgets for single agents. |
+| `price_overrides` | Prices in USD per million tokens, keyed by `"<price provider>:<model>"`, for example `"openai:gpt-6"`. Each value has `input`, and can have `output`, `cache_read` and `cache_write`. An override wins over the other price sources. |
+| `genai_prices_auto_update` | `true` lets genai-prices fetch its newest price data from GitHub once an hour. The default is `false`. |
+| `decision_models` | Extra decision models, as `{"provider": ..., "model": ...}` objects. They extend `built_in_decision_models`. |
+| `approvals` | The approval settings (see "Approval settings"). When it is `null`, the app uses the `approvals` option section. |
+
+A change takes effect for the next call. It needs no restart.
+
+### Change settings
+
+`PATCH api/settings` with an object that names some settings changes only
+those settings. A setting with the value `null` returns to its default.
+The response is the settings object.
+
+```json
+{"installation_daily_budget_usd": 3, "price_overrides": null}
+```
+
+Errors: 400 `invalid_json`, 400 `invalid_body` (the body is not an
+object), 422 `settings_invalid` (`details` lists the errors in the format
+of `definition_invalid`; an unknown setting is an error too).
+
+### Approval settings
+
+```json
+{"approvers": ["<HA user ID>"],
+ "notify_services": {"<HA user ID>": ["notify.mobile_app_<device>"]},
+ "timeout_seconds": 300}
+```
+
+The checks are the same as for the `approvals` option section (see
+"Approval options"). `approvers` holds HA user IDs (32 hexadecimal
+characters), each at most once. A key of `notify_services` must be an
+approver. The app stores the service names without `notify.`.
+`timeout_seconds` is above 0 and at most 3600. The option
+`approvals.dev_trust_user_header` stays an option.
+
+### API keys
+
+- `PUT api/settings/keys/{provider}` with `{"key": "<API key>"}` stores
+  the key of `openai` or `openrouter`. A key has 8 to 512 printable ASCII
+  characters with no spaces. The response is the settings object.
+- `DELETE api/settings/keys/{provider}` deletes the stored key. The app
+  then uses the environment or the option key, if there is one. The
+  response is the settings object.
+
+Errors: 400 `invalid_body` (the body is not `{"key": ...}`), 404
+`not_found` (an unknown provider), 422 `invalid_key`.
+
 ## UI files
 
 `GET {tail}`: each path that does not start with `api/` is a UI path.
@@ -827,8 +936,9 @@ Errors:
 
 ### Approval options
 
-The `approvals` section of the app options has these keys. The settings
-store (task-20) replaces them later.
+The `approvals` section of the app options has these keys. Approval
+settings that the user sets in the UI replace `approvers`,
+`timeout_seconds` and `notify_services` (see "Approval settings").
 
 | Key | Default | Content |
 |---|---|---|
@@ -870,6 +980,7 @@ Each later message has this form:
 | `knowledge` | `created`, `updated`, `deleted` | none. `id` is the store ID. |
 | `knowledge` | `file_changed`, `file_deleted`, `item_deleted`, `document_changed` | `path`. `id` is the store ID. |
 | `knowledge` | `settings_changed` | none. `id` is `settings`. |
+| `settings` | `updated` | none. `id` is `settings`. The app sends it after each change of the settings or of an API key. |
 | `tools` | `scope_grown` | `version`, `added_read`, `added_control`: lists of entity IDs. The app sends it when an HA registry change makes the scope of an agent grow. `id` is the agent ID. |
 
 Rules for the UI:

@@ -139,6 +139,7 @@ async def test_default_components_serve_the_api(
 ) -> None:
     components = default_components()
     assert [c.name for c in components] == [
+        "settings",
         "providers",
         "ingress_guard",
         "agents",

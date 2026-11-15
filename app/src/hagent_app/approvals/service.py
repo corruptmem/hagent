@@ -245,6 +245,15 @@ class ApprovalService:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
 
+    @property
+    def notifier(self) -> Notifier:
+        """The notifier that sends the requests."""
+        return self._notifier
+
+    def set_config(self, config: ApprovalsConfig) -> None:
+        """Replace the approval settings. Pending requests keep their limit."""
+        self._config = config
+
     def current_approvers(self) -> frozenset[str]:
         """The approvers of the settings, without the app's own HA user."""
         app_user = self._app_user()
