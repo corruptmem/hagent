@@ -29,13 +29,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from hagent_app.agents.definition import AgentDefinition
-from hagent_app.knowledge.context import TurnContext
+from hagent_app.knowledge.context import DATA_NOTE, TurnContext, data_block
 from hagent_app.tools import ToolContext, ToolExecutor
 from hagent_app.turns.config import TurnsConfig
 from hagent_app.turns.history import TurnHistory
@@ -43,8 +43,19 @@ from hagent_app.turns.models import TurnInput, TurnRecord
 
 _LOG = logging.getLogger(__name__)
 
-# Builds part 3 from a definition and the index size (task-11).
-type KnowledgeContextSource = Callable[[AgentDefinition, int], Awaitable[TurnContext]]
+
+class KnowledgeContextSource(Protocol):
+    """Builds part 3 from a definition and two size limits (task-11)."""
+
+    async def __call__(
+        self,
+        definition: AgentDefinition,
+        index_entries: int,
+        main_file_max_chars: int,
+    ) -> TurnContext:
+        """The knowledge context: stores, index and clipped main files."""
+        ...
+
 
 MAIN_FILE = "MAIN.md"
 _STATE_KINDS = ("rule", "schedule", "subscription")
@@ -146,7 +157,9 @@ class PromptBuilder:
         if self._knowledge_context is not None:
             try:
                 context = await self._knowledge_context(
-                    definition, self._config.index_max_entries
+                    definition,
+                    self._config.index_max_entries,
+                    self._config.main_file_max_chars,
                 )
             except Exception:
                 _LOG.exception("cannot build the knowledge context; using the tools")
@@ -156,7 +169,7 @@ class PromptBuilder:
         if not listed.ok or not isinstance(listed.data, list):
             return "", []
         stores = {str(s.get("id")): s for s in listed.data if isinstance(s, Mapping)}
-        lines = ["# Knowledge stores"]
+        lines = ["# Knowledge stores", "", DATA_NOTE]
         requests: list[MainFileRequest] = []
         # The order of the attachments in the definition is stable.
         for attachment in definition.knowledge:
@@ -172,10 +185,19 @@ class PromptBuilder:
                 lines.append(f"Description: {description}")
             lines.append(await self._index(ctx, attachment.store_id))
             if attachment.inject_main:
-                text = await self._main_file(ctx, attachment.store_id)
-                if text is not None:
-                    lines.append(f"\n### Main file {MAIN_FILE}\n\n{text.strip()}")
+                main = await self._main_file(ctx, attachment.store_id)
+                if main is not None:
+                    text, more = main
                     limit = self._config.main_file_max_chars
+                    block = data_block(
+                        name,
+                        MAIN_FILE,
+                        text,
+                        max_chars=limit,
+                        known_author=False,
+                        more=more,
+                    )
+                    lines.append(f"\n### Main file {MAIN_FILE}\n\n{block}")
                     if len(text) >= limit * self._config.main_file_warn_fraction:
                         requests.append(
                             MainFileRequest(attachment.store_id, name, len(text), limit)
@@ -185,10 +207,10 @@ class PromptBuilder:
     def _main_file_requests(self, context: TurnContext) -> list[MainFileRequest]:
         limit = self._config.main_file_max_chars
         return [
-            MainFileRequest(s.store_id, s.name, len(s.main_file), limit)
+            MainFileRequest(s.store_id, s.name, s.main_file_chars, limit)
             for s in context.stores
-            if s.main_file is not None
-            and len(s.main_file) >= limit * self._config.main_file_warn_fraction
+            if s.main_file_chars is not None
+            and s.main_file_chars >= limit * self._config.main_file_warn_fraction
         ]
 
     async def _index(self, ctx: ToolContext, store_id: str) -> str:
@@ -205,7 +227,10 @@ class PromptBuilder:
             lines.append(f"- ... {len(entries) - limit} more entries.")
         return "\n".join(lines)
 
-    async def _main_file(self, ctx: ToolContext, store_id: str) -> str | None:
+    async def _main_file(
+        self, ctx: ToolContext, store_id: str
+    ) -> tuple[str, bool] | None:
+        """The first part of the main file, and whether more parts exist."""
         result = await self._executor.execute(
             ctx, "knowledge.read", {"store_id": store_id, "path": MAIN_FILE}
         )
@@ -213,11 +238,13 @@ class PromptBuilder:
             return None
         data = result.data
         if isinstance(data, str):
-            return data
+            return data, False
         if isinstance(data, Mapping):
+            parts = data.get("parts")
+            more = isinstance(parts, int) and parts > 1
             for key in ("text", "content"):
                 if isinstance(data.get(key), str):
-                    return str(data[key])
+                    return str(data[key]), more
         return None
 
     # ------------------------------------- part 4: rules, schedules, scopes
@@ -284,14 +311,16 @@ class PromptBuilder:
             return ""
         # About four characters per token.
         budget = retrieval.token_limit * 4
-        lines = ["# Recall"]
+        lines: list[str] = []
         for item in result.data:
             line = "- " + dumps(item)
             if len(line) > budget:
                 break
             budget -= len(line)
             lines.append(line)
-        return "\n".join(lines) if len(lines) > 1 else ""
+        if not lines:
+            return ""
+        return "\n".join(["# Recall", "", DATA_NOTE, "", *lines])
 
 
 def record_text(record: TurnRecord, limit: int) -> str:

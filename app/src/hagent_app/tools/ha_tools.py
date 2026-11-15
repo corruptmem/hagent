@@ -163,7 +163,7 @@ class FindEntities(_ReadTool):
             # Hybrid ranking over the scope-filtered candidates only.
             try:
                 ranked = await env.entities.rank_entities(
-                    args.query or "", candidates, args.limit
+                    args.query or "", candidates, args.limit, agent_id=ctx.agent.id
                 )
             except Exception:
                 _LOG.warning("entity search failed; using the word match")

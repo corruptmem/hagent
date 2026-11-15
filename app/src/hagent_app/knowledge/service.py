@@ -60,6 +60,9 @@ MAX_SIZE_LIMIT = 1_000_000_000
 STORE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,63}$")
 _PAGE = re.compile(r"^page\s+(\d{1,6})$", re.IGNORECASE)
 _PART = re.compile(r"^part\s+(\d{1,6})$", re.IGNORECASE)
+# The history keeps at most this many versions of one path. It also keeps
+# the text of earlier versions at or below the store size limit.
+MAX_FILE_VERSIONS = 50
 
 
 class KnowledgeError(StoreError):
@@ -87,6 +90,16 @@ def _now() -> str:
 
 def _size(text: str) -> int:
     return len(text.encode("utf-8"))
+
+
+@dataclass(frozen=True, slots=True)
+class MainFile:
+    """The start of a ``MAIN.md`` file, for the turn context."""
+
+    text: str
+    chars: int
+    size: int
+    author_agent_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,6 +218,30 @@ def _check_size(
             f"the store would hold {total} bytes; its limit is {store.size_limit}",
             {"size": total, "size_limit": store.size_limit},
         )
+
+
+def _prune_history(conn: sqlite3.Connection, store_id: str) -> None:
+    """Delete old versions, so that the history of a store stays bounded.
+
+    The newest version of each path always stays: ``_next_version`` reads
+    it, so a version number is never used twice. The history keeps at
+    most ``MAX_FILE_VERSIONS`` versions per path, the newest included. The
+    text of the earlier versions stays in total at or below the store size
+    limit. The oldest versions go first.
+    """
+    limit = get_store(conn, store_id).size_limit
+    conn.execute(
+        "WITH ranked AS (SELECT rowid AS rid, "
+        "COALESCE(LENGTH(CAST(content AS BLOB)), 0) AS bytes, "
+        "ROW_NUMBER() OVER (PARTITION BY path ORDER BY version DESC) AS rn "
+        "FROM knowledge_item_versions WHERE store_id = ?), "
+        "older AS (SELECT rid, rn, SUM(bytes) OVER "
+        "(ORDER BY rid DESC ROWS UNBOUNDED PRECEDING) AS running "
+        "FROM ranked WHERE rn > 1) "
+        "DELETE FROM knowledge_item_versions WHERE rowid IN "
+        "(SELECT rid FROM older WHERE rn > ? OR running > ?)",
+        (store_id, MAX_FILE_VERSIONS, limit),
+    )
 
 
 def _check_base(row: sqlite3.Row, base_version: int | None, *, required: bool) -> None:
@@ -339,6 +376,7 @@ def put_text(  # noqa: PLR0912, PLR0913
             "VALUES (?, ?, ?, 'file', ?, ?, ?, ?)",
             (store_id, path, version, change or mode, text, author, now),
         )
+        _prune_history(conn, store_id)
         conn.execute(
             "UPDATE knowledge_stores SET updated_at = ? WHERE id = ?", (now, store_id)
         )
@@ -372,6 +410,7 @@ def delete_item(  # noqa: PLR0913
             "VALUES (?, ?, ?, ?, 'delete', NULL, 1, ?, ?)",
             (store_id, row["path"], version, row["kind"], author, now),
         )
+        _prune_history(conn, store_id)
         conn.execute(
             "UPDATE knowledge_stores SET updated_at = ? WHERE id = ?", (now, store_id)
         )
@@ -926,17 +965,33 @@ class KnowledgeService:
 
         return await self._db.run(rows)
 
-    async def main_files(self, store_ids: Sequence[str]) -> dict[str, str]:
-        """The ``MAIN.md`` text of each store that has one."""
+    async def main_files(
+        self, store_ids: Sequence[str], max_chars: int
+    ) -> dict[str, MainFile]:
+        """The ``MAIN.md`` of each store that has one.
 
-        def rows(conn: sqlite3.Connection) -> dict[str, str]:
+        The text holds at most ``max_chars`` characters. The database
+        returns only that part, so a large main file costs no memory here.
+        """
+
+        def rows(conn: sqlite3.Connection) -> dict[str, MainFile]:
             found = conn.execute(
-                "SELECT store_id, content FROM knowledge_items WHERE kind = 'file' "
+                "SELECT store_id, substr(content, 1, ?) AS head, "
+                "length(content) AS chars, size, updated_by_agent_id "
+                "FROM knowledge_items WHERE kind = 'file' "
                 "AND path = ? COLLATE NOCASE AND store_id IN "
                 "(SELECT value FROM json_each(?))",
-                (MAIN_FILE, json.dumps(list(store_ids))),
+                (max(max_chars, 0), MAIN_FILE, json.dumps(list(store_ids))),
             ).fetchall()
-            return {r["store_id"]: str(r["content"]) for r in found}
+            return {
+                r["store_id"]: MainFile(
+                    str(r["head"] or ""),
+                    int(r["chars"] or 0),
+                    int(r["size"]),
+                    r["updated_by_agent_id"],
+                )
+                for r in found
+            }
 
         return await self._db.run(rows)
 

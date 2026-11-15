@@ -18,15 +18,23 @@ and vectors whose text no longer exists.
 
 If the provider fails, the embedder records the reason, waits, and tries
 again. Search uses keywords only for passages that have no vector.
+
+If the budget of one agent refuses a batch (``BudgetExceededError`` with
+scope ``agent``), the embedder skips the passages of that agent for the
+rest of the drain and continues with the other passages. It lists the
+skipped agents in ``budget_skipped`` and tries them again after the retry
+time. So one agent that spent its budget does not stop the vectors of other
+agents, documents and the entity catalogue.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -35,6 +43,7 @@ from hagent_app.knowledge import vectors
 from hagent_app.knowledge.index import SearchIndex, content_hash
 from hagent_app.providers.config import PROVIDERS, Provider
 from hagent_app.providers.embeddings import EmbeddingClient
+from hagent_app.providers.errors import BudgetExceededError
 from hagent_app.storage import Database, transaction
 
 _LOG = logging.getLogger(__name__)
@@ -98,8 +107,11 @@ class Embedder:
         self._wakes = 0
         self._task: asyncio.Task[None] | None = None
         self._query_cache: dict[tuple[str, str], list[float]] = {}
+        self._retry_handle: asyncio.TimerHandle | None = None
         self.last_error: str | None = None
         self.embedded_texts = 0
+        # Agents whose budget refused their batch in the last drain.
+        self.budget_skipped: tuple[str, ...] = ()
 
     @property
     def model(self) -> EmbeddingModel | None:
@@ -127,6 +139,9 @@ class Embedder:
 
     async def stop(self) -> None:
         """Stop the background task."""
+        if self._retry_handle is not None:
+            self._retry_handle.cancel()
+            self._retry_handle = None
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -193,7 +208,7 @@ class Embedder:
             self._wake.clear()
             wakes = self._wakes
             try:
-                await self._drain()
+                skipped = await self._drain()
             except asyncio.CancelledError:
                 raise
             except Exception as err:
@@ -203,44 +218,65 @@ class Embedder:
                 await asyncio.sleep(self._retry)
                 self._wake.set()
                 continue
+            self.budget_skipped = tuple(sorted(skipped))
+            if skipped and self._retry_handle is None:
+                self._retry_handle = asyncio.get_running_loop().call_later(
+                    self._retry, self._retry_skipped
+                )
             if wakes == self._wakes:
                 self._idle.set()
 
+    def _retry_skipped(self) -> None:
+        self._retry_handle = None
+        self.wake()
+
     def _batch_reader(
-        self, key: str
+        self, key: str, skip: set[str]
     ) -> Callable[
         [sqlite3.Connection], tuple[str | None, list[tuple[str, str]]] | None
     ]:
         size = self._batch_size
+        skipped = sorted(skip)
 
         def read(
             conn: sqlite3.Connection,
         ) -> tuple[str | None, list[tuple[str, str]]] | None:
-            return _next_batch(conn, key, size)
+            return _next_batch(conn, key, size, skipped)
 
         return read
 
-    async def _drain(self) -> None:
-        """Embed batches until no passage waits. Then delete stale vectors."""
+    async def _drain(self) -> set[str]:
+        """Embed batches until no passage waits. Then delete stale vectors.
+
+        Return the agents whose budget refused their batch.
+        """
+        skip: set[str] = set()
         model = self._model
         if model is None or not self._index.vectors_loaded:
-            return
+            return skip
         client = self._client()
         if client is None:
-            return
+            return skip
         key = model.key
         while True:
-            batch = await self._db.run(self._batch_reader(key))
+            batch = await self._db.run(self._batch_reader(key, skip))
             if not batch:
                 break
             charge, items = batch
-            result = await client.embed(
-                model.provider,
-                model.model,
-                [text for _, text in items],
-                agent_id=charge,
-                dimensions=model.dimensions,
-            )
+            try:
+                result = await client.embed(
+                    model.provider,
+                    model.model,
+                    [text for _, text in items],
+                    agent_id=charge,
+                    dimensions=model.dimensions,
+                )
+            except BudgetExceededError as err:
+                if charge is None or err.scope != "agent":
+                    raise
+                _LOG.info("agent %s is over budget; skip its embeddings", charge)
+                skip.add(charge)
+                continue
             rows = [
                 (h, key, len(v), vectors.serialize(v))
                 for (h, _), v in zip(items, result.vectors, strict=True)
@@ -249,6 +285,7 @@ class Embedder:
             self.embedded_texts += len(rows)
             self.last_error = None
         await self._db.run(lambda c: _prune(c, key))
+        return skip
 
 
 def _writer(
@@ -261,15 +298,20 @@ def _writer(
 
 
 def _next_batch(
-    conn: sqlite3.Connection, key: str, size: int
+    conn: sqlite3.Connection, key: str, size: int, skip: Sequence[str] = ()
 ) -> tuple[str | None, list[tuple[str, str]]] | None:
-    """The next batch: hashes with no vector, all with the same charge."""
+    """The next batch: hashes with no vector, all with the same charge.
+
+    Hashes charged to an agent in ``skip`` are left out.
+    """
     rows = conn.execute(
         "SELECT p.content_hash, MIN(p.text), MIN(p.charge_agent_id) "
         "FROM search_passages p WHERE NOT EXISTS (SELECT 1 FROM search_embeddings e "
         "WHERE e.content_hash = p.content_hash AND e.model = ?) "
-        "GROUP BY p.content_hash ORDER BY MIN(p.id) LIMIT ?",
-        (key, size * 4),
+        "GROUP BY p.content_hash HAVING MIN(p.charge_agent_id) IS NULL "
+        "OR MIN(p.charge_agent_id) NOT IN (SELECT value FROM json_each(?)) "
+        "ORDER BY MIN(p.id) LIMIT ?",
+        (key, json.dumps(list(skip)), size * 4),
     ).fetchall()
     if not rows:
         return None
