@@ -180,7 +180,11 @@ class SchedulerStateStore:
 
     async def owner(self, kind: StateKind, item_id: str) -> str | None:
         if kind == "rule":
-            return await self._rules().owner(kind, item_id)
+            # The tools call owner() inside the scope check. With no rule
+            # store, no agent owns a rule: the tools return not_owner.
+            if self.rules is None:
+                return None
+            return await self.rules.owner(kind, item_id)
         item = await self._component.get_item(item_id)
         return item.agent_id if item is not None and item.kind == kind else None
 
@@ -506,8 +510,12 @@ class SchedulerComponent:
 
     def _on_missed(self, event: JobExecutionEvent) -> None:
         """APScheduler missed a job while the app ran (a stalled loop)."""
-        due = event.scheduled_run_time
-        self._spawn(self._skip_missed(event.job_id, due, 1))
+        self._spawn(self._missed_at_runtime(event.job_id, event.scheduled_run_time))
+
+    async def _missed_at_runtime(self, job_id: str, due: datetime) -> None:
+        await self._skip_missed(job_id, due, 1)
+        if self._scheduler is not None and self._scheduler.get_job(job_id) is None:
+            await self._timer_done(job_id)
 
     async def fire(
         self, job_id: str, *, due: datetime | None = None, missed_count: int = 1
@@ -682,8 +690,10 @@ class SchedulerComponent:
 
     def _public(self, item: store.Item) -> dict[str, Any]:
         data: dict[str, Any] = {
+            "id": item.id,
             "item_id": item.id,
             "kind": item.kind,
+            "description": _describe(item),
             "enabled": item.enabled,
             "spec": item.spec,
             "created_at": item.created_at,
@@ -1051,6 +1061,27 @@ class SchedulerComponent:
             "count": len(changes),
             "changes" if sub.event_type == "state_changed" else "events": items,
         }
+
+
+def _describe(item: store.Item) -> str:
+    """A short text for the item. It holds no value that changes by itself.
+
+    The prompt builder puts it into the stable part of the prompt.
+    """
+    spec = item.spec
+    if item.kind == "subscription":
+        event_type = spec.get("event_type", "state_changed")
+        entities = ", ".join(spec.get("entity_ids") or ())
+        text = f"{event_type} {entities}".strip()
+    elif spec.get("type") == "timer":
+        text = f"timer at {item.run_at}"
+    else:
+        text = f"cron {spec.get('cron')}"
+    if spec.get("review"):
+        text += " (review)"
+    if spec.get("note"):
+        text += f": {spec['note']}"
+    return text
 
 
 def _slim(state: Any) -> dict[str, Any] | None:

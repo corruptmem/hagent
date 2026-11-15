@@ -449,6 +449,7 @@ dependencies = [
     { name = "python-slugify" },
     { name = "sqlalchemy" },
     { name = "sqlite-vec" },
+    { name = "tzlocal" },
 ]
 
 [package.metadata]
@@ -465,6 +466,7 @@ requires-dist = [
     { name = "python-slugify", specifier = ">=8" },
     { name = "sqlalchemy", specifier = "==2.1.8" },
     { name = "sqlite-vec", specifier = "==0.1.9" },
+    { name = "tzlocal", specifier = "==5.4.5" },
 ]
 
 [[package]]

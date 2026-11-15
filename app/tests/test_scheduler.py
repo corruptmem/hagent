@@ -861,3 +861,49 @@ def test_min_gap_finds_the_smallest_gap() -> None:
     now = datetime(2026, 11, 15, tzinfo=UTC)
     assert min_gap_seconds(cron_trigger("0,1 * * * *", UTC), now) == 60
     assert min_gap_seconds(cron_trigger("0 4 * * *", UTC), now) == 86400
+
+
+async def test_rule_calls_without_a_rule_store_never_fail_the_check(
+    home: FakeHA, tmp_path: Path
+) -> None:
+    async with scheduler_env(home, tmp_path) as env:
+        agent = await env.agent(**READ_HALL)
+        for tool, args in [
+            ("self.set_enabled", {"kind": "rule", "item_id": "r1", "enabled": False}),
+            ("self.delete", {"kind": "rule", "item_id": "r1"}),
+        ]:
+            result = await env.call(agent, tool, args)
+            assert result.error_code == "not_owner"
+        listed = await env.call(agent, "self.list", {"kind": "rule"})
+        assert listed.error_code == "not_supported"
+
+
+async def test_the_prompt_view_of_an_item_holds_no_changing_time(
+    home: FakeHA, tmp_path: Path
+) -> None:
+    async with scheduler_env(home, tmp_path) as env:
+        agent = await env.agent(**READ_HALL)
+        cron = await env.create(
+            agent, "schedule", {"type": "cron", "cron": "0 4 * * *", "note": "daily"}
+        )
+        listed = await env.call(agent, "self.list", {"kind": "schedule"})
+        item = listed.data[0]
+        assert item["id"] == cron
+        assert item["description"] == "cron 0 4 * * *: daily"
+
+
+async def test_a_timer_missed_at_runtime_is_deleted(
+    home: FakeHA, tmp_path: Path
+) -> None:
+    async with scheduler_env(home, tmp_path) as env:
+        agent = await env.agent(**READ_HALL)
+        timer = await env.create(
+            agent, "schedule", {"type": "timer", "delay_seconds": 600}
+        )
+        scheduler = env.scheduler._scheduler
+        assert scheduler is not None
+        due = env.job(f"item:{timer}").next_run_time
+        scheduler.remove_job(f"item:{timer}")  # APScheduler drops a missed date job.
+        await env.scheduler._missed_at_runtime(f"item:{timer}", due)
+        assert await env.scheduler.get_item(timer) is None
+        assert [r["status"] for r in await env.runs(agent)] == ["skipped_missed"]
