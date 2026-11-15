@@ -64,7 +64,7 @@ async def env(tmp_path: Path) -> AsyncIterator[Env]:
         config = Config(ha_url=h.ha.url, ha_token=h.ha.token, data_dir=tmp_path)
         ctx = AppContext(config, h.db, h.client, h.states, "test-installation")
         tools = ToolsComponent()
-        rules = RulesComponent(tools, NoProviders())  # type: ignore[arg-type]
+        rules = RulesComponent(tools, NoProviders())
         tools.agent_state = rules.agent_state
         turns = FakeTurns()
         router = RouterComponent(turns, tools=tools, rules=rules)

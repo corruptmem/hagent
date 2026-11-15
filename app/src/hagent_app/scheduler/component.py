@@ -231,6 +231,12 @@ class SchedulerStateStore:
         """Roll one of the agent's rules back (task-13)."""
         return await self._rules().rollback_rule(agent_id, rule_id, version)
 
+    async def backtest_rule(
+        self, agent: Any, rule_id: str, options: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Run a backtest of one of the agent's rules (task-14)."""
+        return await self._rules().backtest_rule(agent, rule_id, options)
+
 
 class SchedulerComponent:
     """Runs schedules, reviews and subscriptions (design sections 12, 14).

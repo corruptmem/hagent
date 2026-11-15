@@ -466,6 +466,15 @@ RULE_CASES = [
         {"tools__self": True},
         setup="other_owner",
     ),
+    # Task-14: a backtest of another agent's rule never reaches the store.
+    Case(
+        "self.backtest_rule",
+        {"rule_id": "r1"},
+        "not_owner",
+        {"tools__self": True},
+        setup="other_owner",
+    ),
+    Case("self.backtest_rule", {"rule_id": "r1"}, "tool_off"),
 ]
 
 CASES = [

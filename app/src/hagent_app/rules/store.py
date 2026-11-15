@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -70,6 +70,10 @@ class RuleStore:
 
     def __init__(self) -> None:
         self._db: Database | None = None
+        # Backtest and trial figures for each version (task-14 sets it).
+        self.version_extras: (
+            Callable[[sqlite3.Connection, str], Mapping[int, Mapping[str, Any]]] | None
+        ) = None
 
     def bind(self, db: Database | None) -> None:
         """Set or clear the database."""
@@ -270,6 +274,7 @@ class RuleStore:
 
     async def rule_stats(self, agent_id: str, rule_id: str) -> dict[str, Any]:
         """The rule, its versions and the statistics of each version."""
+        extra = self.version_extras
 
         def run(conn: sqlite3.Connection) -> dict[str, Any]:
             rule = conn.execute(
@@ -285,13 +290,16 @@ class RuleStore:
                 " WHERE v.rule_id = ? ORDER BY v.version",
                 (rule_id,),
             ).fetchall()
+            extras = {} if extra is None else extra(conn, rule_id)
             return {
                 "rule_id": rule_id,
                 "state": rule["state"],
                 "current_version": rule["current_version"],
                 "latest_version": rule["latest_version"],
                 "deleted": rule["deleted_at"] is not None,
-                "versions": [_stats_data(v) for v in versions],
+                "versions": [
+                    {**_stats_data(v), **extras.get(v["version"], {})} for v in versions
+                ],
             }
 
         return await self._database().run(run)
@@ -358,6 +366,8 @@ class AgentStateStores:
 
     def __init__(self, stores: Mapping[StateKind, Any] | None = None) -> None:
         self.stores: dict[StateKind, Any] = dict(stores or {})
+        # The backtests of the self.backtest_rule tool (task-14 sets it).
+        self.backtests: Any = None
 
     def _store(self, kind: StateKind) -> Any:
         store = self.stores.get(kind)
@@ -415,6 +425,18 @@ class AgentStateStores:
         """Make an older version of the rule the current version."""
         result: dict[str, Any] = await self._store("rule").rollback(
             agent_id, rule_id, version
+        )
+        return result
+
+    async def backtest_rule(
+        self, agent: Any, rule_id: str, options: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Run a backtest of one of the agent's rules (design 10.7)."""
+        if self.backtests is None:
+            msg = "backtests are not available yet"
+            raise ToolUnavailableError(msg)
+        result: dict[str, Any] = await self.backtests.backtest_rule(
+            agent, rule_id, options
         )
         return result
 

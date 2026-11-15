@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
@@ -765,6 +765,70 @@ class SelfRollbackRule(Tool):
         )
 
 
+class BacktestRuleArgs(Args):
+    """Arguments of ``self.backtest_rule``."""
+
+    rule_id: ItemId
+    version: Annotated[int, Field(ge=1)] | None = None
+    days: Annotated[int, Field(ge=1, le=30)] | None = None
+    limit: Annotated[int, Field(ge=1, le=1000)] | None = None
+    live: bool = True
+
+
+class SelfBacktestRule(Tool):
+    """Test one version of one of the agent's rules against its history.
+
+    The backtest writes nothing (design section 10.7). It replays the past
+    invocations that an agent turn answered, and compares the rule result
+    with the turn result through the agreement template of the rule. A rule
+    with a decision action can cost one decision request for each matched
+    invocation: ``limit`` sets the most matched invocations. The tool is
+    marked as a write, because it costs money and changes the statistics:
+    a test invocation records it but does not run it.
+    """
+
+    name = "self.backtest_rule"
+    group = "self"
+    description = (
+        "Backtest one of your rules: run a rule version (default: the "
+        "current one) against your past invocations of the last 'days' "
+        "days (default 7), without writes, and compare each rule result "
+        "with your past result through the rule's agreement template. "
+        "Returns the agreement rate, the cost and the cases. A decision "
+        "rule can cost one decision request per matched invocation; set "
+        "'limit' to cap them, or live=false to replay recorded answers only."
+    )
+    args_model = BacktestRuleArgs
+    writes = True
+
+    async def authorize(
+        self, ctx: ToolContext, env: ToolEnv, args: BacktestRuleArgs
+    ) -> Prepared:
+        await _check_owner(ctx, env, "rule", args.rule_id)
+        return Prepared(args.model_dump(), args)
+
+    async def run(self, ctx: ToolContext, env: ToolEnv, prepared: Prepared) -> Any:
+        args: BacktestRuleArgs = prepared.payload
+        result = await _agent_state(env).backtest_rule(
+            ctx.agent,
+            args.rule_id,
+            args.model_dump(exclude={"rule_id"}, exclude_none=True),
+        )
+        return _backtest_summary(result)
+
+
+def _backtest_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    """The backtest for the model: the totals and at most 20 notable cases."""
+    summary = {k: v for k, v in result.items() if k != "cases"}
+    cases = [
+        c
+        for c in result.get("cases") or []
+        if c.get("outcome") in {"disagreed", "error", "skipped"}
+    ]
+    summary["notable_cases"] = cases[:20]
+    return summary
+
+
 STORE_TOOLS: tuple[Tool, ...] = (
     KnowledgeList(),
     KnowledgeRead(),
@@ -780,4 +844,5 @@ STORE_TOOLS: tuple[Tool, ...] = (
     SelfDelete(),
     SelfReorderRules(),
     SelfRollbackRule(),
+    SelfBacktestRule(),
 )

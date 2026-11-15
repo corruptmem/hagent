@@ -66,6 +66,7 @@ def default_components() -> list[Component]:
     section 6.1). ``UiComponent`` serves the UI files on every path that
     does not start with ``api/``.
     """
+    from hagent_app.backtest import BacktestComponent  # noqa: PLC0415 - import cycle
     from hagent_app.knowledge import KnowledgeComponent  # noqa: PLC0415 - import cycle
     from hagent_app.providers import ProvidersComponent  # noqa: PLC0415 - import cycle
     from hagent_app.router import (  # noqa: PLC0415 - import cycle
@@ -108,9 +109,15 @@ def default_components() -> list[Component]:
     turns.history.index = knowledge.history_index
     turns.knowledge_context = knowledge.turn_context
     # The rule store serves the rule kind of the scheduler's state store.
-    rules = RulesComponent(tools, providers)
+    # The backtest component records each decision answer, wraps the rule
+    # stage (records and trials) and serves the rule routes.
+    backtest = BacktestComponent(tools, providers, http.events)
+    rules = RulesComponent(tools, backtest.decision_source())
+    backtest.rules = rules
+    backtest.turns = turns
+    http.add_routes(backtest.routes())
     turns.history.rules = rules.store
-    router = RouterComponent(turns, tools=tools, rules=rules, models=models)
+    router = RouterComponent(turns, tools=tools, rules=backtest, models=models)
     http.add_routes(router.routes())
     # The scheduler holds the agent state of the self tools and sees each
     # agent service call, to find own writes (design section 12).
@@ -132,6 +139,7 @@ def default_components() -> list[Component]:
         knowledge,
         turns,
         rules,
+        backtest,
         router,
         scheduler,
         catalog,

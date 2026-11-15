@@ -16,7 +16,7 @@ Spec parts:
   ``decline``. Without it, the result is the action output.
 - ``writes``: service calls on output entities, with data templates.
 - ``cache``: the rule result cache.
-- ``agreement`` and ``trial``: stored for backtests and trials (task-14).
+- ``agreement`` and ``trial``: for backtests and trials (``hagent_app.backtest``).
 """
 
 from __future__ import annotations

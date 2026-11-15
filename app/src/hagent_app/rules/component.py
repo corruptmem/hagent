@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from hagent_app.router.retry import RetryPolicy
@@ -14,7 +14,7 @@ from hagent_app.rules.templates import TemplateClock
 
 if TYPE_CHECKING:
     from hagent_app.app import AppContext
-    from hagent_app.providers import ProvidersComponent
+    from hagent_app.providers.decisions import DecisionClient
     from hagent_app.router.rules import RuleOutcome, RuleRequest
     from hagent_app.tools import ToolsComponent
 
@@ -23,6 +23,16 @@ _LOG = logging.getLogger(__name__)
 
 class RulesUnavailableError(RuntimeError):
     """The rules component has not started."""
+
+
+class DecisionSource(Protocol):
+    """Gives the decision client: ``ProvidersComponent``, or a wrapper that
+    records the answers (task-14, ``backtest.RecordingDecisionSource``)."""
+
+    @property
+    def decisions(self) -> DecisionClient:
+        """The decision client."""
+        ...
 
 
 class RulesComponent:
@@ -37,7 +47,7 @@ class RulesComponent:
 
     name = "rules"
 
-    def __init__(self, tools: ToolsComponent, providers: ProvidersComponent) -> None:
+    def __init__(self, tools: ToolsComponent, providers: DecisionSource) -> None:
         self._tools = tools
         self._providers = providers
         self.store = RuleStore()
