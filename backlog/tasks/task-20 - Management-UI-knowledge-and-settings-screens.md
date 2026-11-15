@@ -1,11 +1,11 @@
 ---
 id: TASK-20
 title: 'Management UI: knowledge and settings screens'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-14 23:04'
-updated_date: '2026-11-15 01:25'
+updated_date: '2026-11-15 01:26'
 labels:
   - ui
 dependencies:
@@ -72,6 +72,8 @@ Round 2 (lead review), after a second merge of impl (5f57abe):
 - Existing agents keep the daily_usd value that is stored in their definitions (for example 0.5). They do not follow a settings change until a user clears the field.
 - Follow-ups 2-4 of the earlier comment are done. Follow-up 1 (deleted-paths route) is skipped on the lead's decision.
 Validation: mise run check passed (650 pytest, 43 vitest, ruff, mypy, eslint, prettier, tsc).
+
+Lead: merged with task-15. Accepted: the meter reads the current definition on each call (a budget cut stops a running turn at its next call); env/options key fallback stays for now. task-21 verifies that the app token may call config/auth/list.
 <!-- SECTION:NOTES:END -->
 
 ## Comments
