@@ -14,9 +14,7 @@ dev = [
     "pytest>=8.4",
     "pytest-asyncio>=1.2",
     "ruff>=0.14",
-]
-spike = [
-    "pydantic-ai-harness>=0.68",
+    "types-jsonschema>=4.26",
 ]
 
 [tool.ruff]

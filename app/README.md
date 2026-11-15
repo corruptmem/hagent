@@ -21,6 +21,7 @@ SIGINT.
 | `src/hagent_app/ingress/` | `IngressGuard`, the source-address check, and `UiComponent`, which serves the UI files (task-18). |
 | `src/hagent_app/ha_catalog/` | `CatalogComponent`: the read-only HA catalogue for the UI pickers (task-18). |
 | `src/hagent_app/tools/` | The tool executor, the scope check, the HA registry snapshot, the audit log and the scope monitor (task-8). |
+| `src/hagent_app/turns/` | The agent turn, the turn history and the running summaries (task-10). See "How to run an agent turn" below. |
 | `src/hagent_app/own_writes.py` | `OwnWriteTracker`. It links state changes to the service calls that caused them (task-2). |
 | `tests/` | The tests. |
 | `tests/helpers/fake_ha.py` | `FakeHA`, a fake HA WebSocket server. Use it in every test that needs HA. |
@@ -277,6 +278,123 @@ attached store IDs and the invocation's agent ID to a store.
 
 Tools must never receive `AgentService`. `tests/test_tools_no_writer.py`
 checks this.
+
+## How to run an agent turn
+
+The `turns` package runs agent turns (design sections 9.5, 11, 13.1 and
+13.2). `TurnsComponent` owns a `TurnRunner` and a `TurnHistory`.
+
+Terms:
+
+- **Stable prefix**: the start of the prompt that does not change between
+  invocations: the tool definitions and the instructions. The provider
+  prompt cache works only for this part.
+- **Source key**: the key of a running summary. It is the source of the
+  invocation, or `assist:<conversation ID>` for an Assist conversation.
+- **Running summary**: a short text that replaces the older records of one
+  source key in the prompt. The summary model of the definition writes it.
+
+### Entry point for the router
+
+The router (task-12) calls one method:
+
+```python
+result = await turns.run_turn(
+    agent,
+    TurnInput(
+        source="invoke",
+        inputs={"sensor.<name>": "19.5"},  # the router collects the inputs
+        data={"reason": "..."},  # the caller data
+        invocation_id=invocation_id,
+        conversation_id=None,  # set for Assist
+        result_schema=None,  # an AI Task structure, if any
+        dry_run=False,
+    ),
+)
+```
+
+`agent` is the `Agent` snapshot from `AgentReader`. `result` is a
+`TurnResult`:
+
+- `status` is `ok`, `stopped`, `failed` or `cancelled`.
+- `stop_reason` says why a turn did not return a result:
+  `tool_call_limit`, `token_limit`, `request_limit`, `budget`,
+  `provider_error`, `invalid_result` or `error`. The router then returns
+  the fallback (design section 9.7).
+- `result` is the text or the structured result. It is `None` for the
+  result type `none`.
+- `usage` holds the requests, tool calls and token counts of the turn.
+
+`run_turn` does not raise for a model, provider or limit failure. A
+cancelled turn records `cancelled` and raises `CancelledError` again. The
+runner does not retry a failed model call. The router decides on retries.
+
+### Prompt order
+
+`PromptBuilder` builds the prompt in the order of design section 9.5:
+
+- Part 1, the tool definitions, comes from `ToolExecutor.tools_for`. Provider tool names
+  cannot contain `.`, so `ha.get_state` becomes `ha__get_state`.
+- Parts 2 to 4 are the instructions: the instructions of the definition, the attached
+  stores (description, access, index sorted by name, main files), and the
+  rules, schedules and scopes. This part has no time, inputs or caller
+  data.
+- Parts 5 to 7 are the user prompt: the running summary and the latest records of the
+  source key, the recall results (only if retrieval is on), and the
+  invocation (source, time, inputs, caller data, main-file requests).
+
+The builder reads stores and rules only through the tool executor, with the
+same scope check as a model tool call.
+
+### Tool calls, limits and compaction
+
+- Each tool call goes to `ToolExecutor.execute`. History keeps the full
+  result. The model receives at most `tool_result_max_chars` characters,
+  with a marker.
+- `UsageLimits` applies `budget.max_tool_calls` and `budget.max_tokens`.
+  The executor never runs more calls than the limit.
+- `Caching` adds provider cache markers. `WarnOnCacheBusts` warns when the
+  cached prefix collapses.
+- `TieredCompaction` with `ClearToolResults` clears old tool results when
+  the context is larger than `compaction_target_tokens`. Each clear must
+  save `compaction_min_clear_tokens`. The runtime uses only local
+  strategies, because `MeteredModel` refuses provider-side compaction.
+- A structured result must match its JSON schema. The model gets one
+  correction attempt. A second failure gives `invalid_result`.
+- When an injected `MAIN.md` reaches `main_file_warn_fraction` of
+  `main_file_max_chars`, the invocation part asks the agent to move detail
+  into other files. The runtime does not cut the file.
+
+### History
+
+`TurnHistory` writes these tables (migration `0400`):
+
+| Table | Content |
+|---|---|
+| `turns` | One row for each turn: input, prompt, hash of the instructions, status, stop reason, result, messages and usage. |
+| `turn_tool_calls` | Each tool call with its full result and its audit row ID. |
+| `turn_compactions` | Each compaction: `tool_result_cut`, `in_turn`, `running_summary` (with the new summary) or `main_file_request`. |
+| `source_summaries` | The running summary of each source key. |
+
+Read interface for the Inspect screens (task-19):
+
+- `await history.list_turns(agent_id, source_key=..., status=..., before=..., limit=...)`:
+  turns, newest first, without messages.
+- `await history.get(turn_id)`: one turn with its messages, tool calls and
+  compactions.
+- `await history.summary(agent_id, source_key)`: the running summary.
+
+`TurnHistory` also implements the `HistoryStore` protocol of the tool
+executor. `TurnsComponent` sets `ToolsComponent.history` in its
+constructor. `rule_owner` returns `None` until task-13 adds rules. A
+`HistoryIndex` (task-11) can index the turns and serve `memory.search`:
+set `turns.history.index`. Without an index, search uses a plain text
+match. Dry runs do not go into the index, the search or the summaries.
+
+### Options
+
+The `turns` section of `options.json` holds the keys in `TurnsConfig`
+(`src/hagent_app/turns/config.py`).
 
 ## How to use the HA client and the state cache
 
