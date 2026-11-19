@@ -1,0 +1,37 @@
+configuration:
+  log_level:
+    name: Log level
+    description: The level of the app log.
+  providers:
+    name: Providers
+    description: >-
+      Default values for the providers. The Settings page of the app
+      overrides each value. Set the API keys on the Settings page.
+    fields:
+      openai_api_key:
+        name: OpenAI API key
+        description: Optional. The Settings page is the preferred place.
+      openrouter_api_key:
+        name: OpenRouter API key
+        description: Optional. The Settings page is the preferred place.
+      agent_daily_budget_usd:
+        name: Default agent daily budget (USD)
+        description: The daily cost limit of an agent with no own budget.
+      installation_daily_budget_usd:
+        name: Installation daily budget (USD)
+        description: The daily cost limit of all agents together.
+      genai_prices_auto_update:
+        name: Update the genai-prices table
+        description: Fetch new model prices from GitHub each day.
+  link:
+    name: Integration link
+    description: How the hagent integration finds the app.
+    fields:
+      discovery:
+        name: Supervisor discovery
+        description: Offer the integration set-up in HA automatically.
+      host:
+        name: Host name
+        description: >-
+          Optional. The host name that the integration connects to. The
+          default is the host name of the app container.

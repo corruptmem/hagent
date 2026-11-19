@@ -1,0 +1,77 @@
+{
+  "definition": {
+    "name": "New agent",
+    "instructions": "Describe what the agent is for.",
+    "models": {
+      "chat": {
+        "provider": "openai",
+        "model": "gpt-5-mini"
+      },
+      "decision": null,
+      "summary": null
+    },
+    "inputs": {
+      "entities": [],
+      "devices": []
+    },
+    "outputs": [],
+    "result": {
+      "type": "text",
+      "schema": null
+    },
+    "tools": {
+      "self": false,
+      "knowledge": true,
+      "memory": true,
+      "ha": {
+        "level": "none",
+        "scope": {
+          "all": false,
+          "entities": [],
+          "devices": [],
+          "areas": [],
+          "floors": [],
+          "labels": [],
+          "domains": []
+        },
+        "services": []
+      }
+    },
+    "knowledge": [],
+    "retrieval": {
+      "mode": "off",
+      "result_count": 5,
+      "token_limit": 1000
+    },
+    "approval": {
+      "tools": [],
+      "services": [],
+      "entities": []
+    },
+    "assist": {
+      "enabled": false
+    },
+    "budget": {
+      "daily_usd": null,
+      "max_tool_calls": 20,
+      "max_tokens": 200000
+    },
+    "concurrency": {
+      "mode": "queued",
+      "queue_size": 10
+    },
+    "fallback": {
+      "mode": "last_result",
+      "value": null
+    },
+    "scheduling": {
+      "min_interval_seconds": 60,
+      "max_schedules": 20,
+      "debounce_seconds": 5.0
+    },
+    "review": {
+      "enabled": true,
+      "cron": "0 4 * * *"
+    }
+  }
+}

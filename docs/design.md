@@ -151,6 +151,8 @@ hagent has two parts: an app and an integration.
   API for state, events and service calls.
 - It keeps agent definitions, agent state, knowledge stores and history in
   SQLite, in the app data directory. HA backups include this directory.
+  The app uses a cold backup: the Supervisor stops the app during a backup,
+  so that the SQLite files are consistent.
 - It serves a management UI through Ingress. Ingress shows an app web page
   in the HA sidebar, behind HA login. Only HA administrators can open it.
   Section 7.2 describes the UI.
@@ -321,7 +323,18 @@ A narrowed `admin` would therefore be a false limit.
   scope permits each one by name: `script.*`, `automation.*`, `scene.*`,
   `homeassistant.*` (the generic services), `shell_command.*`,
   `rest_command.*`, `python_script.*`, `pyscript.*`, `hassio.*` and
-  `notify.*`.
+  `notify.*`. The same rule applies to services that select other things
+  through their data or that change the system: `recorder.*`,
+  `zwave_js.*`, `zha.*`, `matter.*`, `knx.*`, `mqtt.*`, `group.*`,
+  `logger.*`, `system_log.*`, `backup.*` and `hagent.*`.
+- **Declared services.** HA declares a target and data fields for each
+  service. The runtime uses this metadata as an allowlist. A call on an
+  entity needs a declared entity target that accepts the entity domain. A
+  data key that the service does not declare fails. Without metadata, the
+  call fails.
+- **Other domains.** A service can act on an entity of another domain, for
+  example a recorder service on a light. The scope must name such a service
+  exactly. An output never permits it.
 - **Scope changes.** A scope that uses areas, labels or devices changes when
   the user moves an entity. The runtime resolves each scope again when the HA
   registries change. If a scope grows, the runtime sends an HA notification
@@ -443,8 +456,9 @@ tools, the scope check, the stored history and the cost records.
 An agent turn sends the model these parts, in this order. The most stable
 parts come first, so that the provider prompt cache works (section 13.2):
 
-1. The instructions from the definition.
-2. The tool definitions.
+1. The tool definitions. Providers read these before the instructions, so
+   hagent does not control this order. Both parts are stable.
+2. The instructions from the definition.
 3. The attached knowledge stores, with descriptions and access, the index of
    their contents, and the injected main files (section 13.4).
 4. A short description of the agent's rules, schedules and scopes.
@@ -562,20 +576,50 @@ The action sends one request to the decision model in the definition. The
 request has one or more questions. Each question has:
 
 - The question text, written by the agent.
-- A list of choices: yes/no, categories or numbered options.
+- A question type, with its options (see below).
 - The values to include, taken from the inputs, the caller data and the
   context.
 
-The decision model returns a probability for each choice of each question.
-The result template turns the probabilities into the result. For example,
-it can take the most likely choice, compute a weighted mean, or decline when
-no choice is likely enough. The agent writes this logic. hagent does not
-build it in.
+All questions in one request see the same values. Each question gets an
+independent answer. One question cannot read the answer to another. There
+are three question types:
 
-The OpenAI Decisions API and the OpenRouter decisions endpoint both return
-typed answers with probabilities. hagent puts both behind one adapter. The
-OpenRouter decisions endpoint is in alpha, so the adapter must expect
-changes.
+| Type | Options | Answer |
+|---|---|---|
+| Yes/no | Optional text for yes and for no. On OpenAI, the adapter puts this text in the instructions. | The probability of yes, from 0 to 1. |
+| Choice | 2 to 255 named options. | The most likely option, a probability for each option, and a confidence value. |
+| Score | 2 to 10 ordered levels. | A score: the probability-weighted mean of the level numbers (0, 1, 2 ...). Also a probability for each level, and a confidence value. |
+
+The confidence value describes how the probabilities spread. It is not the
+probability that the answer is correct. On OpenAI, the model can refuse one
+question. The other questions still get answers.
+
+The result template turns the answers into the result. For example, it can
+take the most likely choice, use the score, or decline when no choice is
+likely enough. The agent writes this logic. hagent does not build it in.
+
+Thresholds belong to one decision model. In a probe, the same input gave a
+score of 1.09 (confidence 0.84) on OpenAI and 1.51 (confidence 0.26) on Jev.
+A change of decision model therefore needs a new backtest (section 10.7).
+
+The OpenAI Decisions API (`POST /v1/decisions`, model `gpt-6-luna`) and the
+OpenRouter decisions endpoint (`POST /api/alpha/decisions`, Jev models such
+as `typesafe/jev-1.14`) both return typed answers with probabilities. Their
+request and response shapes differ:
+
+| | OpenAI | OpenRouter |
+|---|---|---|
+| Values | `input`: text, or messages with text, JSON and image parts | `state`: text, a JSON object or an array |
+| Questions | An array. Each question has a `name`. | An object keyed by question name. |
+| Yes/no type name | `predicate` | `noul` |
+| Options | `choices` and `levels`: arrays of objects | `criteria`: an object or an array |
+| Answers | An array in question order, with `name` | An object keyed by question name |
+| Probabilities | An array of objects | An object keyed by option or level number |
+| Usage | Tokens, and cached and cache-write tokens. No cost. | Tokens and cost in USD |
+
+hagent puts both behind one adapter. The OpenRouter decisions endpoint is in
+alpha, so the adapter must expect changes. Neither provider charges for
+output tokens.
 
 ### 10.4 Rule statistics
 
@@ -672,12 +716,49 @@ The definition sets limits:
 - A debounce period for each subscription, so that a sensor that changes
   often cannot cause many invocations.
 
-**Own writes.** Each service call that the runtime makes carries an HA
-context ID. HA copies this ID into the state changes that the call causes.
+**Own writes.** An HA context is a record with an ID that HA attaches to a
+service call and to each state change that the call causes. HA creates the
+context for each WebSocket `call_service` command. The client cannot supply
+one: HA rejects an extra `context` field with `invalid_format`. HA returns
+the context in the command result. When an entity writes its state during
+the call, the `state_changed` event carries the same context ID, in the
+event and in the new state. Task-2 tested this live with an `input_boolean`
+helper only.
+
+HA sends the event before the command result. The runtime therefore holds an
+event with an unknown context ID while one of its calls is in flight. When
+the result arrives, the runtime matches the held events. An event that is
+still unmatched after a short hold period is external. The runtime keeps the
+ID of a finished call for a TTL (time to live), because one call can cause
+several state changes or none.
+
 By default, a subscription ignores state changes that the agent caused
 itself. An agent therefore cannot start itself through its own outputs.
 The runtime also marks each state change in history as `agent` or
 `external`, so that an agent can tell a person's change from its own.
+
+Limits:
+
+- Late device reports. HA keeps a call's context on an entity for 5
+  seconds (`CONTEXT_RECENT_TIME_SECONDS` in `helpers/entity.py`). A device
+  that reports its new state later, through a poll or a push, gets a new
+  context. The runtime then marks the change `external`. Task-2 did not
+  test a real device.
+- The match covers only direct effects. An automation that reacts to an
+  agent's write runs with a new context. That context has `parent_id` set
+  to the agent's context ID (`components/automation/entity.py`). The
+  runtime treats such changes as `external` for now. A later decision can
+  make subscriptions follow `parent_id`. Task-2 read this from source and
+  did not test it live.
+- The context also carries a `user_id`. All agents share the app's HA user,
+  so the `user_id` can tell hagent from a person, but not one agent from
+  another. The runtime does not use it for the match.
+- A long hold delays external events while a call is in flight. A short
+  hold can mark a slow call's own write as `external`.
+
+Task-2 verified the `call_service` behaviour against HA Core 2026.11.1 and
+the HA Core `dev` source (commit `fa470750`). `spikes/task-2/` holds the
+probe and its result.
 
 **Missed schedules.** If the app was stopped when a schedule was due, the
 schedule runs once when the app starts, if it is less than 10 minutes late.
@@ -705,12 +786,19 @@ An agent remembers through two kinds of data:
 ### 13.1 Context compaction
 
 Compaction makes the context smaller before it goes to the model. hagent
-uses the compaction strategies in Pydantic AI, in three places:
+uses the compaction strategies of Pydantic AI Harness. Pydantic AI Harness
+(`pydantic-ai-harness`) is a separate package from the Pydantic AI team. It
+works with every model. It is before version 1.0, so its interface can
+change between minor releases. hagent pins its version. The strategies run
+before each model request. Examples are `ClearToolResults`, which replaces
+old tool results with a placeholder, and `TieredCompaction`, which runs
+cheap strategies first and summarises only when necessary. hagent uses
+compaction in three places:
 
 - **Inside an agent turn.** A tool loop can collect large tool results. The
   runtime cuts each tool result to a size limit, and keeps the full result in
-  history. When the turn reaches a token limit, Pydantic AI compacts the older
-  part of the turn.
+  history. When the turn reaches a token limit, a compaction strategy
+  compacts the older part of the turn.
 - **Across turns of one conversation or source.** An Assist conversation, or
   a series of invocations from one source, keeps a running summary plus the
   latest records, instead of a full transcript. The summary model in the
@@ -732,9 +820,16 @@ hagent uses four caches:
   most stable parts first and the parts that change last (section 9.5). The
   current time and input values go last, so that they do not stop the cache
   from working. OpenAI caches automatically. Through OpenRouter, some models
-  need cache markers, which Pydantic AI adds. Pydantic AI also reports when a
-  request misses the cache unexpectedly. The cost records keep the cached
-  token count for each call.
+  (Anthropic and Gemini) need cache markers. The Pydantic AI `Caching`
+  capability adds them, and it also adds a breakpoint after the
+  instructions on OpenAI. The `WarnOnCacheBusts` capability of Pydantic AI
+  Harness warns when a request reads back much less of the cached prefix
+  than before. By default it warns only for a miss of at least 2,000 tokens
+  and 5 percent of the prefix. A cache write costs more than uncached
+  input: 1.25 times the input price for the default retention on OpenAI and
+  on Anthropic models. A cache read costs 0.1 times. The cost records keep
+  both the cache-read and the cache-write token counts for each call. Input
+  token counts include both.
 - **Rule result cache.** A rule can return its previous result for the same
   inputs within a time window (section 10.1).
 - **HA state cache.** The app subscribes to HA state changes, so it keeps a
@@ -747,7 +842,10 @@ hagent uses four caches:
 
 Compaction changes the start of the conversation, so it can stop the
 provider prompt cache from working for one request. The runtime compacts
-only when the saving is larger than this cost.
+only when the saving is larger than this cost. A probe showed the effect:
+when compaction cleared tool results on each request, each request read
+back only the instructions from the cache. The levers are a minimum saving
+for each clear (`min_clear_tokens`) and clears in batches (`max_messages`).
 
 ### 13.3 Retrieval
 
@@ -820,6 +918,13 @@ every turn. Rules never use recall.
   installation.
 - Embedding sends text to the provider. The management UI states this when
   the user selects the model.
+- Both providers accept the OpenAI embeddings request, with a batch of
+  texts and the `dimensions` parameter. The same model gives the same
+  vectors on both, for example `text-embedding-3-small` on OpenAI and
+  `openai/text-embedding-3-small` on OpenRouter. The OpenAI Python client
+  asks for base64 vectors by default. The adapter asks for `float`, or
+  decodes base64. OpenRouter returns the cost of each call. OpenAI does not,
+  so the adapter calculates the OpenAI cost from a price table.
 
 **Failure and limits**
 
@@ -939,6 +1044,13 @@ history, tools and scopes. The app keeps the conversation history, with
 compaction (section 13.1), so it does not expire after 5 minutes. Rules do
 not answer Assist invocations.
 
+Who can call an agent: `hagent.invoke`, the AI Task entity and the
+conversation entity accept calls from HA administrators and from calls with
+no user, for example automations. HA rejects calls from other users. An
+agent can hold wide scopes, so this rule stops a user with fewer rights from
+acting through it. A user who is not an administrator therefore cannot talk
+to an agent through Assist. `docs/link.md` describes the rule.
+
 ## 16. Providers
 
 - **OpenAI**: chat models through the Responses API, the Decisions API, and
@@ -946,11 +1058,45 @@ not answer Assist invocations.
 - **OpenRouter**: chat models through the OpenAI-compatible API, the
   decisions endpoint, which provides Jev, and embeddings.
 
-Pydantic AI supplies the chat model adapters for both providers. hagent
-writes its own adapters for the decision endpoints, because Pydantic AI does
-not support them. hagent calls the embeddings endpoints of both providers
-through their OpenAI-compatible interface. Each adapter reports token use,
-cached tokens and cost for each call.
+Pydantic AI supplies the chat model adapters for both providers:
+`OpenAIResponsesModel` for OpenAI and `OpenRouterModel` for OpenRouter.
+hagent calls the embeddings endpoints of both providers through their
+OpenAI-compatible interface. Each adapter reports token use, cache-read and
+cache-write tokens, and cost for each call. Pydantic AI reports a cost for
+each run on both providers, also where the provider response has no cost.
+
+Pydantic AI also has decision model classes. `OpenAIDecisionsModel` calls
+the OpenAI Decisions API. `SystemOneModel` calls Jev through a second
+OpenRouter route, `POST /api/v1/systemone`. A probe ran both. These classes
+build the questions from the fields of a Pydantic output type, and put the
+probabilities in `provider_details`. They differ from what section 10.3
+needs:
+
+- A yes/no field gives a confidence margin, not the probability of yes. A
+  field of type `float` from 0 to 1 gives the probability.
+- Agents write questions at run time, so hagent must build the output type
+  at run time.
+- A refusal of one question fails the whole request.
+- One request has at most 200 questions. The OpenAI API accepts 400.
+
+Decided: hagent's decision adapter calls the two decision endpoints
+directly, not through these classes. Direct calls give the probability of
+each answer, accept questions that agents write at run time, and keep a
+refusal local to its question. The OpenRouter model list (`/api/v1/models`)
+does not include the Jev decision models. The app therefore keeps its own
+list of decision models. A person can add a model to it in the management
+UI settings.
+
+Cost source (task-3). OpenRouter returns the cost of each call in
+`usage.cost`, for chat, decision and embedding calls. OpenAI returns token
+counts only. The OpenAI adapter therefore calculates the cost from a price
+table. A price table is a list of prices per million tokens for each model,
+including cache read and cache write rates. The runtime also needs the price
+table for OpenRouter, because it reserves the expected cost before each call.
+The price table starts from `genai-prices`, the price library that Pydantic
+AI uses. A daily refresh from the OpenRouter models endpoint updates it. A
+person can override a price in the management UI. The runtime compares
+calculated costs with `usage.cost` and records a difference.
 
 The user enters API keys in the management UI settings. The app never sends
 keys to HA and never writes them to logs.
@@ -958,7 +1104,8 @@ keys to HA and never writes them to logs.
 ## 17. Cost controls
 
 - Rules answer repeated invocations without an agent turn.
-- Decision actions bill input tokens only.
+- Decision actions bill input tokens only. Exception: OpenAI can bill
+  cache writes for decision calls. Task-3 did not verify these rates.
 - Rule result caches skip repeated rule actions.
 - The prompt order lets providers cache the stable part of each prompt.
 - Knowledge stores, running summaries and compaction replace large context

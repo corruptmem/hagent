@@ -1,0 +1,480 @@
+{
+  "ha_version": "2026.11.1",
+  "recorded_at": "2026-11-15",
+  "cases": [
+    {
+      "name": "states_missing",
+      "template": "{{ states('sensor.hagent_fixture_missing') }}",
+      "variables": {},
+      "result": "unknown"
+    },
+    {
+      "name": "states_missing_attr",
+      "template": "{{ states.sensor.hagent_fixture_missing }}",
+      "variables": {},
+      "result": null
+    },
+    {
+      "name": "states_missing_is_none",
+      "template": "{{ states.sensor.hagent_fixture_missing is none }}",
+      "variables": {},
+      "result": true
+    },
+    {
+      "name": "is_state_missing",
+      "template": "{{ is_state('sensor.hagent_fixture_missing', 'unknown') }}",
+      "variables": {},
+      "result": false
+    },
+    {
+      "name": "state_attr_missing",
+      "template": "{{ state_attr('sensor.hagent_fixture_missing', 'unit') }}",
+      "variables": {},
+      "result": null
+    },
+    {
+      "name": "is_state_attr_missing",
+      "template": "{{ is_state_attr('sensor.hagent_fixture_missing', 'a', 1) }}",
+      "variables": {},
+      "result": false
+    },
+    {
+      "name": "has_value_missing",
+      "template": "{{ has_value('sensor.hagent_fixture_missing') }}",
+      "variables": {},
+      "result": false
+    },
+    {
+      "name": "states_missing_float",
+      "template": "{{ states('sensor.hagent_fixture_missing') | float(-1) }}",
+      "variables": {},
+      "result": -1
+    },
+    {
+      "name": "float_default",
+      "template": "{{ 'abc' | float(0) }}",
+      "variables": {},
+      "result": 0
+    },
+    {
+      "name": "float_variable",
+      "template": "{{ temp | float + 1 }}",
+      "variables": {
+        "temp": "20.5"
+      },
+      "result": 21.5
+    },
+    {
+      "name": "float_error",
+      "template": "{{ 'abc' | float }}",
+      "variables": {},
+      "error": true
+    },
+    {
+      "name": "int_filter",
+      "template": "{{ '4' | int + 1 }}",
+      "variables": {},
+      "result": 5
+    },
+    {
+      "name": "int_float_text",
+      "template": "{{ '4.7' | int }}",
+      "variables": {},
+      "result": 4
+    },
+    {
+      "name": "int_default",
+      "template": "{{ 'x' | int(7) }}",
+      "variables": {},
+      "result": 7
+    },
+    {
+      "name": "int_function",
+      "template": "{{ int('12') * 2 }}",
+      "variables": {},
+      "result": 24
+    },
+    {
+      "name": "float_function",
+      "template": "{{ float('1.5', 0) * 2 }}",
+      "variables": {},
+      "result": 3.0
+    },
+    {
+      "name": "bool_on",
+      "template": "{{ 'on' | bool }}",
+      "variables": {},
+      "result": true
+    },
+    {
+      "name": "bool_default",
+      "template": "{{ 'maybe' | bool('n/a') }}",
+      "variables": {},
+      "result": "n/a"
+    },
+    {
+      "name": "round_one",
+      "template": "{{ 2.567 | round(1) }}",
+      "variables": {},
+      "result": 2.6
+    },
+    {
+      "name": "round_ceil",
+      "template": "{{ 2.4 | round(0, 'ceil') }}",
+      "variables": {},
+      "result": 3
+    },
+    {
+      "name": "round_floor",
+      "template": "{{ 2.6 | round(0, 'floor') }}",
+      "variables": {},
+      "result": 2
+    },
+    {
+      "name": "round_half",
+      "template": "{{ 2.3 | round(0, 'half') }}",
+      "variables": {},
+      "result": 2
+    },
+    {
+      "name": "round_default",
+      "template": "{{ 'x' | round(1, default=0) }}",
+      "variables": {},
+      "result": 0
+    },
+    {
+      "name": "multiply",
+      "template": "{{ 3 | multiply(2) }}",
+      "variables": {},
+      "result": 6.0
+    },
+    {
+      "name": "add",
+      "template": "{{ '3' | add(2) }}",
+      "variables": {},
+      "result": 5.0
+    },
+    {
+      "name": "average",
+      "template": "{{ average(1, 2, 3) }}",
+      "variables": {},
+      "result": 2.0
+    },
+    {
+      "name": "average_list",
+      "template": "{{ [1, 2] | average }}",
+      "variables": {},
+      "result": 1.5
+    },
+    {
+      "name": "median",
+      "template": "{{ [1, 5, 3] | median }}",
+      "variables": {},
+      "result": 3
+    },
+    {
+      "name": "max_args",
+      "template": "{{ max(1, 7, 3) }}",
+      "variables": {},
+      "result": 7
+    },
+    {
+      "name": "min_list",
+      "template": "{{ min([4, 2]) }}",
+      "variables": {},
+      "result": 2
+    },
+    {
+      "name": "is_number_test",
+      "template": "{{ '12' is is_number }}",
+      "variables": {},
+      "result": true
+    },
+    {
+      "name": "is_number_filter",
+      "template": "{{ 'x' | is_number }}",
+      "variables": {},
+      "result": false
+    },
+    {
+      "name": "iif_function",
+      "template": "{{ iif(x > 1, 'big', 'small') }}",
+      "variables": {
+        "x": 3
+      },
+      "result": "big"
+    },
+    {
+      "name": "iif_none",
+      "template": "{{ none | iif('a', 'b', 'c') }}",
+      "variables": {},
+      "result": "c"
+    },
+    {
+      "name": "timedelta",
+      "template": "{{ timedelta(hours=2).total_seconds() }}",
+      "variables": {},
+      "result": 7200.0
+    },
+    {
+      "name": "to_json",
+      "template": "{{ {'a': 1, 'b': [1, 2]} | to_json }}",
+      "variables": {},
+      "result": {
+        "a": 1,
+        "b": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "name": "to_json_in_text",
+      "template": "x{{ {'a': 1} | to_json }}",
+      "variables": {},
+      "result": "x{\"a\":1}"
+    },
+    {
+      "name": "from_json",
+      "template": "{{ ('{\"a\": [1, 2]}' | from_json).a[1] }}",
+      "variables": {},
+      "result": 2
+    },
+    {
+      "name": "regex_match",
+      "template": "{{ 'abc' | regex_match('b') }}",
+      "variables": {},
+      "result": false
+    },
+    {
+      "name": "regex_search",
+      "template": "{{ 'abc' | regex_search('b') }}",
+      "variables": {},
+      "result": true
+    },
+    {
+      "name": "regex_replace",
+      "template": "{{ 'abc' | regex_replace('b', 'x') }}",
+      "variables": {},
+      "result": "axc"
+    },
+    {
+      "name": "regex_findall",
+      "template": "{{ 'a1b22' | regex_findall('[0-9]+') }}",
+      "variables": {},
+      "result": [
+        "1",
+        "22"
+      ]
+    },
+    {
+      "name": "regex_findall_index",
+      "template": "{{ 'a1b22' | regex_findall_index('[0-9]+', 1) }}",
+      "variables": {},
+      "result": 22
+    },
+    {
+      "name": "match_test",
+      "template": "{{ 'abc' is match('a') }}",
+      "variables": {},
+      "result": true
+    },
+    {
+      "name": "join_text",
+      "template": "{{ ['a', 'b'] | join(', ') }}",
+      "variables": {},
+      "result": "a, b"
+    },
+    {
+      "name": "join_numbers",
+      "template": "{{ [1, 2] | join(',') }}",
+      "variables": {},
+      "result": [
+        1,
+        2
+      ]
+    },
+    {
+      "name": "format_filter",
+      "template": "{{ '%.1f' | format(2.25) }}",
+      "variables": {},
+      "result": 2.2
+    },
+    {
+      "name": "percent_operator",
+      "template": "{{ '%s-%s' % ('a', 'b') }}",
+      "variables": {},
+      "result": "a-b"
+    },
+    {
+      "name": "contains_test",
+      "template": "{{ [1, 2] is contains 2 }}",
+      "variables": {},
+      "result": true
+    },
+    {
+      "name": "timestamp_utc",
+      "template": "{{ 0 | timestamp_utc }}",
+      "variables": {},
+      "result": "1970-01-01T00:00:00+00:00"
+    },
+    {
+      "name": "timestamp_custom",
+      "template": "{{ 0 | timestamp_custom('%Y-%m-%d', false) }}",
+      "variables": {},
+      "result": "1970-01-01"
+    },
+    {
+      "name": "as_timestamp",
+      "template": "{{ as_timestamp('1970-01-01T00:00:10+00:00') }}",
+      "variables": {},
+      "result": 10.0
+    },
+    {
+      "name": "as_datetime_year",
+      "template": "{{ as_datetime('2026-01-02T03:04:05+00:00').year }}",
+      "variables": {},
+      "result": 2026
+    },
+    {
+      "name": "parse_int",
+      "template": "{{ 5 }}",
+      "variables": {},
+      "result": 5
+    },
+    {
+      "name": "parse_leading_zero",
+      "template": "{{ '01' }}",
+      "variables": {},
+      "result": "01"
+    },
+    {
+      "name": "parse_float",
+      "template": "{{ 1.50 }}",
+      "variables": {},
+      "result": 1.5
+    },
+    {
+      "name": "parse_bool",
+      "template": "{{ true }}",
+      "variables": {},
+      "result": true
+    },
+    {
+      "name": "parse_list",
+      "template": "{{ [1, 'a'] }}",
+      "variables": {},
+      "result": [
+        1,
+        "a"
+      ]
+    },
+    {
+      "name": "parse_dict",
+      "template": "{{ {'a': 1} }}",
+      "variables": {},
+      "result": {
+        "a": 1
+      }
+    },
+    {
+      "name": "parse_none",
+      "template": "{{ none }}",
+      "variables": {},
+      "result": null
+    },
+    {
+      "name": "parse_text",
+      "template": "hello",
+      "variables": {},
+      "result": "hello"
+    },
+    {
+      "name": "parse_padded",
+      "template": "  padded  ",
+      "variables": {},
+      "result": "padded"
+    },
+    {
+      "name": "parse_exponent",
+      "template": "1e3",
+      "variables": {},
+      "result": "1e3"
+    },
+    {
+      "name": "parse_quoted",
+      "template": "'quoted'",
+      "variables": {},
+      "result": "'quoted'"
+    },
+    {
+      "name": "parse_decline",
+      "template": "{{ 'decline' }}",
+      "variables": {},
+      "result": "decline"
+    },
+    {
+      "name": "data_access",
+      "template": "{{ data.room }}",
+      "variables": {
+        "data": {
+          "room": "lounge"
+        }
+      },
+      "result": "lounge"
+    },
+    {
+      "name": "inputs_access",
+      "template": "{{ inputs['sensor.a'] }}",
+      "variables": {
+        "inputs": {
+          "sensor.a": "on"
+        }
+      },
+      "result": "on"
+    },
+    {
+      "name": "sort_first",
+      "template": "{{ [3, 1, 2] | sort | first }}",
+      "variables": {},
+      "result": 1
+    },
+    {
+      "name": "selectattr",
+      "template": "{{ items | selectattr('on') | map(attribute='n') | list }}",
+      "variables": {
+        "items": [
+          {
+            "n": 1,
+            "on": true
+          },
+          {
+            "n": 2,
+            "on": false
+          }
+        ]
+      },
+      "result": [
+        1
+      ]
+    },
+    {
+      "name": "namespace_loop",
+      "template": "{% set ns = namespace(n=0) %}{% for i in range(4) %}{% set ns.n = ns.n + i %}{% endfor %}{{ ns.n }}",
+      "variables": {},
+      "result": 6
+    },
+    {
+      "name": "decision_result",
+      "template": "{{ 'decline' if answers.cold.probability < 0.5 else 'heat' }}",
+      "variables": {
+        "answers": {
+          "cold": {
+            "probability": 0.8
+          }
+        }
+      },
+      "result": "heat"
+    }
+  ]
+}

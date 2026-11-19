@@ -3,13 +3,22 @@
 
 [tools]
 uv = "0.13.0"
+# The front-end package manager. package.json names the same version.
+# It comes before node, so that it takes precedence over the npm of node.
+"npm:npm" = "11.17.0"
 node = "24"
 "npm:backlog.md" = "1.49.3"
 "pipx:pre-commit" = "4.7.0"
 
 [tasks.setup]
 description = "Install dependencies and git hooks"
-run = ["uv sync --all-packages", "pre-commit install"]
+run = [
+  "uv sync --all-packages",
+  "uv sync --project integration",
+  "UV_PROJECT_ENVIRONMENT=.venv-ha2611 uv sync --project integration --no-default-groups --group ha2611",
+  "npm ci --prefix frontend",
+  "pre-commit install",
+]
 
 [tasks.lint]
 description = "Lint and check formatting"
@@ -27,6 +36,49 @@ run = "uv run mypy"
 description = "Run tests"
 run = "uv run pytest"
 
+# The HA integration has its own uv project (integration/pyproject.toml),
+# because HA Core pins conflict with the app. Two environments:
+# integration/.venv (HA Core 2026.10.4 with pytest-homeassistant-custom-
+# component) and integration/.venv-ha2611 (HA Core 2026.11.1, for mypy and
+# the EVALUATE tests).
+[tasks.test-integration]
+description = "Integration tests against HA Core in memory"
+dir = "integration"
+run = [
+  "uv run pytest",
+  "UV_PROJECT_ENVIRONMENT=.venv-ha2611 uv run --no-default-groups --group ha2611 pytest tests_ha2611",
+]
+
+[tasks.typecheck-integration]
+description = "Static type checking of the integration (HA Core 2026.11.1)"
+dir = "integration"
+run = "UV_PROJECT_ENVIRONMENT=.venv-ha2611 uv run --no-default-groups --group ha2611 mypy"
+
+[tasks.frontend]
+description = "Front end: eslint, prettier, tsc and vitest"
+dir = "frontend"
+run = "npm run check"
+
+[tasks.frontend-build]
+description = "Build the management UI into frontend/dist"
+dir = "frontend"
+run = "npm run build"
+
+[tasks.package-app]
+description = "Create the self-contained app folder build/app/hagent"
+run = "scripts/package-app.sh"
+
+[tasks.smoke-app]
+description = "Build the app image (linux/amd64) and run it against a fake HA (needs Docker)"
+run = "spikes/task-21/smoke.sh"
+
 [tasks.check]
 description = "Run every check that CI and pre-commit run"
-depends = ["lint", "typecheck", "test"]
+depends = [
+  "lint",
+  "typecheck",
+  "test",
+  "typecheck-integration",
+  "test-integration",
+  "frontend",
+]

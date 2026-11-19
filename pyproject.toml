@@ -7,12 +7,18 @@
 
 [tool.uv.workspace]
 members = ["app"]
+# integration/ is its own uv project with its own lock (HA Core pins).
+exclude = ["integration"]
 
 [dependency-groups]
 dev = [
     "mypy>=1.18",
     "pytest>=8.4",
+    "pytest-asyncio>=1.2",
+    "pyyaml>=6.0.3",
     "ruff>=0.14",
+    "types-jsonschema>=4.26",
+    "types-pyyaml>=6.0",
 ]
 
 [tool.ruff]
@@ -30,15 +36,26 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**" = ["S101", "PLR2004"]
+"**/tests/**" = ["S101", "S105", "PLR2004"]
+"integration/tests/**" = ["S101", "S105", "S106", "PLR2004"]
+"**/tests_ha2611/**" = ["S101", "S105", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.14"
 strict = true
 warn_unreachable = true
+plugins = ["pydantic.mypy"]
 files = ["app/src", "app/tests"]
-mypy_path = "app/src"
+mypy_path = ["app/src", "app/tests"]
+
+# APScheduler 3 ships no type information.
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["app/tests"]
 addopts = "-ra"
+pythonpath = ["app/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

@@ -1,0 +1,440 @@
+/* A plain look close to the HA front end. */
+:root {
+  --primary: #03a9f4;
+  --primary-text: #fff;
+  --text: #212121;
+  --muted: #727272;
+  --bg: #fafafa;
+  --card: #fff;
+  --border: #e0e0e0;
+  --error: #db4437;
+  --warning: #ffa600;
+  font-family: Roboto, "Noto Sans", system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e1e1e1;
+    --muted: #9b9b9b;
+    --bg: #111;
+    --card: #1c1c1c;
+    --border: #333;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+}
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 180px;
+  padding: 16px 8px;
+  border-right: 1px solid var(--border);
+  background: var(--card);
+}
+
+.sidebar a {
+  padding: 8px 12px;
+  border-radius: 4px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.sidebar a.active {
+  background: color-mix(in srgb, var(--primary) 15%, transparent);
+  color: var(--primary);
+}
+
+.brand {
+  padding: 0 12px 12px;
+  font-size: 20px;
+}
+
+.status {
+  margin-top: auto;
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status.open {
+  color: #43a047;
+}
+
+main {
+  flex: 1;
+  max-width: 1100px;
+  padding: 16px 24px;
+}
+
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.page-header h1 {
+  margin: 8px 0;
+  font-size: 24px;
+  font-weight: 400;
+}
+
+button,
+.button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary,
+.button.primary {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--primary-text);
+}
+
+button.danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+button.link {
+  border: none;
+  padding: 0;
+  background: none;
+  font-weight: 600;
+}
+
+input,
+select,
+textarea {
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+}
+
+textarea {
+  width: 100%;
+}
+
+textarea.json,
+pre {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--card);
+}
+
+table.data th,
+table.data td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.diff .old {
+  color: var(--error);
+}
+
+.diff .new {
+  color: #43a047;
+}
+
+.actions {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs a {
+  padding: 8px 16px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.tabs a.active {
+  border-bottom: 2px solid var(--primary);
+  color: var(--primary);
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  background: var(--bg);
+}
+
+fieldset {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.field > label {
+  font-weight: 500;
+}
+
+.field.invalid input,
+.field.invalid textarea,
+.field.invalid select {
+  border-color: var(--error);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px 12px 0;
+}
+
+.help,
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--error);
+}
+
+.warning {
+  color: var(--warning);
+}
+
+.error-box {
+  padding: 8px 12px;
+  border: 1px solid var(--error);
+  border-radius: 4px;
+  color: var(--error);
+}
+
+.confirm,
+.panel {
+  margin: 12px 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.confirm button {
+  margin-right: 8px;
+}
+
+.badge {
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: var(--border);
+  font-size: 12px;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.picker-label {
+  font-weight: 500;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.chip code {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chip button {
+  padding: 0 6px;
+  border: none;
+  background: none;
+}
+
+.matches {
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  list-style: none;
+}
+
+.matches button {
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+}
+
+.matches code,
+.matches small {
+  color: var(--muted);
+}
+
+.model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.knowledge table {
+  margin-bottom: 8px;
+}
+
+.attached {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+table.data tr.selected {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+.warning-box {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--warning);
+  border-radius: 4px;
+}
+
+.warning-box p {
+  margin: 4px 0;
+}
+
+form.inline {
+  display: inline-flex;
+  gap: 4px;
+}
+
+pre.content,
+textarea.content {
+  width: 100%;
+  max-height: 480px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.item-panel h2 {
+  margin: 0;
+}
+
+.upload {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field.key p {
+  margin: 4px 0;
+}
+
+/* Inspect area */
+pre.json {
+  max-height: 320px;
+  margin: 4px 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.field.inline {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge.error {
+  background: color-mix(in srgb, var(--error) 20%, transparent);
+  color: var(--error);
+}

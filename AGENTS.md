@@ -33,14 +33,22 @@ use case. Agents build use-case logic from the generic primitives.
 
 - `app/`: the hagent app (agent runtime and management UI back end).
 - `integration/custom_components/hagent/`: the HA integration. HA Core loads
-  it with its own interpreter.
+  it with its own interpreter. It must not import the app.
+- `integration/pyproject.toml`: a separate uv project for the integration
+  tests, because HA Core pins conflict with the app. `tests/` runs with
+  pytest-homeassistant-custom-component (HA Core 2026.10.4). `tests_ha2611/`
+  and mypy run against HA Core 2026.11.1.
+- `docs/link.md`: the link protocol between the app and the integration.
 
 All Python code targets Python 3.14, the version that HA Core requires. The
 app uses the same version, so that the app and the integration can share code
 and tooling.
-- `frontend/`: the management UI (React, TanStack, Vite). Not created yet.
+- `frontend/`: the management UI (React, TanStack, Vite). Read
+  `frontend/README.md` before you change it.
 - `backlog/`: work tracking. Use the `backlog` CLI, not direct edits.
 - `docs/design.md`: the design.
+- `docs/api.md`: the management API contract. Update it when you add or
+  change a route.
 
 ## Tools
 
@@ -56,8 +64,12 @@ Run `mise run check` before you commit. It runs:
   security rules) and formatting.
 - `mypy` in strict mode: type checking.
 - `pytest`: tests.
+- the integration type check and tests (`typecheck-integration`,
+  `test-integration`).
+- `npm run check` in `frontend/`: eslint, prettier, tsc and vitest.
 
-pre-commit runs ruff and mypy on each commit.
+pre-commit runs ruff and mypy on each commit, and eslint, prettier and tsc
+when a commit changes `frontend/`.
 
 ## Rules
 

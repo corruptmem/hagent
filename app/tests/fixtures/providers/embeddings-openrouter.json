@@ -1,0 +1,62 @@
+{
+  "method": "POST",
+  "path": "/api/v1/embeddings",
+  "request": {
+    "model": "openai/text-embedding-3-small",
+    "input": [
+      "Turn on the heating.",
+      "The light is off."
+    ],
+    "dimensions": 8,
+    "encoding_format": "float"
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "response": {
+    "object": "list",
+    "data": [
+      {
+        "object": "embedding",
+        "embedding": [
+          0.00807952880859375,
+          0.3779296875,
+          -0.63525390625,
+          -0.411376953125,
+          -0.417236328125,
+          0.0222320556640625,
+          -0.328369140625,
+          -0.038055419921875
+        ],
+        "index": 0
+      },
+      {
+        "object": "embedding",
+        "embedding": [
+          0.040252685546875,
+          0.345458984375,
+          -0.86572265625,
+          -0.2301025390625,
+          -0.1435546875,
+          0.0323486328125,
+          -0.177734375,
+          -0.1517333984375
+        ],
+        "index": 1
+      }
+    ],
+    "model": "text-embedding-3-small",
+    "usage": {
+      "prompt_tokens": 10,
+      "total_tokens": 10,
+      "cost": 2e-07,
+      "is_byok": false,
+      "cost_details": {
+        "upstream_inference_cost": 2e-07,
+        "upstream_inference_prompt_cost": 2e-07,
+        "upstream_inference_completions_cost": 0
+      }
+    },
+    "provider": "OpenAI",
+    "id": "redacted"
+  }
+}
